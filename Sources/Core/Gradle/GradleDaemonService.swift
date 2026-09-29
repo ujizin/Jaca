@@ -76,6 +76,8 @@ struct GradleDaemonService: Sendable {
 
     /// Deletes `~/.gradle/caches/<name>`. Returns true on success.
     func deleteCache(name: String) async -> Bool {
+        // A single directory name only: never a path that climbs out of ~/.gradle/caches.
+        guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else { return false }
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".gradle/caches/\(name)")
         do { try FileManager.default.removeItem(at: dir); return true }
