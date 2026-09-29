@@ -6,7 +6,10 @@ import Foundation
 struct CaptureContext {
     let device: Device
     let adbURL: URL?
-    let ca: CertificateAuthority
+    /// The MITM CA. Only companion capture decrypts; `jacad` never loads one (reading or minting
+    /// the CA from the daemon could prompt for the Keychain or diverge from the app's CA), and
+    /// companion capture never runs there, so it's nil in the daemon.
+    let ca: CertificateAuthority?
     let deviceContext: DeviceContext?
     /// Agent mode: the debuggable app to attach to.
     let targetPackage: String?

@@ -68,3 +68,17 @@ struct Device: Identifiable, Hashable, Sendable, Codable {
     /// Codable so older persisted devices still decode and history stays stable.
     private enum CodingKeys: String, CodingKey { case id, platform, model, state }
 }
+
+extension Device {
+    /// Tolerant decode (history rows, the daemon socket): only the id is required; an unknown
+    /// platform or state from a newer build reads as Android / unknown rather than failing.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try c.decode(String.self, forKey: .id),
+            platform: (try? c.decodeIfPresent(DevicePlatform.self, forKey: .platform)) ?? .android,
+            model: try c.decodeIfPresent(String.self, forKey: .model) ?? "",
+            state: (try? c.decodeIfPresent(DeviceState.self, forKey: .state)) ?? .unknown
+        )
+    }
+}

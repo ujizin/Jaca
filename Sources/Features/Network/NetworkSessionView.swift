@@ -303,12 +303,15 @@ struct NetworkSessionView: View {
     }
 
     private func exportHAR() {
-        guard let data = HARExport.data(from: session.transactions) else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(session.displayName).har"
-        panel.canCreateDirectories = true
-        if panel.runModal() == .OK, let url = panel.url {
-            try? data.write(to: url)
+        Task { @MainActor in
+            // From the daemon in daemon mode, where the bodies are.
+            guard let data = await session.harData() else { return }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = "\(session.displayName).har"
+            panel.canCreateDirectories = true
+            if panel.runModal() == .OK, let url = panel.url {
+                try? data.write(to: url)
+            }
         }
     }
 

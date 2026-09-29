@@ -19,4 +19,14 @@ enum CloudPersistence {
         guard let wrapped = try? decoder.decode([FailableDecodable<T>].self, from: data) else { return [] }
         return wrapped.compactMap { $0.value }
     }
+
+    /// The same element-by-element tolerance for an array nested inside a record: a missing or
+    /// malformed field decodes as [], and one bad element is skipped rather than failing the parent.
+    static func decodeArrayField<T: Decodable, K: CodingKey>(
+        _ type: T.Type, in container: KeyedDecodingContainer<K>, forKey key: K
+    ) -> [T] {
+        if let all = try? container.decodeIfPresent([T].self, forKey: key) { return all }
+        guard let wrapped = try? container.decodeIfPresent([FailableDecodable<T>].self, forKey: key) else { return [] }
+        return wrapped.compactMap { $0.value }
+    }
 }

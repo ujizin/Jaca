@@ -21,6 +21,16 @@ final class DerivedDataModel {
     private let service = DerivedDataService()
     private var toastTask: Task<Void, Never>?
 
+    /// Daemon mode: list and delete through `jacad`, falling back to the in-process service
+    /// whenever the daemon can't be reached.
+    private let daemon: DaemonConnector
+    private var useDaemon: Bool { daemon.isEnabled(.xcode) }
+
+    init(daemon: DaemonConnector? = nil) {
+        let daemon = daemon ?? .shared
+        self.daemon = daemon
+    }
+
     // MARK: - Toast
 
     func flash(_ message: String, fallback: String = "checkmark") {
@@ -37,9 +47,12 @@ final class DerivedDataModel {
     func refresh() {
         isLoading = true
         let service = self.service
+        let viaDaemon = useDaemon
         Task { [weak self] in
-            let list = await service.list()
-            guard let self else { return }
+            var list: [DerivedDataEntry]?
+            if viaDaemon { list = await self?.daemon.call("xcode.list", as: [DerivedDataEntry].self) }
+            if list == nil { list = await service.list() }
+            guard let self, let list else { return }
             self.entries = list
             self.isLoading = false
         }
@@ -52,9 +65,8 @@ final class DerivedDataModel {
         guard let i = entries.firstIndex(where: { $0.path == path }) else { return }
         let name = entries[i].name
         entries[i].removing = true
-        let service = self.service
         Task { [weak self] in
-            let ok = await service.delete(path: path)
+            let ok = await self?.delete(path: path) ?? false
             guard let self else { return }
             if ok {
                 try? await Task.sleep(for: .milliseconds(280))
@@ -74,15 +86,29 @@ final class DerivedDataModel {
         let stale = entries.filter { $0.kind == .stale }
         guard !stale.isEmpty else { return }
         for i in entries.indices where entries[i].kind == .stale { entries[i].removing = true }
-        let service = self.service
         Task { [weak self] in
             var deleted = 0
-            for entry in stale where await service.delete(path: entry.path) { deleted += 1 }
+            for entry in stale where await self?.delete(path: entry.path) ?? false { deleted += 1 }
             guard let self else { return }
             try? await Task.sleep(for: .milliseconds(280))
             let paths = Set(stale.map(\.path))
             self.entries.removeAll { paths.contains($0.path) }
             self.flash("Deleted \(deleted) stale", fallback: "eraser")
         }
+    }
+
+    /// Deletes through the daemon, or in-process when daemon mode is off or it can't be
+    /// reached. A daemon-side failure counts as not deleted, never a retry.
+    private func delete(path: String) async -> Bool {
+        if useDaemon {
+            do {
+                if let ok = try await daemon.request("xcode.delete", XcodeArea.PathParams(path: path), as: Bool.self) {
+                    return ok
+                }
+            } catch {
+                return false
+            }
+        }
+        return await service.delete(path: path)
     }
 }

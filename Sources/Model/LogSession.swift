@@ -1,55 +1,15 @@
 import Foundation
 import Observation
 
-/// Thread-safe hand-off buffer between the background stream consumer and the
-/// main-actor flush loop, so we never mutate `@Observable` state per line.
-final class LineBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [LogLine] = []
-
-    func append(_ line: LogLine) {
-        lock.lock(); lines.append(line); lock.unlock()
-    }
-
-    /// Drains up to `max` lines (oldest first), leaving any remainder for the next
-    /// tick so a big burst is spread across flushes instead of one main-thread hit.
-    func drain(max: Int) -> [LogLine] {
-        lock.lock(); defer { lock.unlock() }
-        if lines.count <= max {
-            let out = lines
-            lines.removeAll(keepingCapacity: true)
-            return out
-        }
-        let out = Array(lines.prefix(max))
-        lines.removeFirst(max)
-        return out
-    }
-}
-
-/// Monotonic, thread-safe id source. The session stamps every line (and marker)
-/// with it so ids stay unique + ordered across stream reconnects (each `LogSource`
-/// restart would otherwise reset its own seq to 0).
-final class SeqCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: UInt64 = 0
-    private let stride: UInt64
-    /// `stride` leaves room between consecutive lines so a line the prettifier splits into
-    /// several entries (metadata head / JSON body / trailing) can get distinct, in-order
-    /// sub-seqs (`base, base+1, …`) without colliding with the next line — keeping `seq`
-    /// strictly increasing for the front-trim and persistence ordering. Far more than the
-    /// ≤ 3 parts a split ever produces.
-    init(start: UInt64 = 0, stride: UInt64 = 8) { self.value = start; self.stride = stride }
-    func next() -> UInt64 { lock.lock(); defer { lock.unlock() }; let v = value; value &+= stride; return v }
-}
-
 /// One tab: a single running (or stopped) log stream bound to a device + filter,
-/// with an editable display name. Incoming lines accumulate off-main and are
-/// coalesced into the observed `visible` slice on a ~30ms timer to stay smooth
-/// under thousands of lines/sec.
+/// with an editable display name. The stream itself (source, reconnects, markers, PID
+/// tracking, prettifying, history) is a `LogFeed`: an in-process `LogStreamEngine`, or a
+/// session running in `jacad`. This type is the view: the scrollback ring, the tab's filter,
+/// the visible slice and display rows, crash navigation. Batches arrive on a ~30ms cadence.
 @MainActor
 @Observable
 final class LogSession: WorkspaceTab {
-    let id = UUID()
+    let id: UUID
     var displayName: String { didSet { onStateChanged?() } }
     let device: Device
 
@@ -64,6 +24,8 @@ final class LogSession: WorkspaceTab {
     private(set) var filter: LogFilter
     private(set) var isRunning = false
     private(set) var isConnecting = false
+    /// Whether the stream runs in `jacad` (daemon mode) rather than in-process.
+    let isRemote: Bool
     private(set) var visible: [LogLine] = []
     /// Maps the virtualized list's fixed-height **display rows** to `visible` entries:
     /// a log with embedded `\n`s spans several rows. Kept in lockstep with `visible`
@@ -87,19 +49,20 @@ final class LogSession: WorkspaceTab {
     /// Set to a line seq to request the list scroll to it (crash navigation).
     var scrollTarget: UInt64?
     var followTail = true
-    var statusMessage: String?
+    var statusMessage: String? {
+        didSet { if statusMessage == nil, oldValue != nil, feed.state.statusMessage != nil { feed.clearStatus() } }
+    }
 
     /// Seqs of prettified response bodies the user has collapsed to a single line
     /// (double-click toggles). Default is expanded; only huge payloads are usually
     /// folded. Read by the render path via `displayMessage`/`effectiveLineCount`.
     private(set) var collapsedBodies: Set<UInt64> = []
-    /// Stateful detector that prettifies JSON response bodies as lines stream past.
-    /// Fed every line in `flush` (in arrival order) so the two-log "split" shape pairs.
-    private var bodyPrettifier = LogBodyPrettifier()
-
     /// Invoked each time the stream starts (so history recording works whether the
-    /// tab is auto-started or started later by the user).
-    var onStarted: (() -> Void)?
+    /// tab is auto-started or started later by the user). In-process streams only: a
+    /// daemon session records its own history.
+    var onStarted: (() -> Void)? {
+        didSet { (feed as? LogStreamEngine)?.onStarted = onStarted }
+    }
 
     /// Subtitle for the tab/strip: device model + active filter summary.
     var subtitle: String {
@@ -165,45 +128,19 @@ final class LogSession: WorkspaceTab {
         return out
     }
 
-    /// Builds the primary source for the current target. The bundle id matters only
-    /// for physical iOS, where an empty id streams the whole-device syslog and a
-    /// real id launches that app under devicectl's console (full, un-redacted logs).
-    private let makeSource: @Sendable (_ bundleID: String) -> LogSource?
-    private var source: LogSource?
-    /// Set when the primary source is being swapped on purpose (iOS app-target
-    /// change), so the reconnect loop skips the "stream lost" warning.
-    private var swappingSource = false
-    /// Optional secondary source that captures the targeted app's stdout/print
-    /// (simulator `--console-pty`). Built per-bundle, so it's a factory taking the
-    /// current package; nil on platforms without a stdout tap (Android, real iOS).
-    private let makeConsoleSource: (@Sendable (_ bundleID: String) -> LogSource?)?
-    private var consoleSource: LogSource?
-    private let seq = SeqCounter()
+    private let feed: LogFeed
     let adbURL: URL
-    private let onPersist: (@Sendable (UUID, [LogLine]) -> Void)?
-
-    // Package liveness, for death/restart markers.
-    private var appWasAlive = false
-    private var sawAppAlive = false
 
     private var ring: [LogLine] = []
     // Virtualized rendering makes display cost independent of buffer size, so we keep
     // a large scrollback and drop far less. (Memory ≈ this × ~300 B.)
     private let ringCap = 500_000
-    private let maxPerFlush = 4_000           // bound main-thread work per tick
     private var compiledRegex: NSRegularExpression?
     private var recomputeToken = 0
-    /// Every PID the filtered package has had this session. We accumulate and never
-    /// clear it, so a crashing/relaunching app keeps showing its logs (incl. the crash).
-    private var accumulatedPids: Set<Int32> = []
 
-    private let pending = LineBuffer()
-    private var consumeTask: Task<Void, Never>?
-    private var flushTask: Task<Void, Never>?
-    private var pidTask: Task<Void, Never>?
-    private var consoleTask: Task<Void, Never>?
-
-    init(
+    /// An in-process stream (daemon mode off, and tests).
+    convenience init(
+        id: UUID = UUID(),
         device: Device,
         makeSource: @escaping @Sendable (_ bundleID: String) -> LogSource?,
         adbURL: URL,
@@ -212,75 +149,50 @@ final class LogSession: WorkspaceTab {
         makeConsoleSource: (@Sendable (_ bundleID: String) -> LogSource?)? = nil,
         onPersist: (@Sendable (UUID, [LogLine]) -> Void)? = nil
     ) {
+        let engine = LogStreamEngine(
+            id: id, device: device, adbURL: adbURL, package: filter.packageLabel,
+            makeSource: makeSource, makeConsoleSource: makeConsoleSource, onPersist: onPersist,
+            prettifyEnabled: { LogBodyPrettifyStore.shared.enabled })
+        self.init(id: id, device: device, feed: engine, adbURL: adbURL, filter: filter,
+                  displayName: displayName, isRemote: false)
+    }
+
+    /// A tab over any feed (a daemon session in daemon mode).
+    init(id: UUID, device: Device, feed: LogFeed, adbURL: URL, filter: LogFilter = LogFilter(),
+         displayName: String? = nil, isRemote: Bool) {
+        self.id = id
         self.device = device
-        self.makeSource = makeSource
-        self.makeConsoleSource = makeConsoleSource
+        self.feed = feed
         self.adbURL = adbURL
         self.filter = filter
-        self.onPersist = onPersist
+        self.isRemote = isRemote
         self.displayName = displayName ?? device.displayModel
         self.compiledRegex = filter.compiledRegex()
+        feed.onLines = { [weak self] in self?.append($0) }
+        feed.onState = { [weak self] in self?.apply($0) }
+        apply(feed.state)
     }
 
     // MARK: - Lifecycle
 
-    func start() {
-        guard !isRunning else { return }
-        isRunning = true
-        statusMessage = nil
-        onStarted?()
-        startFlushLoop()
-        restartPIDPollingIfNeeded()
-        restartConsoleCaptureIfNeeded()
-        consumeTask = Task.detached(priority: .utility) { [weak self] in
-            await self?.consumeLoop()
+    func start() { feed.start() }
+
+    func stop() { feed.stop() }
+
+    /// Ends the stream for good (the tab is closing).
+    func close() { feed.close() }
+
+    /// Mirrors the feed's stream state; the package PIDs become the tab filter's PID set.
+    private func apply(_ state: LogStreamState) {
+        isRunning = state.isRunning
+        isConnecting = state.isConnecting
+        if statusMessage != state.statusMessage { statusMessage = state.statusMessage }
+        let pids = state.pids.map(Set.init)
+        if filter.pids != pids {
+            filter.pids = pids
+            compiledRegex = filter.compiledRegex()
+            recomputeVisible()
         }
-    }
-
-    /// Connects the source and streams; if the stream ends while we're still running
-    /// (device unplugged, adb restarted, …) it injects a reconnect marker and retries
-    /// forever — automatic reconnection. Every line is re-stamped with our monotonic
-    /// seq so ids stay unique across reconnects.
-    private func consumeLoop() async {
-        let buffer = pending, counter = seq
-        var disconnected = false
-        while await isRunning, !Task.isCancelled {
-            guard let stream = await openStream() else {   // couldn't spawn the tool
-                if !disconnected { injectMarker("✕ can’t reach \(device.displayModel) — retrying…"); disconnected = true }
-                try? await Task.sleep(for: .seconds(2)); continue
-            }
-            if disconnected { injectMarker("✓ \(device.displayModel) reconnected"); disconnected = false }
-            for await line in stream {
-                var l = line; l.seq = counter.next(); buffer.append(l)
-            }
-            // stream ended
-            guard await isRunning, !Task.isCancelled else { break }
-            // A deliberate source swap (iOS app-target change) just stopped the old
-            // source — reconnect immediately with the new target, no "lost" warning.
-            if await takeSwappingSource() { continue }
-            injectMarker("✕ log stream to \(device.displayModel) lost — reconnecting…")
-            disconnected = true
-            try? await Task.sleep(for: .seconds(1))
-        }
-    }
-
-    private func openStream() -> AsyncStream<LogLine>? {
-        let s = makeSource(filter.packageLabel)
-        source = s
-        return try? s?.start()
-    }
-
-    /// Consumes the intentional-swap flag (so the reconnect loop can tell a deliberate
-    /// source switch from a real disconnect). Main-actor; called via `await`.
-    private func takeSwappingSource() -> Bool {
-        let v = swappingSource; swappingSource = false; return v
-    }
-
-    /// Injects a synthetic, always-visible marker line (thread-safe; callable off-main).
-    nonisolated func injectMarker(_ message: String, critical: Bool = false) {
-        var m = LogLine.marker(message, critical: critical)
-        m.seq = seq.next()
-        pending.append(m)
     }
 
     /// Navigate to the next crash (downward / newer). With nothing selected yet it
@@ -306,82 +218,12 @@ final class LogSession: WorkspaceTab {
         return forward ? 0 : count - 1
     }
 
-    func stop() {
-        guard isRunning else { return }
-        isRunning = false
-        source?.stop(); source = nil
-        consoleSource?.stop(); consoleSource = nil
-        consumeTask?.cancel(); consumeTask = nil
-        flushTask?.cancel(); flushTask = nil
-        pidTask?.cancel(); pidTask = nil
-        consoleTask?.cancel(); consoleTask = nil
-        flush(max: .max)  // drain everything that's left
-        // Emit any response body still being reassembled across chunks (the stream ended
-        // mid-body) so held fragments aren't lost.
-        let leftover = bodyPrettifier.finalize()
-        if !leftover.isEmpty {
-            for var l in leftover { l.seq = seq.next(); pending.append(l) }
-            flush(max: .max)
-        }
-    }
-
     func toggle() { isRunning ? stop() : connect() }
 
     /// Verifies the device is reachable (and, for Android, that a filtered package
     /// is installed) before starting the stream, surfacing a clear message if not.
     /// Used by restored/stopped tabs to (re)connect with feedback.
-    func connect() {
-        guard !isRunning, !isConnecting else { return }
-        isConnecting = true
-        statusMessage = nil
-        Task { @MainActor in
-            let available = await checkDeviceAvailable()
-            guard available else {
-                isConnecting = false
-                statusMessage = deviceUnavailableMessage
-                return
-            }
-            // Soft check: warn (but still connect) if a filtered package is missing.
-            if device.platform == .android, !filter.packageLabel.isEmpty,
-               await !isPackageInstalled(filter.packageLabel) {
-                statusMessage = "App “\(filter.packageLabel)” isn’t installed on \(device.displayModel)."
-            }
-            isConnecting = false
-            start()
-        }
-    }
-
-    private var deviceUnavailableMessage: String {
-        switch device.platform {
-        case .android:
-            return "\(device.displayModel) isn’t connected — plug it in and authorize USB debugging."
-        case .iosSimulator:
-            return "\(device.displayModel) isn’t booted — start the simulator and try again."
-        case .iosDevice:
-            return "\(device.displayModel) isn’t connected — plug it in and trust this Mac."
-        }
-    }
-
-    private func checkDeviceAvailable() async -> Bool {
-        switch device.platform {
-        case .android:
-            let r = try? await CommandRunner.run(adbURL, ["-s", device.id, "get-state"])
-            return r?.exitCode == 0 && (r?.stdout.contains("device") ?? false)
-        case .iosSimulator:
-            // iOS uses xcrun, not adb — `adbURL` is the adb path when the Android SDK
-            // is installed, which would make `adb simctl …` fail.
-            let r = try? await CommandRunner.run(AppleToolchain.xcrun, ["simctl", "list", "devices", "booted"])
-            return r?.stdout.contains(device.id) ?? false
-        case .iosDevice:
-            let r = try? await CommandRunner.run(AppleToolchain.xcrun, ["devicectl", "list", "devices"], timeout: 12)
-            return r?.stdout.contains(device.id) ?? false
-        }
-    }
-
-    private func isPackageInstalled(_ package: String) async -> Bool {
-        let r = try? await CommandRunner.run(adbURL, ["-s", device.id, "shell", "pm", "list", "packages", package])
-        return r?.stdout.contains("package:\(package)") ?? false
-    }
+    func connect() { feed.connect() }
 
     /// Clears the in-app scrollback (does not touch the device buffer).
     func clear() {
@@ -395,15 +237,14 @@ final class LogSession: WorkspaceTab {
         crashSeqs.removeAll()
         crashCursor = nil
         collapsedBodies.removeAll()
-        bodyPrettifier = LogBodyPrettifier()   // forget any half-seen BODY START pair
+        feed.resetBodyPairing()   // forget any half-seen BODY START pair
         listEpoch &+= 1
     }
 
     /// Clears the device-side logcat buffer too (`adb logcat -c`).
     func clearDeviceBuffer() {
         clear()
-        let url = adbURL, serial = device.id
-        Task.detached { await AndroidLogSource.clearBuffer(adbURL: url, serial: serial) }
+        feed.clearDeviceBuffer()
     }
 
     // MARK: - Filtering
@@ -421,41 +262,14 @@ final class LogSession: WorkspaceTab {
         recomputeVisible()
     }
 
-    /// Sets the package filter: stores the label and (re)starts PID polling so the
-    /// filter survives the app being killed/relaunched (PIDs change).
+    /// Sets the package filter: the feed targets the app (PID polling, stdout capture,
+    /// iOS re-scoping) and reports its PIDs back through `apply`.
     func setPackage(_ package: String) {
-        accumulatedPids.removeAll()   // new target → forget the previous app's PIDs
-        appWasAlive = false; sawAppAlive = false
         mutateFilter {
             $0.packageLabel = package
-            switch device.platform {
-            case .android, .iosSimulator:
-                // Both filter by PID — the bundle id never appears as the process name
-                // on iOS, but the unified log carries the process id (resolved below).
-                $0.pids = package.isEmpty ? nil : []
-                $0.processNameQuery = ""
-            case .iosDevice:
-                // The structured (LoggingSupport) source narrows to the targeted app's
-                // process itself, so no per-line LogFilter process query is needed; the
-                // label is the app's process/display name.
-                $0.processNameQuery = ""
-                $0.pids = nil
-            }
+            $0.processNameQuery = ""
         }
-        restartPIDPollingIfNeeded()
-        restartConsoleCaptureIfNeeded()
-        restartPrimaryForTargetChange()
-    }
-
-    /// Physical iOS re-scopes its *primary* structured source when the targeted app
-    /// changes (unlike Android/simulator, which keep one source and filter/launch-console
-    /// on top): an empty target streams the whole device, a name scopes to that app's
-    /// process. Stopping the current source lets the reconnect loop respawn with the new
-    /// scope; the source emits its own "▶︎ structured device logs (…)" marker.
-    private func restartPrimaryForTargetChange() {
-        guard isRunning, device.platform == .iosDevice else { return }
-        swappingSource = true
-        source?.stop()
+        feed.setPackage(package)
     }
 
     private func mutateFilter(_ change: (inout LogFilter) -> Void) {
@@ -498,39 +312,9 @@ final class LogSession: WorkspaceTab {
 
     // MARK: - Internals
 
-    private func startFlushLoop() {
-        flushTask = Task { [weak self] in
-            while let self, self.isRunning, !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(30))
-                self.flush()
-            }
-        }
-    }
-
-    private func flush(max: Int = 4_000) {
-        let drained = pending.drain(max: max)
-        guard !drained.isEmpty else { return }
-        // Auto-prettify detected JSON response bodies before they're stored, so the ring,
-        // re-filtering and history all see the expanded form. Gated per flush, so turning
-        // the toggle off only affects subsequent lines (already-stored lines stay as-is).
-        // An inline body splits into several entries (so the JSON is its own copyable
-        // line); each split part gets a distinct sub-seq within the slot the SeqCounter
-        // reserved for the original, keeping seq order intact for trim + persistence.
-        var batch: [LogLine]
-        if LogBodyPrettifyStore.shared.enabled {
-            batch = []
-            batch.reserveCapacity(drained.count)
-            for original in drained {
-                let parts = bodyPrettifier.transform(original)
-                for (k, p) in parts.enumerated() {
-                    var pp = p; pp.seq = original.seq &+ UInt64(k); batch.append(pp)
-                }
-            }
-        } else {
-            batch = drained
-        }
-        onPersist?(id, batch)
-
+    /// Appends a batch from the feed: ring (bounded), then the lines the tab's filter keeps.
+    private func append(_ batch: [LogLine]) {
+        guard !batch.isEmpty else { return }
         ring.append(contentsOf: batch)
         totalCount += batch.count
 
@@ -549,89 +333,13 @@ final class LogSession: WorkspaceTab {
         for line in batch where filter.matches(line, regex: compiledRegex) {
             visible.append(line)
             displayMap.append(lineCount: effectiveLineCount(line))
-            if CrashDetector.isCrash(line) {
-                crashSeqs.append(line.seq)
-                injectMarker("💥 \(CrashDetector.label(line))", critical: true)
-            }
+            if !line.isMarker, CrashDetector.isCrash(line) { crashSeqs.append(line.seq) }
         }
     }
 
-    /// Polls `pidof <package>` while a package filter is active, updating the PID
-    /// set live so app restarts keep being captured.
-    private func restartPIDPollingIfNeeded() {
-        pidTask?.cancel(); pidTask = nil
-        guard isRunning, !filter.packageLabel.isEmpty else { return }
-        let url = adbURL, serial = device.id, package = filter.packageLabel
-        let resolve: @Sendable () async -> Set<Int32>
-        switch device.platform {
-        case .android:
-            resolve = { await AndroidLogSource.resolvePIDs(adbURL: url, serial: serial, package: package) }
-        case .iosSimulator:
-            resolve = { await SimulatorLogSource.resolvePIDs(udid: serial, bundleID: package) }
-        case .iosDevice:
-            return   // physical iOS uses substring matching, no pid polling
-        }
-        pidTask = Task { [weak self] in
-            while !Task.isCancelled {
-                let resolved = await resolve()
-                guard let self, !Task.isCancelled else { return }
-
-                // Mark death / restart so it's unmissable in the log.
-                let isAlive = !resolved.isEmpty
-                if isAlive {
-                    if !self.appWasAlive && self.sawAppAlive {
-                        let pids = resolved.sorted().map(String.init).joined(separator: ", ")
-                        self.injectMarker("▶︎ \(package) restarted — pid \(pids)")
-                    }
-                    self.sawAppAlive = true
-                } else if self.appWasAlive {
-                    self.injectMarker("■ \(package) terminated")
-                }
-                self.appWasAlive = isAlive
-
-                // Accumulate; never clear. If the app is dead (resolved empty) we keep
-                // the known PIDs so its logs stay visible. New PIDs (relaunch) are added.
-                let next = Self.accumulatePIDs(self.accumulatedPids, with: resolved)
-                if next != self.accumulatedPids {
-                    self.accumulatedPids = next
-                    self.filter.pids = next
-                    self.recomputeVisible()
-                }
-                try? await Task.sleep(for: .milliseconds(1500))
-            }
-        }
-    }
-
-    /// Simulator stdout/print capture: when a bundle is targeted, launch it under a
-    /// PTY (`simctl launch --console-pty`) and fold its stdout/stderr — the only place
-    /// `print()`/`println` output appears — into this session alongside the OSLog
-    /// stream. Re-targets when the package changes; (re)launches the app each time, by
-    /// design. No-op on platforms without a stdout tap (`makeConsoleSource == nil`).
-    private func restartConsoleCaptureIfNeeded() {
-        consoleTask?.cancel(); consoleTask = nil
-        consoleSource?.stop(); consoleSource = nil
-        guard isRunning, let make = makeConsoleSource else { return }
-        let bundle = filter.packageLabel
-        guard !bundle.isEmpty, let src = make(bundle) else { return }
-        guard let stream = try? src.start() else {
-            injectMarker("✕ couldn’t launch \(bundle) for stdout/print capture")
-            return
-        }
-        consoleSource = src
-        injectMarker("▶︎ capturing stdout/print from \(bundle) (app relaunched)")
-        let buffer = pending, counter = seq
-        consoleTask = Task.detached(priority: .utility) {
-            for await line in stream {
-                var l = line; l.seq = counter.next(); buffer.append(l)
-            }
-        }
-    }
-
-    /// Accumulates an app's PIDs across restarts. An empty `resolved` (the app died /
-    /// is being reinstalled) keeps the current set, so its logs are never hidden; new
-    /// PIDs from a relaunch/reinstall are added.
+    /// Accumulates an app's PIDs across restarts (see `LogStreamEngine.accumulatePIDs`).
     nonisolated static func accumulatePIDs(_ current: Set<Int32>, with resolved: Set<Int32>) -> Set<Int32> {
-        resolved.isEmpty ? current : current.union(resolved)
+        LogStreamEngine.accumulatePIDs(current, with: resolved)
     }
 
     /// Installed apps/packages on this device, for the filter dropdown.

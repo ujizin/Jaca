@@ -8,7 +8,7 @@ enum FeatureFlags {
     /// offers only the in-process Agent. Experimental — see the Settings description.
     static let httpsDecryptionKey = "httpsDecryptionEnabled"
     static var httpsDecryptionEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: httpsDecryptionKey) }
-        set { UserDefaults.standard.set(newValue, forKey: httpsDecryptionKey) }
+        get { JacaDefaults.shared.bool(forKey: httpsDecryptionKey) }
+        set { JacaDefaults.shared.set(newValue, forKey: httpsDecryptionKey) }
     }
 }

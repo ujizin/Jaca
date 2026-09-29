@@ -20,9 +20,9 @@ enum CaptureMode: Sendable, Equatable {
 /// (`scripts/build.sh` copies `agent/out` into `Resources/`). arm64-v8a only — every dev runs
 /// Apple-Silicon, and the device + emulator share that ABI, so there's no ABI matching to do.
 enum AgentArtifacts {
-    static func soURL() -> URL? { Bundle.main.url(forResource: "libsqueezeagent", withExtension: "so") }
-    static var bootDexURL: URL? { Bundle.main.url(forResource: "squeezeagent-boot", withExtension: "dex") }
-    static var captureDexURL: URL? { Bundle.main.url(forResource: "squeezeagent-capture", withExtension: "dex") }
+    static func soURL() -> URL? { JacaBundle.app.url(forResource: "libsqueezeagent", withExtension: "so") }
+    static var bootDexURL: URL? { JacaBundle.app.url(forResource: "squeezeagent-boot", withExtension: "dex") }
+    static var captureDexURL: URL? { JacaBundle.app.url(forResource: "squeezeagent-capture", withExtension: "dex") }
 
     static var isAvailable: Bool { soURL() != nil && bootDexURL != nil && captureDexURL != nil }
 
@@ -41,7 +41,7 @@ enum AgentArtifacts {
     /// The iOS-Simulator network agent dylib, built into Resources by the "Build iOS Simulator
     /// network agent" build phase and injected via DYLD_INSERT_LIBRARIES. Bundle-only (no
     /// hardcoded source path) — the build phase always produces it when building with Xcode.
-    static var iosNetworkAgentURL: URL? { Bundle.main.url(forResource: "JacaNetAgent", withExtension: "dylib") }
+    static var iosNetworkAgentURL: URL? { JacaBundle.app.url(forResource: "JacaNetAgent", withExtension: "dylib") }
     static var iosNetworkAgentAvailable: Bool { iosNetworkAgentURL != nil }
 
     /// Shown when the iOS-Simulator agent dylib isn't bundled (it builds with the app via Xcode).
