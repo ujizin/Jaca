@@ -1,29 +1,6 @@
 import Foundation
 import Observation
 
-/// Thread-safe hand-off buffer between the background poll consumer and the main-actor flush
-/// loop (the `CloudLogEntry` analogue of `LineBuffer`).
-final class CloudEntryBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var entries: [CloudLogEntry] = []
-
-    func append(_ batch: [CloudLogEntry]) {
-        lock.lock(); entries.append(contentsOf: batch); lock.unlock()
-    }
-
-    func drain(max: Int) -> [CloudLogEntry] {
-        lock.lock(); defer { lock.unlock() }
-        if entries.count <= max {
-            let out = entries
-            entries.removeAll(keepingCapacity: true)
-            return out
-        }
-        let out = Array(entries.prefix(max))
-        entries.removeFirst(max)
-        return out
-    }
-}
-
 /// The config for a forked session: a starting query (or raw filter) + a suggested tab name.
 struct CloudSessionFork {
     var query: CloudLogQuery
@@ -31,17 +8,17 @@ struct CloudSessionFork {
     var name: String
 }
 
-/// One Cloud Logging investigation tab. Streams a project's logs via interval polling
-/// (`CloudLogPoller`), buffers entries off-main and coalesces them into the observed `visible`
-/// slice on a ~30ms timer (the same buffer→flush→ring→background-filter pipeline as
+/// One Cloud Logging investigation tab. The stream (interval polling, seq stamping, the
+/// per-session SQLite DB for SQL mode, label detection, older pages) is a `CloudFeed`: an
+/// in-process `CloudStreamEngine`, or a session in `jacad`. This type is the view: entries land in
+/// the observed `visible` slice in ~30ms batches (the same ring→background-filter pipeline as
 /// `LogSession`, so the list stays smooth under bursty logs — req 10). The **server-side** query
 /// (logName, time range, severity/text/label clauses) narrows the gcloud stream and restarts
 /// the poll on change; the **client-side** `searchText` filters the in-memory buffer instantly.
-/// Every entry is also written to a per-session SQLite DB for the SQL mode (reqs 13–14).
 @MainActor
 @Observable
 final class CloudLogSession: WorkspaceTab {
-    let id = UUID()
+    let id: UUID
     var displayName: String { didSet { onStateChanged?() } }
     let projectID: String
     /// Read for the GLOBAL per-project state (selected log name, detected label keys). Strong
@@ -65,7 +42,9 @@ final class CloudLogSession: WorkspaceTab {
 
     private(set) var isRunning = false
     private(set) var isLoading = false      // backfill query in flight
-    var statusMessage: String?
+    var statusMessage: String? {
+        didSet { if statusMessage == nil, oldValue != nil, feed.state.statusMessage != nil { feed.clearStatus() } }
+    }
 
     // MARK: Rendering pipeline (mirrors LogSession)
 
@@ -108,50 +87,64 @@ final class CloudLogSession: WorkspaceTab {
 
     private var ring: [CloudLogEntry] = []
     private let ringCap = 500_000
-    private let maxPerFlush = 4_000
     private var recomputeToken = 0
 
     // MARK: Backward pagination (load older logs on scroll-up, while still polling new ones)
 
-    /// Live entries are stamped from a high base so older pages can be assigned strictly-lower
-    /// seqs (the ring stays sorted ascending = chronological), with room to spare under the cap.
-    static let forwardSeqBase: UInt64 = 1 << 40
-    private static let seqStride: UInt64 = 8
-    private let olderPageSize = 1_000
+    /// Live entries are stamped from a high base so older pages get strictly-lower seqs.
+    static let forwardSeqBase: UInt64 = CloudStreamEngine.forwardSeqBase
     /// A page of older logs is being fetched.
     private(set) var olderLoading = false
     /// Whether older logs might still exist (false once a short/empty page comes back).
     private(set) var hasMoreOlder = true
-    /// Lowest seq assigned so far — the next older page is stamped below this.
-    private var oldestSeq = CloudLogSession.forwardSeqBase
-    /// Every loaded insertId, so older pages don't re-add an entry already shown (live or older).
-    private var knownInsertIds = Set<String>()
     /// Display rows prepended by "load older" — the table scrolls down by this delta to stay put.
     private(set) var prependedDisplayRows = 0
 
-    private let pending = CloudEntryBuffer()
-    private let seq = SeqCounter(start: CloudLogSession.forwardSeqBase)
-    private var consumeTask: Task<Void, Never>?
-    private var flushTask: Task<Void, Never>?
-    /// Holding the stream keeps the poller alive; dropping/cancelling it stops the poll.
-    private var pollStream: AsyncStream<CloudPollEvent>?
-
-    private var database: CloudLogDatabase?
+    private let feed: CloudFeed
+    private var hasData = false
 
     init(
+        id: UUID = UUID(),
         projectID: String,
         registry: CloudLoggingRegistry,
         displayName: String? = nil,
         query: CloudLogQuery = CloudLogQuery(),
         timeRange: CloudTimeRange = .last(minutes: 15),
-        rawFilter: String? = nil
+        rawFilter: String? = nil,
+        autoStart: Bool = false
     ) {
+        self.id = id
         self.projectID = projectID
         self.registry = registry
         self.query = query
         self.timeRange = timeRange
         self.rawFilter = rawFilter
         self.displayName = displayName ?? (registry.project(projectID)?.title ?? projectID)
+        let config = CloudStreamConfig(projectID: projectID, logName: registry.project(projectID)?.selectedLogName,
+                                       query: query, timeRange: timeRange, rawFilter: rawFilter)
+        feed = registry.makeFeed(id: id, config: config, autoStart: autoStart)
+        feed.onEntries = { [weak self] in self?.append($0) }
+        feed.onOlder = { [weak self] in self?.prepend($0) }
+        feed.onState = { [weak self] in self?.apply($0) }
+        feed.onReset = { [weak self] in self?.clear() }
+        apply(feed.state)
+    }
+
+    /// The server-side query this tab streams right now.
+    private var streamConfig: CloudStreamConfig {
+        CloudStreamConfig(projectID: projectID, logName: selectedLogName, query: query,
+                          timeRange: timeRange, rawFilter: rawFilter)
+    }
+
+    private func apply(_ state: CloudStreamState) {
+        let runningChanged = isRunning != state.isRunning
+        isRunning = state.isRunning
+        isLoading = state.isLoading
+        if statusMessage != state.statusMessage { statusMessage = state.statusMessage }
+        olderLoading = state.olderLoading
+        hasMoreOlder = state.hasMoreOlder
+        hasData = state.hasData
+        if runningChanged { onStateChanged?() }
     }
 
     // MARK: - Derived (read from the registry, reactively)
@@ -200,39 +193,9 @@ final class CloudLogSession: WorkspaceTab {
 
     func toggle() { isRunning ? stop() : start() }
 
-    func start() {
-        guard !isRunning else { return }
-        guard let cli = registry.cli else {
-            statusMessage = "gcloud isn't installed."
-            return
-        }
-        isRunning = true
-        isLoading = true
-        statusMessage = nil
-        if database == nil { database = CloudLogDatabase(sessionID: id) }
+    func start() { feed.start(streamConfig) }
 
-        let logName = selectedLogName
-        let poller = CloudLogPoller(
-            cli: cli, project: projectID, logName: logName, query: query,
-            timeRange: timeRange, rawFilter: rawFilter
-        )
-        let stream = poller.stream()
-        pollStream = stream
-        startFlushLoop()
-        consumeTask = Task { [weak self] in await self?.consume(stream) }
-        onStateChanged?()
-    }
-
-    func stop() {
-        guard isRunning else { return }
-        isRunning = false
-        isLoading = false
-        consumeTask?.cancel(); consumeTask = nil    // cancels the poller via the stream's onTermination
-        flushTask?.cancel(); flushTask = nil
-        pollStream = nil
-        flush(max: .max)                              // drain anything left
-        onStateChanged?()
-    }
+    func stop() { feed.stop() }
 
     /// Re-applies the server-side query/time/logName by restarting the poll (these narrow the
     /// gcloud-side stream, so they can't be applied to the already-fetched buffer). No-op when
@@ -258,10 +221,7 @@ final class CloudLogSession: WorkspaceTab {
         droppedCount = 0
         droppedDisplayRows = 0
         prependedDisplayRows = 0
-        oldestSeq = Self.forwardSeqBase
-        knownInsertIds.removeAll(keepingCapacity: true)
-        hasMoreOlder = true
-        olderLoading = false
+        feed.resetScrollback()
         selectedEntry = nil
         listEpoch &+= 1
     }
@@ -273,113 +233,40 @@ final class CloudLogSession: WorkspaceTab {
     /// call repeatedly — it no-ops while a page is in flight, when there's nothing older, or in
     /// SQL mode (whose list is query-driven).
     func loadOlder() {
-        guard viewMode == .logs, !olderLoading, hasMoreOlder,
-              let oldest = ring.first, let cli = registry.cli else { return }
-        olderLoading = true
-        let cursor = oldest.timestamp
-        let logName = selectedLogName, q = query, raw = rawFilter, proj = projectID, size = olderPageSize
-        Task { [weak self] in
-            let filter = CloudFilter.build(
-                logName: logName, time: "timestamp<=\(CloudTimestamp.quote(cursor))", query: q, rawFilter: raw)
-            let page = try? await cli.read(project: proj, filter: filter, order: "desc", limit: size)
-            guard let self else { return }
-            self.appendOlder(page, requested: size)
-        }
+        guard viewMode == .logs, !olderLoading, hasMoreOlder, !ring.isEmpty else { return }
+        feed.loadOlder()
     }
 
-    /// Integrates a fetched older page (newest-first from gcloud `order=desc`): dedup against
-    /// already-loaded ids, stamp strictly-lower seqs (oldest-first) so the ring stays chronological,
-    /// persist, and prepend to the list (compensating the viewport via `prependedDisplayRows`).
-    private func appendOlder(_ page: [CloudLogEntry]?, requested: Int) {
-        olderLoading = false
-        guard let page else { return }                       // transient error → leave hasMoreOlder, user can retry
-        if page.count < requested { hasMoreOlder = false }   // gcloud returned everything it had
-        // Dedup, keep newest-first, then flip to oldest-first for prepending.
-        let freshNewestFirst = page.filter { $0.insertId.isEmpty || !knownInsertIds.contains($0.insertId) }
-        guard !freshNewestFirst.isEmpty else { return }
-        let assigned = Self.assignOlderSeqs(Array(freshNewestFirst.reversed()), below: oldestSeq, stride: Self.seqStride)
-        oldestSeq = assigned.first?.seq ?? oldestSeq
-        for e in assigned where !e.insertId.isEmpty { knownInsertIds.insert(e.insertId) }
-
-        if let database { Task { await database.appendEntries(assigned) } }
-        registry.recordLabelKeys(LabelDetector.keys(in: assigned), project: projectID, logName: selectedLogName ?? "")
-
+    /// Prepends an older page (oldest-first, deduped, seqs below everything loaded), compensating
+    /// the viewport via `prependedDisplayRows`.
+    private func prepend(_ assigned: [CloudLogEntry]) {
+        guard !assigned.isEmpty else { return }
         ring.insert(contentsOf: assigned, at: 0)
         totalCount += assigned.count
-
         let visibleNew = assigned.filter { passes($0) }
-        guard !visibleNew.isEmpty else { return }
+        guard viewMode == .logs, !visibleNew.isEmpty else { return }
         visible.insert(contentsOf: visibleNew, at: 0)
         prependedDisplayRows += displayMap.prepend(lineCounts: visibleNew.map { LogTextLines.count($0.message) })
     }
 
-    /// Assigns strictly-decreasing seqs to an oldest-first page so it slots just below `oldestSeq`
-    /// (keeps the ring sorted ascending = chronological). Pure → unit-tested.
+    /// Assigns strictly-decreasing seqs to an oldest-first page (see `CloudStreamEngine`).
     nonisolated static func assignOlderSeqs(_ oldestFirst: [CloudLogEntry], below oldestSeq: UInt64, stride: UInt64) -> [CloudLogEntry] {
-        let k = UInt64(oldestFirst.count)
-        return oldestFirst.enumerated().map { i, entry in
-            var e = entry
-            e.seq = oldestSeq - (k - UInt64(i)) * stride
-            return e
-        }
+        CloudStreamEngine.assignOlderSeqs(oldestFirst, below: oldestSeq, stride: stride)
     }
 
     /// Stops, then deletes the per-session SQLite file. Called by AppModel on tab close.
     func dispose() {
         sqlRefreshTask?.cancel(); sqlRefreshTask = nil
-        stop()
-        let db = database
-        database = nil
-        Task { await db?.deleteFile() }
+        feed.dispose()
     }
 
     // MARK: - Stream consumption
 
-    private func consume(_ stream: AsyncStream<CloudPollEvent>) async {
-        let buffer = pending, counter = seq
-        for await event in stream {
-            switch event {
-            case .batch(let entries):
-                var stamped = entries
-                for i in stamped.indices { stamped[i].seq = counter.next() }
-                buffer.append(stamped)
-            case .caughtUp:
-                isLoading = false
-            case .error(let error):
-                statusMessage = error.errorDescription
-                isLoading = false
-                if case .notAuthenticated = error { registry.markUnauthenticated() }
-            }
-        }
-        isLoading = false
-    }
-
-    private func startFlushLoop() {
-        flushTask = Task { [weak self] in
-            while let self, self.isRunning, !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(30))
-                self.flush()
-            }
-        }
-    }
-
-    private func flush(max: Int = 4_000) {
-        let drained = pending.drain(max: max)
+    /// Appends a batch from the feed to the ring (bounded) and, in Logs mode, to the list.
+    private func append(_ drained: [CloudLogEntry]) {
         guard !drained.isEmpty else { return }
-
-        // Persist to the per-session SQLite (off main) for the SQL mode.
-        if let database {
-            Task { await database.appendEntries(drained) }
-        }
-        // Auto-detect label keys → registry (cached globally per project + log name, req 9.3).
-        // Keyed by the selected log name, or "" (project-wide) when none is selected, so the
-        // labels system populates regardless.
-        registry.recordLabelKeys(LabelDetector.keys(in: drained),
-                                 project: projectID, logName: selectedLogName ?? "")
-
         ring.append(contentsOf: drained)
         totalCount += drained.count
-        for e in drained where !e.insertId.isEmpty { knownInsertIds.insert(e.insertId) }
 
         if ring.count > ringCap {
             let overflow = ring.count - ringCap
@@ -615,14 +502,14 @@ final class CloudLogSession: WorkspaceTab {
     /// per-label example-count rules (default: one), so the Ask-Claude SQL assistant learns each
     /// label's real format without flooding the prompt. Empty until logs are captured.
     func labelSamples() async -> [CloudSqlLabelSample] {
-        guard let database, let rs = try? await database.query(CloudSqlAssistant.labelSampleSQL) else { return [] }
+        guard hasData, let rs = try? await feed.query(CloudSqlAssistant.labelSampleSQL) else { return [] }
         let rules = registry.labelExampleRules(project: projectID, logName: selectedLogName ?? "")
         return CloudSqlAssistant.samples(from: rs.rows, rules: rules)
     }
 
     /// Distinct value count per label key (for the example-count modal). Empty until logs exist.
     func labelCardinalities() async -> [CloudLabelCardinality] {
-        guard let database, let rs = try? await database.query(CloudSqlAssistant.labelCardinalitySQL) else { return [] }
+        guard hasData, let rs = try? await feed.query(CloudSqlAssistant.labelCardinalitySQL) else { return [] }
         return CloudSqlAssistant.cardinalities(from: rs.rows)
     }
 
@@ -653,10 +540,11 @@ final class CloudLogSession: WorkspaceTab {
     /// (from the 2s auto-refresh) stay quiet — no spinner, no clearing errors. Overlapping runs are
     /// coalesced so the manual Run can never stick on "Running…".
     func runSQL(live: Bool = false) {
-        guard let database else {
+        guard hasData else {
             if !live { sqlError = "No data captured yet — start the session first."; sqlRunning = false }
             return
         }
+        let feed = self.feed
         let sql = sqlText
         guard DatabaseService.isReadOnly(sql) else {
             if !live { sqlError = "Only read-only queries are allowed (SELECT / WITH / PRAGMA / EXPLAIN)."; sqlRunning = false }
@@ -674,7 +562,7 @@ final class CloudLogSession: WorkspaceTab {
         Task { [weak self] in   // inherits MainActor isolation; query hops to the DB actor and back
             defer { self?.finishSqlRun() }
             do {
-                let rs = try await database.query(sql)   // writer connection → sees live inserts
+                let rs = try await feed.query(sql)   // writer connection → sees live inserts
                 guard let self else { return }
                 self.applySqlResult(rs)
             } catch {

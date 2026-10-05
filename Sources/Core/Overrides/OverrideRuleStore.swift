@@ -14,8 +14,13 @@ import Foundation
 /// rather than wiping the library.
 struct OverrideRuleStore: Sendable {
 
+    /// `JACA_OVERRIDES_DIR` moves the library (tests use a temporary one so they never touch
+    /// the user's rules).
     static var directory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        if let override = ProcessInfo.processInfo.environment["JACA_OVERRIDES_DIR"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".jaca/network-overrides", isDirectory: true)
     }
 
@@ -75,7 +80,12 @@ struct OverrideRuleStore: Sendable {
 
     /// Deletes blobs no live rule refers to. Called after every save, so deleting a rule
     /// reclaims its payload without a separate cleanup pass.
-    static func collectGarbage(keeping rules: [OverrideRule]) {
+    ///
+    /// Blobs younger than `gracePeriod` are kept even when unreferenced: `makeBodyRef` writes the
+    /// blob when a rule is seeded, before the rule is saved, so a save of *another* rule while
+    /// the editor is open (or from the other process, app or `jacad`) would otherwise delete it.
+    static func collectGarbage(keeping rules: [OverrideRule], now: Date = Date(),
+                               gracePeriod: TimeInterval = 24 * 60 * 60) {
         let fm = FileManager.default
         guard let existing = try? fm.contentsOfDirectory(atPath: bodiesDirectory.path) else { return }
         var live: Set<String> = []
@@ -85,7 +95,10 @@ struct OverrideRuleStore: Sendable {
             }
         }
         for file in existing where !live.contains(file) {
-            try? fm.removeItem(at: bodiesDirectory.appendingPathComponent(file))
+            let url = bodiesDirectory.appendingPathComponent(file)
+            let modified = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? .distantPast
+            guard now.timeIntervalSince(modified) >= gracePeriod else { continue }
+            try? fm.removeItem(at: url)
         }
     }
 

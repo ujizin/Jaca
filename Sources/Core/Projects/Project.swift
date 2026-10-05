@@ -109,6 +109,64 @@ struct ProjectNode: Identifiable, Equatable {
     var hasChildren: Bool { !children.isEmpty }
 }
 
+// MARK: - Tolerant decoding
+
+// These models are persisted (`ProjectsCache`) and cross the daemon socket, so a missing key
+// (an older cache file, an older daemon) must decode to its default, never fail the record.
+// Only the path is required.
+
+extension Project {
+    private enum CodingKeys: String, CodingKey {
+        case path, exists, isGitRepo, source, sessionCount, lastActive, checkouts
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            path: try c.decode(String.self, forKey: .path),
+            exists: try c.decodeIfPresent(Bool.self, forKey: .exists) ?? true,
+            isGitRepo: try c.decodeIfPresent(Bool.self, forKey: .isGitRepo) ?? false,
+            source: (try? c.decodeIfPresent(ProjectSource.self, forKey: .source)) ?? .user,
+            sessionCount: try c.decodeIfPresent(Int.self, forKey: .sessionCount) ?? 0,
+            lastActive: try c.decodeIfPresent(Date.self, forKey: .lastActive),
+            checkouts: CloudPersistence.decodeArrayField(ProjectCheckout.self, in: c, forKey: .checkouts)
+        )
+    }
+}
+
+extension ProjectCheckout {
+    private enum CodingKeys: String, CodingKey {
+        case path, isMain, branch, base, age, exists, orphan, orphanKind
+        case isClaudeManaged, hasClaudeSessions, claudeSessionCount, claudeLastActive, lastCommit
+        case sizeMB, cacheMB, sizeComputed, cleaning, dropped, removing
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            path: try c.decode(String.self, forKey: .path),
+            isMain: try c.decodeIfPresent(Bool.self, forKey: .isMain) ?? false,
+            branch: try c.decodeIfPresent(String.self, forKey: .branch),
+            base: try c.decodeIfPresent(String.self, forKey: .base),
+            age: try c.decodeIfPresent(String.self, forKey: .age),
+            exists: try c.decodeIfPresent(Bool.self, forKey: .exists) ?? true,
+            orphan: try c.decodeIfPresent(Bool.self, forKey: .orphan) ?? false,
+            orphanKind: try? c.decodeIfPresent(OrphanKind.self, forKey: .orphanKind),
+            isClaudeManaged: try c.decodeIfPresent(Bool.self, forKey: .isClaudeManaged) ?? false,
+            hasClaudeSessions: try c.decodeIfPresent(Bool.self, forKey: .hasClaudeSessions) ?? false,
+            claudeSessionCount: try c.decodeIfPresent(Int.self, forKey: .claudeSessionCount) ?? 0,
+            claudeLastActive: try c.decodeIfPresent(Date.self, forKey: .claudeLastActive),
+            lastCommit: try c.decodeIfPresent(Date.self, forKey: .lastCommit),
+            sizeMB: try c.decodeIfPresent(Int.self, forKey: .sizeMB) ?? 0,
+            cacheMB: try c.decodeIfPresent(Int.self, forKey: .cacheMB) ?? 0,
+            sizeComputed: try c.decodeIfPresent(Bool.self, forKey: .sizeComputed) ?? false,
+            cleaning: try c.decodeIfPresent(Bool.self, forKey: .cleaning) ?? false,
+            dropped: try c.decodeIfPresent(Bool.self, forKey: .dropped) ?? false,
+            removing: try c.decodeIfPresent(Bool.self, forKey: .removing) ?? false
+        )
+    }
+}
+
 // MARK: - Relative-age formatting (UI)
 
 private let projectRelativeFormatter: RelativeDateTimeFormatter = {
