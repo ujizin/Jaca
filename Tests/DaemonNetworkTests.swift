@@ -78,8 +78,7 @@ final class DaemonNetworkTests: XCTestCase {
     }
 
     func test_agentCapture_onMissingDevice_reportsThroughTheDaemon() async throws {
-        let adb = try XCTUnwrap(AndroidToolchain.adbURL(), "adb not found")
-        _ = adb
+        guard let adb = AndroidToolchain.adbURL() else { throw XCTSkip("needs adb") }
         let daemon = try TestDaemon()
         let captures = NetworkArea.Captures(bus: daemon.server.bus, bodyCache: nil)
         NetworkArea.install(on: daemon.server, captures: captures)

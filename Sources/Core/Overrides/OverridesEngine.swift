@@ -58,6 +58,7 @@ final class OverridesEngine {
         // Synchronous so the first frame already has the user's rules — the cache-first rule.
         state.rules = OverrideRuleStore.load()
         state.masterEnabled = FeatureFlags.overridesMasterEnabled
+        diskStamp = Self.diskModified
         JacaLog.info("override",
             "loaded \(state.rules.count) rule(s) from \(OverrideRuleStore.rulesURL.path); master=\(state.masterEnabled)")
         republish()
@@ -66,6 +67,7 @@ final class OverridesEngine {
     /// Re-reads the library from disk: the app edited it in-process while network capture ran
     /// there, and hands the runtime back to this engine.
     func reload() {
+        diskStamp = Self.diskModified
         state.rules = OverrideRuleStore.load()
         state.masterEnabled = FeatureFlags.overridesMasterEnabled
         republish()
@@ -147,6 +149,7 @@ final class OverridesEngine {
     // MARK: - Mutations
 
     func setMasterEnabled(_ enabled: Bool) {
+        syncFromDisk()
         guard enabled != state.masterEnabled else { return }
         state.masterEnabled = enabled
         FeatureFlags.overridesMasterEnabled = enabled
@@ -156,6 +159,7 @@ final class OverridesEngine {
     /// Saves a rule whether or not it already exists. A new rule with no divert hosts gets them
     /// derived from its matcher; its `enabled` is left as the editor set it.
     func save(_ rule: OverrideRule) {
+        syncFromDisk()
         if let index = state.rules.firstIndex(where: { $0.id == rule.id }) {
             state.rules[index] = rule
         } else {
@@ -169,6 +173,7 @@ final class OverridesEngine {
     }
 
     func remove(_ id: UUID) {
+        syncFromDisk()
         state.rules.removeAll { $0.id == id }
         state.hitCounts.removeValue(forKey: id.uuidString)
         state.lastHitAt.removeValue(forKey: id.uuidString)
@@ -176,12 +181,14 @@ final class OverridesEngine {
     }
 
     func setEnabled(_ enabled: Bool, for id: UUID) {
+        syncFromDisk()
         guard let index = state.rules.firstIndex(where: { $0.id == id }) else { return }
         state.rules[index].enabled = enabled
         persistAndRepublish()
     }
 
     func duplicate(_ id: UUID) {
+        syncFromDisk()
         guard let source = state.rules.first(where: { $0.id == id }) else { return }
         let copy = OverrideRule(id: UUID(),
                                 name: source.name.isEmpty ? "Copy" : "\(source.name) copy",
@@ -194,6 +201,7 @@ final class OverridesEngine {
 
     /// Precedence is list order, so moving a rule up is how the user resolves shadowing.
     func move(_ id: UUID, by offset: Int) {
+        syncFromDisk()
         guard let index = state.rules.firstIndex(where: { $0.id == id }) else { return }
         let target = index + offset
         guard state.rules.indices.contains(target) else { return }
@@ -222,7 +230,26 @@ final class OverridesEngine {
         state.lastActivity = "\(now.formatted(date: .omitted, time: .standard)) · applied \(name ?? "a rule")"
     }
 
+    /// Modification date of `rules.json` when this engine last read or wrote it.
+    private var diskStamp: Date?
+
+    private static var diskModified: Date? {
+        try? FileManager.default.attributesOfItem(atPath: OverrideRuleStore.rulesURL.path)[.modificationDate] as? Date
+    }
+
+    /// Re-reads the library when another process wrote it since (the app while network capture
+    /// ran in-process, or `jacad`), so this engine never saves a stale list over newer edits.
+    private func syncFromDisk() {
+        let modified = Self.diskModified
+        guard modified != diskStamp else { return }
+        diskStamp = modified
+        state.rules = OverrideRuleStore.load()
+        state.masterEnabled = FeatureFlags.overridesMasterEnabled
+        republish()
+    }
+
     private func persistAndRepublish() {
+        defer { diskStamp = Self.diskModified }
         let ok = OverrideRuleStore.save(state.rules)
         JacaLog.info("override", "saved \(state.rules.count) rule(s) -> \(ok ? "ok" : "FAILED")")
         republish()

@@ -6,12 +6,18 @@ import Foundation
 @MainActor
 final class DaemonCommandQueue {
     private var tail: Task<Void, Never>?
+    private var pending = 0
+
+    /// Whether any command hasn't finished yet.
+    var hasPending: Bool { pending > 0 }
 
     func enqueue(_ operation: @escaping @MainActor () async -> Void) {
         let previous = tail
-        tail = Task { @MainActor in
+        pending += 1
+        tail = Task { @MainActor [weak self] in
             await previous?.value
             await operation()
+            self?.pending -= 1
         }
     }
 }

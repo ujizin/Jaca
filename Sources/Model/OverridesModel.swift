@@ -72,7 +72,8 @@ final class OverridesModel {
         } else {
             daemonWatch?.cancel()
             daemonWatch = nil
-            startLocalEngine()
+            // After any edit still queued for the daemon, so the local engine reads it from disk.
+            commands.enqueue { [weak self] in self?.startLocalEngine() }
         }
     }
 
@@ -95,9 +96,13 @@ final class OverridesModel {
     private func startLocalEngine() -> OverridesEngine {
         if let localEngine { return localEngine }
         let engine = OverridesEngine()
-        engine.onChange = { [weak self] in self?.apply($0) }
         localEngine = engine
-        apply(engine.state)
+        // Mirrored only while it owns the runtime; `services()` in daemon mode must not let it
+        // overwrite the state mirrored from jacad.
+        if !usesDaemon {
+            engine.onChange = { [weak self] in self?.apply($0) }
+            apply(engine.state)
+        }
         return engine
     }
 
@@ -120,14 +125,39 @@ final class OverridesModel {
         }
     }
 
-    /// Runs a mutation on the in-process engine, or sends it to the daemon's (in order).
+    /// Runs a mutation on the in-process engine, or sends it to the daemon's (in order). When the
+    /// daemon can't be reached the edit is applied in-process instead of being lost; both engines
+    /// re-read `rules.json` before mutating, so neither later writes a stale list over it.
     private func send<P: Encodable & Sendable>(_ method: String, _ params: P,
                                                 local: @escaping (OverridesEngine) -> Void) {
         guard usesDaemon else {
-            local(startLocalEngine())
+            // Just switched from the daemon: let edits already queued for it land first.
+            if localEngine == nil, commands.hasPending {
+                commands.enqueue { [weak self] in
+                    guard let self else { return }
+                    local(self.startLocalEngine())
+                }
+            } else {
+                local(startLocalEngine())
+            }
             return
         }
-        commands.enqueue { [daemon] in let _: RPCEmpty? = await daemon.call(method, params) }
+        commands.enqueue { [weak self, daemon] in
+            do {
+                if try await daemon.request(method, params, as: RPCEmpty.self) != nil { return }
+            } catch {
+                DaemonLog.error("\(method) failed in jacad: \(error.localizedDescription)")
+                return
+            }
+            guard let self else { return }
+            DaemonLog.info("\(method): jacad unreachable, applying in-process")
+            local(OverridesEngine())
+            // The daemon re-reads the file on its next mutation; this mirror re-reads it now.
+            var state = OverridesState()
+            state.rules = OverrideRuleStore.load()
+            state.masterEnabled = FeatureFlags.overridesMasterEnabled
+            self.apply(state)
+        }
     }
 
     /// Removes tunnels stranded by a previous run that died without cleaning up. In daemon mode

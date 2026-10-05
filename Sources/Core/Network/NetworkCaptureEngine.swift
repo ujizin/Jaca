@@ -77,7 +77,8 @@ protocol NetworkFeed: AnyObject {
     func clearProxyNeedsSetup()
     /// Forget captured transactions (the tab cleared its list).
     func clear()
-    func bodies(for id: UUID) async -> (req: Data?, resp: Data?)
+    /// nil when the bodies can't be had right now (the daemon is gone, or the capture closed).
+    func bodies(for id: UUID) async -> (req: Data?, resp: Data?)?
     /// The whole capture as HAR, from the side that holds the bodies.
     func harData() async -> Data?
     /// Restarts the running source so it picks up a changed override configuration (the
@@ -225,7 +226,7 @@ final class NetworkCaptureEngine: NetworkFeed, CaptureSink {
 
     func clearProxyNeedsSetup() { state.proxyNeedsSetup = false }
     func clear() {}
-    func bodies(for id: UUID) async -> (req: Data?, resp: Data?) { (nil, nil) }
+    func bodies(for id: UUID) async -> (req: Data?, resp: Data?)? { nil }   // in-process the tab holds them
     func harData() async -> Data? { HARExport.data(from: harSource?() ?? []) }
 
     func close() {
@@ -241,7 +242,7 @@ final class NetworkCaptureEngine: NetworkFeed, CaptureSink {
         // fabricated override never touched TLS, and the agent never uses the CA.
         let mode = currentDescriptor?.kind ?? .proxy
         if transaction.scheme == "https", transaction.error == nil, mode.decryptsWithOurCA,
-           transaction.overriddenByRuleID == nil, !transaction.wasOverridden {
+           !transaction.wasOverridden {
             state.caReady = true
             state.proxyNeedsSetup = false
         }

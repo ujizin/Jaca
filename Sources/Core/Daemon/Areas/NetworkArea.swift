@@ -98,6 +98,9 @@ enum NetworkArea {
         private func store(_ txn: NetworkTransaction, in hosted: Hosted) {
             if let i = hosted.indexByID[txn.id] {
                 hosted.transactions[i] = txn
+                // An update to a row already out of the in-memory window brings bodies back;
+                // spill them again rather than holding them for the life of the capture.
+                if i < hosted.transactions.count - bodiesInMemory { spill(at: i, in: hosted) }
             } else {
                 hosted.indexByID[txn.id] = hosted.transactions.count
                 hosted.transactions.append(txn)
@@ -112,12 +115,14 @@ enum NetworkArea {
             let txn = hosted.transactions[index]
             guard !txn.bodiesEvicted, txn.requestBody != nil || txn.responseBody != nil, let cache = bodyCache else { return }
             let id = txn.id, req = txn.requestBody, resp = txn.responseBody
-            hosted.transactions[index].bodiesEvicted = true
             Task { [weak hosted] in
                 await cache.save(id, req: req, resp: resp)
                 await MainActor.run {
                     guard let hosted, let i = hosted.indexByID[id] else { return }
-                    // Marked evicted here too: an update may have replaced the entry meanwhile.
+                    // Only the bodies that were saved: an update that landed during the save
+                    // brought new ones, which stay (the next update or window pass spills them).
+                    guard hosted.transactions[i].requestBody == req,
+                          hosted.transactions[i].responseBody == resp else { return }
                     hosted.transactions[i].requestBody = nil
                     hosted.transactions[i].responseBody = nil
                     hosted.transactions[i].bodiesEvicted = true
@@ -145,8 +150,10 @@ enum NetworkArea {
             sessions[id]?.transactions.map { $0.strippingBodies() } ?? []
         }
 
-        func bodies(_ p: BodyParams) async -> Bodies {
-            guard let hosted = sessions[p.id], let i = hosted.indexByID[p.transaction] else { return Bodies() }
+        /// nil when the capture or the transaction is unknown (closed, cleared), so the client can
+        /// tell "unavailable" from an empty body.
+        func bodies(_ p: BodyParams) async -> Bodies? {
+            guard let hosted = sessions[p.id], let i = hosted.indexByID[p.transaction] else { return nil }
             let txn = hosted.transactions[i]
             if txn.requestBody != nil || txn.responseBody != nil {
                 return Bodies(request: txn.requestBody, response: txn.responseBody)
@@ -167,6 +174,8 @@ enum NetworkArea {
             guard let hosted = sessions[id] else { return }
             hosted.transactions.removeAll()
             hosted.indexByID.removeAll()
+            hosted.outgoing.removeAll()          // queued upserts would bring cleared rows back
+            hosted.outgoingOrder.removeAll()
         }
 
         func close(_ id: UUID) -> Bool {
