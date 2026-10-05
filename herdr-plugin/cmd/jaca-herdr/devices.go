@@ -93,6 +93,8 @@ type devicesPane struct {
 	session  string
 	streamOf device
 	lines    []logLine
+	lastSeq  uint64 // seq of the newest line in lines; valid when hasSeq
+	hasSeq   bool
 	state    logState
 	minLevel int
 	follow   bool
@@ -128,16 +130,16 @@ func runDevicesPane() int {
 
 	p := &devicesPane{c: c, follow: true}
 	defer p.closeSession()
-	dirty := true
+	// Keys and resizes redraw at once; events only mark the pane dirty and the tick draws, so a
+	// chatty device costs one frame per tick rather than one per batch.
+	p.draw()
+	dirty := false
 	for {
-		if dirty {
-			p.draw()
-			dirty = false
-		}
 		select {
 		case ev := <-c.Events:
 			p.handleEvent(ev)
 			dirty = true
+			continue
 		case <-c.Closed:
 			restore()
 			fmt.Fprintln(os.Stderr, "jaca: jacad closed the connection")
@@ -149,11 +151,15 @@ func runDevicesPane() int {
 			if quit := p.handleKey(k); quit {
 				return 0
 			}
-			dirty = true
 		case <-resize:
-			dirty = true
+			refreshTermSize()
 		case <-tick.C:
+			if !dirty {
+				continue
+			}
 		}
+		p.draw()
+		dirty = false
 	}
 }
 
@@ -162,21 +168,84 @@ func (p *devicesPane) handleEvent(ev event) {
 	case ev.Topic == devicesTopic:
 		var list []device
 		if json.Unmarshal(ev.Data, &list) == nil {
-			p.devices, p.loaded = list, true
-			if p.selected >= len(list) {
-				p.selected = max(0, len(list)-1)
+			p.setDevices(list)
+		}
+	case ev.Topic == "events.dropped":
+		var note droppedNote
+		if json.Unmarshal(ev.Data, &note) != nil {
+			return
+		}
+		switch {
+		case note.Topic == devicesTopic:
+			// The skipped update may have been the latest list: fetch it.
+			var list []device
+			if p.c.Call("devices.list", nil, &list) == nil {
+				p.setDevices(list)
+			}
+		case p.session != "" && note.Topic == "logs.lines."+p.session:
+			p.backfill()
+		case p.session != "" && note.Topic == "logs.state."+p.session:
+			var sessions []struct {
+				ID    string   `json:"id"`
+				State logState `json:"state"`
+			}
+			if p.c.Call("logs.list", nil, &sessions) == nil {
+				for _, s := range sessions {
+					if s.ID == p.session {
+						p.state = s.State
+					}
+				}
 			}
 		}
 	case p.session != "" && ev.Topic == "logs.lines."+p.session:
 		var batch []logLine
 		if json.Unmarshal(ev.Data, &batch) == nil {
-			p.lines = append(p.lines, batch...)
-			if len(p.lines) > maxLines {
-				p.lines = p.lines[len(p.lines)-maxLines:]
-			}
+			p.appendLines(batch)
 		}
 	case p.session != "" && ev.Topic == "logs.state."+p.session:
-		_ = json.Unmarshal(ev.Data, &p.state)
+		var st logState
+		if json.Unmarshal(ev.Data, &st) == nil {
+			p.state = st
+		}
+	}
+}
+
+func (p *devicesPane) setDevices(list []device) {
+	p.devices, p.loaded = list, true
+	p.selected = clampIndex(p.selected, len(list))
+}
+
+// clampIndex keeps a selection inside 0..<n (0 for an empty list).
+func clampIndex(i, n int) int {
+	return max(0, min(i, n-1))
+}
+
+// appendLines adds lines newer than the last one held. Seqs grow but skip values (one line can
+// split into sub-seqs), so they order lines without revealing gaps; gaps are reported by
+// events.dropped and filled by backfill.
+func (p *devicesPane) appendLines(batch []logLine) {
+	for _, l := range batch {
+		if p.hasSeq && l.Seq <= p.lastSeq {
+			continue
+		}
+		p.lines = append(p.lines, l)
+		p.lastSeq, p.hasSeq = l.Seq, true
+	}
+	if len(p.lines) > maxLines {
+		p.lines = append([]logLine(nil), p.lines[len(p.lines)-maxLines:]...)
+	}
+}
+
+// backfill fetches the session's lines after the newest one held (all of the daemon's replay
+// when none is held yet). Live batches that overlap it are skipped by appendLines.
+func (p *devicesPane) backfill() {
+	params := map[string]any{"id": p.session, "limit": maxLines}
+	if p.hasSeq {
+		params["afterSeq"] = p.lastSeq
+	}
+	var lines []logLine
+	if p.c.Call("logs.range", params, &lines) == nil {
+		p.appendLines(lines)
 	}
 }
 
@@ -190,19 +259,19 @@ func (p *devicesPane) handleKey(k []byte) bool {
 		}
 	case isUp(k):
 		if p.session == "" {
-			p.selected = max(0, p.selected-1)
+			p.selected = clampIndex(p.selected-1, len(p.devices))
 		} else {
 			p.follow = false
 			p.offset++
 		}
 	case isDown(k):
 		if p.session == "" {
-			p.selected = min(len(p.devices)-1, p.selected+1)
+			p.selected = clampIndex(p.selected+1, len(p.devices))
 		} else if p.offset > 0 {
 			p.offset--
 		}
 	case len(k) == 1 && (k[0] == '\r' || k[0] == '\n'):
-		if p.session == "" && len(p.devices) > 0 {
+		if p.session == "" && p.selected >= 0 && p.selected < len(p.devices) {
 			p.openSession(p.devices[p.selected])
 		}
 	case len(k) == 1 && k[0] == ' ' && p.session != "":
@@ -227,8 +296,12 @@ func (p *devicesPane) openSession(d device) {
 		return
 	}
 	p.session, p.streamOf = info.ID, d
-	p.lines, p.follow, p.offset = nil, true, 0
+	p.lines, p.lastSeq, p.hasSeq, p.follow, p.offset = nil, 0, false, true, 0
+	p.state = logState{}
 	_ = p.c.Subscribe("logs.lines."+info.ID, "logs.state."+info.ID)
+	// Lines published between logs.open and the subscribe never reach this connection; the
+	// daemon's replay has them.
+	p.backfill()
 }
 
 func (p *devicesPane) closeSession() {
@@ -294,6 +367,7 @@ func (p *devicesPane) draw() {
 	if p.state.StatusMessage != nil {
 		room--
 	}
+	room = max(1, room)
 	end := len(visible) - p.offset
 	if end < 0 {
 		end = 0
