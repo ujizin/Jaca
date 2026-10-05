@@ -81,14 +81,17 @@ func runGradlePane() int {
 	for {
 		select {
 		case ev := <-c.Events:
-			if ev.Topic == gradleTopic {
+			switch ev.Topic {
+			case gradleTopic:
 				var list []gradleDaemon
 				if json.Unmarshal(ev.Data, &list) == nil {
-					p.daemons = list
-					p.loaded = true
-					if p.selected >= len(list) {
-						p.selected = max(0, len(list)-1)
-					}
+					p.setDaemons(list)
+				}
+			case "events.dropped":
+				// The skipped update may have been the latest list: fetch it.
+				var note droppedNote
+				if json.Unmarshal(ev.Data, &note) == nil && note.Topic == gradleTopic {
+					refreshGradle(c)
 				}
 			}
 		case <-c.Closed:
@@ -108,11 +111,30 @@ func runGradlePane() int {
 				p.flash(fmt.Sprintf("Couldn't kill %d", r.pid))
 			}
 		case <-resize:
+			refreshTermSize()
 		case <-tick.C:
+			if !p.expire() {
+				continue
+			}
 		}
 		p.expire()
 		p.draw()
 	}
+}
+
+func (p *gradlePane) setDaemons(list []gradleDaemon) {
+	p.daemons, p.loaded = list, true
+	p.selected = clampIndex(p.selected, len(list))
+}
+
+// refreshGradle fetches the list off the main loop and queues it as a gradle.daemons event.
+func refreshGradle(c *client) {
+	go func() {
+		var list []gradleDaemon
+		if c.Call("gradle.list", nil, &list) == nil {
+			c.inject(event{Topic: gradleTopic, Data: mustJSON(list)})
+		}
+	}()
 }
 
 type killResult struct {
@@ -133,14 +155,9 @@ func (p *gradlePane) handle(k key, c *client, killed chan<- killResult) {
 		}
 		p.confirmPID = 0
 	case keyRefresh:
-		go func() {
-			var list []gradleDaemon
-			if c.Call("gradle.list", nil, &list) == nil {
-				c.Events <- event{Topic: gradleTopic, Data: mustJSON(list)}
-			}
-		}()
+		refreshGradle(c)
 	case keyKill:
-		if len(p.daemons) == 0 {
+		if p.selected < 0 || p.selected >= len(p.daemons) {
 			return
 		}
 		d := p.daemons[p.selected]
@@ -166,13 +183,16 @@ func (p *gradlePane) flash(msg string) {
 	p.toastAt = time.Now()
 }
 
-func (p *gradlePane) expire() {
+// expire clears a lapsed kill confirmation or toast, reporting whether anything changed.
+func (p *gradlePane) expire() bool {
+	changed := false
 	if p.confirmPID != 0 && time.Since(p.confirmAt) >= 3*time.Second {
-		p.confirmPID = 0
+		p.confirmPID, changed = 0, true
 	}
 	if p.toast != "" && time.Since(p.toastAt) >= 2600*time.Millisecond {
-		p.toast = ""
+		p.toast, changed = "", true
 	}
+	return changed
 }
 
 func (p *gradlePane) draw() {

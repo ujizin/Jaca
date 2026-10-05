@@ -96,12 +96,28 @@ func runProjectsPane() int {
 	toasts := make(chan string, 4)
 
 	p := &projectsPane{c: c}
+	p.draw()
 	for {
-		p.draw()
 		select {
 		case ev := <-c.Events:
-			if ev.Topic == projectsTopic && json.Unmarshal(ev.Data, &p.state) == nil {
-				p.loaded = true
+			switch ev.Topic {
+			case projectsTopic:
+				var st projectsState
+				if json.Unmarshal(ev.Data, &st) == nil {
+					p.setState(st)
+				}
+			case "events.dropped":
+				// The skipped update may have been the latest state: fetch it.
+				var note droppedNote
+				if json.Unmarshal(ev.Data, &note) == nil && note.Topic == projectsTopic {
+					go func() {
+						var st projectsState
+						if c.Call("projects.state", nil, &st) == nil {
+							c.inject(event{Topic: projectsTopic, Data: mustJSON(st)})
+						}
+					}()
+				}
+				continue
 			}
 		case <-c.Closed:
 			restore()
@@ -115,12 +131,20 @@ func runProjectsPane() int {
 		case t := <-toasts:
 			p.toast, p.toastAt = t, time.Now()
 		case <-resize:
+			refreshTermSize()
 		case <-tick.C:
-			if p.toast != "" && time.Since(p.toastAt) > 2600*time.Millisecond {
-				p.toast = ""
+			if p.toast == "" || time.Since(p.toastAt) <= 2600*time.Millisecond {
+				continue
 			}
+			p.toast = ""
 		}
+		p.draw()
 	}
+}
+
+func (p *projectsPane) setState(st projectsState) {
+	p.state, p.loaded = st, true
+	p.selected = clampIndex(p.selected, len(p.rows()))
 }
 
 func (p *projectsPane) rows() []projRowRef {
@@ -138,13 +162,13 @@ func (p *projectsPane) handleKey(k []byte, toasts chan<- string) {
 	rows := p.rows()
 	switch {
 	case isUp(k):
-		p.selected = max(0, p.selected-1)
+		p.selected = clampIndex(p.selected-1, len(rows))
 	case isDown(k):
-		p.selected = min(len(rows)-1, p.selected+1)
+		p.selected = clampIndex(p.selected+1, len(rows))
 	case len(k) == 1 && k[0] == 'r':
 		go p.c.Call("projects.refresh", nil, nil)
 	case len(k) == 1 && k[0] == 'c':
-		if p.selected >= len(rows) || rows[p.selected].checkout < 0 {
+		if p.selected < 0 || p.selected >= len(rows) || rows[p.selected].checkout < 0 {
 			return
 		}
 		ref := rows[p.selected]
@@ -191,7 +215,7 @@ func (p *projectsPane) draw() {
 	case len(refs) == 0 && p.state.HasCompletedScan:
 		line("No projects found")
 	default:
-		room := rows - 3
+		room := max(1, rows-3)
 		start := 0
 		if p.selected >= room {
 			start = p.selected - room + 1

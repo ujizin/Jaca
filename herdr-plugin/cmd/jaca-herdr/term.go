@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"unicode/utf8"
 )
 
@@ -19,7 +22,9 @@ func sttyRun(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// enterRaw switches the terminal to raw mode on the alternate screen and returns a restore func.
+// enterRaw switches the terminal to raw mode on the alternate screen and returns a restore func,
+// safe to call more than once. SIGTERM, SIGHUP and SIGINT (Herdr closing the pane) restore the
+// terminal before the process exits, since deferred calls don't run then.
 func enterRaw() (func(), error) {
 	saved, err := sttyRun("-g")
 	if err != nil {
@@ -29,14 +34,41 @@ func enterRaw() (func(), error) {
 		return nil, err
 	}
 	fmt.Print("\x1b[?1049h\x1b[?25l")
-	return func() {
-		fmt.Print("\x1b[?25h\x1b[?1049l")
-		sttyRun(saved)
-	}, nil
+	refreshTermSize()
+	var once sync.Once
+	restore := func() {
+		once.Do(func() {
+			fmt.Print("\x1b[?25h\x1b[?1049l")
+			sttyRun(saved)
+		})
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
+	go func() {
+		sig := <-sigs
+		restore()
+		code := 1
+		if s, ok := sig.(syscall.Signal); ok {
+			code = 128 + int(s)
+		}
+		os.Exit(code)
+	}()
+	return restore, nil
 }
 
-// termSize returns rows, cols (24x80 when unknown).
-func termSize() (int, int) {
+// The terminal size, read once on entering raw mode and again on SIGWINCH, so drawing doesn't
+// fork stty every frame. Only the pane's main loop reads or writes it.
+var termRows, termCols = 24, 80
+
+// termSize returns the cached rows, cols.
+func termSize() (int, int) { return termRows, termCols }
+
+// refreshTermSize re-reads the size (24x80 when unknown). Call it on SIGWINCH.
+func refreshTermSize() {
+	termRows, termCols = queryTermSize()
+}
+
+func queryTermSize() (int, int) {
 	out, err := sttyRun("size")
 	if err == nil {
 		parts := strings.Fields(out)
