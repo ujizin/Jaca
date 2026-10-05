@@ -19,6 +19,8 @@ Experimental. Standard library Go only.
 
 ## Install
 
+Full steps, including uninstalling: **[INSTALL.md](INSTALL.md)**. The short version:
+
 Needs Go 1.22+ and a Jaca build that ships `jacad` (`Jaca.app/Contents/MacOS/jacad`).
 
 ```bash
