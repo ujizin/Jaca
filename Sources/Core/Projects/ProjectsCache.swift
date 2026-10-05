@@ -20,7 +20,8 @@ struct ProjectsCache: Sendable {
 
     func load() -> [Project]? {
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        return try? JSONDecoder().decode([Project].self, from: data)
+        // One unreadable record is skipped instead of discarding the whole cache.
+        return CloudPersistence.decodeArray(Project.self, from: data)
     }
 
     func save(_ projects: [Project]) {

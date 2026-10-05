@@ -1,191 +1,196 @@
 import Foundation
 import Observation
 
-/// **The single owner** of the response-override library: the rules, their order, the master
-/// switch, live hit counts, and each transport's arming state. Every override surface reads this
-/// one object, so there is never a second copy of "is this rule on?" to drift.
+/// **The single owner** of the response-override library in the app: the rules, their order, the
+/// master switch, live hit counts, and each transport's arming state. Every override surface reads
+/// this one object, so there is never a second copy of "is this rule on?" to drift.
 ///
-/// Rules are **global**, not per-session: sessions are rebuilt on tab open and relaunch-restore,
-/// and two tabs on one device must not disagree about what's mocked. Targeting is `scope`.
+/// The runtime (resolver, coordinators, hit reporting) is `OverridesEngine`, which must live in the
+/// process that runs the capture: in-process here, or in `jacad` when network capture runs in the
+/// daemon — then this model mirrors the daemon's retained `overrides.state`, and compiles the
+/// mirrored rules locally for the editor's match previews.
 @Observable
 @MainActor
 final class OverridesModel {
 
-    // MARK: - Persisted state
+    // MARK: - State (mirrored from the engine)
 
-    private(set) var rules: [OverrideRule]
+    private(set) var rules: [OverrideRule] = []
 
     /// Applies every rule, or none — for "let me see the real thing for a second".
-    var masterEnabled: Bool {
+    var masterEnabled: Bool = true {
         didSet {
-            guard masterEnabled != oldValue else { return }
-            FeatureFlags.overridesMasterEnabled = masterEnabled
-            republish()
+            guard masterEnabled != oldValue, !applyingState else { return }
+            let enabled = masterEnabled
+            send("overrides.setMaster", OverridesArea.MasterParams(enabled: enabled)) { $0.setMasterEnabled(enabled) }
         }
     }
 
-    // MARK: - Runtime-only state (never persisted)
-
     private(set) var hitCounts: [UUID: Int] = [:]
     private(set) var lastHitAt: [UUID: Date] = [:]
-    /// Arming state per **device + package**: keying by bare package cross-wired two devices
-    /// running the same app, so one tab's host-set updates went nowhere.
+    /// Arming state per **device + package**.
     private(set) var armings: [InterceptTarget: InterceptArmingState] = [:]
     /// Reclaimed tunnels from a previous run, surfaced once so cleanup is never silent.
     private(set) var reclaimedTunnelCount = 0
-
-    /// The last thing overrides actually **did**, timestamped — the popover's answer to "is
-    /// anything happening?". Lives here rather than being tailed out of the log file in `body`:
-    /// that was a synchronous read on the main thread, and not observable, so a rule firing
-    /// changed nothing on screen.
+    /// The last thing overrides actually **did**, timestamped.
     private(set) var lastActivity: String?
 
-    private let resolver = OverrideResolver()
-    private var coordinators: [InterceptTarget: AgentHTTPCoordinator] = [:]
+    /// The compiled snapshot, for match previews and shadow detection in the editor.
+    private(set) var compiled = OverrideRuleSet.empty
 
-    // MARK: - Init
+    // MARK: - Plumbing
 
-    init() {
-        // Synchronous so the first frame already has the user's rules — the cache-first rule.
-        self.rules = OverrideRuleStore.load()
-        self.masterEnabled = FeatureFlags.overridesMasterEnabled
-        JacaLog.info("override",
-            "loaded \(rules.count) rule(s) from \(OverrideRuleStore.rulesURL.path); master=\(masterEnabled)")
-        republish()
+    private let daemon: DaemonConnector
+    /// Whether the runtime lives in `jacad` (network capture runs there). Follows
+    /// `DaemonConnector.networkRunsInDaemon`, and changes with it (`setRuntime(inDaemon:)`).
+    private(set) var usesDaemon: Bool
+    private var localEngine: OverridesEngine?
+    private var daemonWatch: Task<Void, Never>?
+    private let commands = DaemonCommandQueue()
+    private var applyingState = false
+    private var compiledOnce = false
+
+    init(daemon: DaemonConnector? = nil, inDaemon: Bool? = nil) {
+        let daemon = daemon ?? .shared
+        self.daemon = daemon
+        usesDaemon = inDaemon ?? daemon.networkRunsInDaemon()
+        if usesDaemon { watchDaemon(reload: false) } else { startLocalEngine() }
     }
 
-    /// Removes tunnels stranded by a previous run that died without cleaning up.
+    /// Moves the runtime between this process and `jacad` when network capture moves (the HTTPS
+    /// decryption setting changed). The side giving it up stops publishing; the daemon re-reads
+    /// the library when it takes over, since the app may have edited it meanwhile.
+    func setRuntime(inDaemon: Bool) {
+        guard inDaemon != usesDaemon else { return }
+        usesDaemon = inDaemon
+        if inDaemon {
+            if let local = localEngine {
+                local.onChange = nil
+                localEngine = nil
+            }
+            watchDaemon(reload: true)
+        } else {
+            daemonWatch?.cancel()
+            daemonWatch = nil
+            startLocalEngine()
+        }
+    }
+
+    private func watchDaemon(reload: Bool) {
+        // First frame from disk (read-only); the daemon's retained state follows.
+        var initial = OverridesState()
+        initial.rules = OverrideRuleStore.load()
+        initial.masterEnabled = FeatureFlags.overridesMasterEnabled
+        apply(initial)
+        if reload {
+            commands.enqueue { [daemon] in let _: RPCEmpty? = await daemon.call("overrides.reload") }
+        }
+        daemonWatch = daemon.watch([OverridesArea.stateTopic]) { [weak self] event in
+            guard let self, self.usesDaemon, let state = try? event.decode(OverridesState.self) else { return }
+            self.apply(state)
+        }
+    }
+
+    @discardableResult
+    private func startLocalEngine() -> OverridesEngine {
+        if let localEngine { return localEngine }
+        let engine = OverridesEngine()
+        engine.onChange = { [weak self] in self?.apply($0) }
+        localEngine = engine
+        apply(engine.state)
+        return engine
+    }
+
+    private func apply(_ state: OverridesState) {
+        applyingState = true
+        defer { applyingState = false }
+        let rulesChanged = rules != state.rules || masterEnabled != state.masterEnabled
+        rules = state.rules
+        masterEnabled = state.masterEnabled
+        hitCounts = Dictionary(uniqueKeysWithValues: state.hitCounts.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
+        lastHitAt = Dictionary(uniqueKeysWithValues: state.lastHitAt.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
+        armings = Dictionary(state.armings.map { ($0.target, $0.state) }, uniquingKeysWith: { _, last in last })
+        reclaimedTunnelCount = state.reclaimedTunnelCount
+        lastActivity = state.lastActivity
+        // Compiled here from the rules (a pure function) rather than read from the engine: the
+        // engine reports a change before it republishes its resolver.
+        if rulesChanged || !compiledOnce {
+            compiled = OverrideCompiler.compile(rules, masterEnabled: masterEnabled)
+            compiledOnce = true
+        }
+    }
+
+    /// Runs a mutation on the in-process engine, or sends it to the daemon's (in order).
+    private func send<P: Encodable & Sendable>(_ method: String, _ params: P,
+                                                local: @escaping (OverridesEngine) -> Void) {
+        guard usesDaemon else {
+            local(startLocalEngine())
+            return
+        }
+        commands.enqueue { [daemon] in let _: RPCEmpty? = await daemon.call(method, params) }
+    }
+
+    /// Removes tunnels stranded by a previous run that died without cleaning up. In daemon mode
+    /// the daemon does this when it starts.
     func reconcileOrphanedTunnels() {
-        let count = AdbTunnelCleanup.reconcileOrphansFromPreviousRuns()
-        if count > 0 { reclaimedTunnelCount = count }
+        guard !usesDaemon else { return }
+        startLocalEngine().reconcileOrphanedTunnels()
     }
 
     // MARK: - Services handed to transports
 
-    /// What a capture source needs to participate: a resolver and a reporter, never this model.
+    /// What an in-process capture source needs to participate. Only meaningful when the runtime
+    /// is in this process; the daemon hands its own engine's services to its captures.
     func services() -> InterceptServices {
-        InterceptServices(
-            resolver: resolver,
-            reporter: Reporter { [weak self] _, ruleID in
-                Task { @MainActor in self?.recordHit(ruleID: ruleID) }
-            },
-            onArmingChange: { [weak self] target, coordinator, state in
-                Task { @MainActor in
-                    guard let self else { return }
-                    // Same target-reuse hazard as `onDeregisterCoordinator`: on a restart the old
-                    // teardown publishes `.idle` ~300 ms after the new coordinator published
-                    // `.active`, and that stale value would win *permanently* — `state`'s `didSet`
-                    // only fires on a change, so the live coordinator never re-publishes.
-                    if let coordinator, self.coordinators[target] !== coordinator { return }
-                    self.armings[target] = state
-                }
-            },
-            onRegisterCoordinator: { [weak self] target, coordinator in
-                Task { @MainActor in
-                    guard let self else { return }
-                    // Registration happens in the controller's `init`, before the launcher claim,
-                    // so a second tab on the same simulator + app registers over the first and
-                    // only then finds the app claimed. Evicting there orphaned the live tab's
-                    // coordinator for good. A *stopped* one is the ordinary restart: replace it.
-                    if let existing = self.coordinators[target],
-                       existing !== coordinator, !existing.isStopped { return }
-                    self.coordinators[target] = coordinator
-                    coordinator.updateHosts(self.routedHosts(for: target))
-                }
-            },
-            onDeregisterCoordinator: { [weak self] target, coordinator in
-                Task { @MainActor in
-                    guard let self else { return }
-                    // A restart reuses the target, so a late teardown must not evict its
-                    // replacement.
-                    guard self.coordinators[target] === coordinator else { return }
-                    self.coordinators.removeValue(forKey: target)
-                    self.armings.removeValue(forKey: target)
-                }
-            }
-        )
+        startLocalEngine().services()
     }
 
-    /// A `Sendable` shim so the reporter can be called from a NIO event loop.
-    private struct Reporter: InterceptReporting {
-        let onApplied: @Sendable (UUID, UUID?) -> Void
-        init(_ onApplied: @escaping @Sendable (UUID, UUID?) -> Void) { self.onApplied = onApplied }
-        func report(requestID: UUID, appliedRuleID: UUID?, skipped: InterceptSkipReason?) {
-            onApplied(requestID, appliedRuleID)
-        }
+    /// Services for an in-process capture, or nil when the runtime lives in `jacad` (a tab that
+    /// captures in-process there — companion capture — runs without overrides).
+    var localServices: InterceptServices? {
+        usesDaemon ? nil : services()
     }
 
     // MARK: - Mutations
 
-    /// Adds a rule. The enabled-by-default lives in `OverrideRule.enabled`, not here — forcing
-    /// it would re-enable a rule the user switched off in the editor before saving.
-    func add(_ rule: OverrideRule) {
-        var newRule = rule
-        if newRule.routedHosts.isEmpty {
-            newRule.routedHosts = OverrideCompiler.derivedRoutedHosts(for: newRule.matcher)
-        }
-        rules.append(newRule)
-        persistAndRepublish()
-    }
-
+    func add(_ rule: OverrideRule) { save(rule) }
     func update(_ rule: OverrideRule) {
-        guard let index = rules.firstIndex(where: { $0.id == rule.id }) else { return }
-        rules[index] = rule
-        persistAndRepublish()
+        guard rules.contains(where: { $0.id == rule.id }) else { return }
+        save(rule)
     }
 
     /// Saves a rule whether or not it already exists, so the editor never has to choose between
     /// `add` and `update` — getting that wrong silently discarded the rule.
     func save(_ rule: OverrideRule) {
-        if rules.contains(where: { $0.id == rule.id }) { update(rule) } else { add(rule) }
+        send("overrides.save", OverridesArea.RuleParams(rule: rule)) { $0.save(rule) }
     }
 
     func remove(_ id: UUID) {
-        rules.removeAll { $0.id == id }
-        hitCounts.removeValue(forKey: id)
-        lastHitAt.removeValue(forKey: id)
-        persistAndRepublish()
+        send("overrides.remove", OverridesArea.IDParams(id: id)) { $0.remove(id) }
     }
 
     func setEnabled(_ enabled: Bool, for id: UUID) {
-        guard let index = rules.firstIndex(where: { $0.id == id }) else { return }
-        rules[index].enabled = enabled
-        persistAndRepublish()
+        send("overrides.setEnabled", OverridesArea.EnabledParams(id: id, enabled: enabled)) { $0.setEnabled(enabled, for: id) }
     }
 
     func duplicate(_ id: UUID) {
-        guard let source = rules.first(where: { $0.id == id }) else { return }
-        let copy = OverrideRule(id: UUID(),
-                                name: source.name.isEmpty ? "Copy" : "\(source.name) copy",
-                                enabled: true, matcher: source.matcher, scope: source.scope,
-                                action: source.action, delayMillis: source.delayMillis,
-                                routedHosts: source.routedHosts)
-        rules.append(copy)
-        persistAndRepublish()
+        send("overrides.duplicate", OverridesArea.IDParams(id: id)) { $0.duplicate(id) }
     }
 
     /// Precedence is list order, so moving a rule up is how the user resolves shadowing.
     func move(_ id: UUID, by offset: Int) {
-        guard let index = rules.firstIndex(where: { $0.id == id }) else { return }
-        let target = index + offset
-        guard rules.indices.contains(target) else { return }
-        rules.swapAt(index, target)
-        persistAndRepublish()
+        send("overrides.move", OverridesArea.MoveParams(id: id, offset: offset)) { $0.move(id, by: offset) }
     }
 
     // MARK: - Derived state the UI renders
 
     var enabledCount: Int { rules.filter(\.enabled).count }
 
-    /// The compiled snapshot, for match previews and shadow detection in the editor.
-    var compiled: OverrideRuleSet { resolver.current }
-
     func hitCount(for id: UUID) -> Int { hitCounts[id] ?? 0 }
 
-    func diagnostic(for id: UUID) -> String? { resolver.current.diagnostics[id] }
+    func diagnostic(for id: UUID) -> String? { compiled.diagnostics[id] }
 
-    /// The rule that produced this response, read from the stamp the transaction carries — an
-    /// id-keyed map can't work, since `AgentHTTPServer` mints ids no captured row shares.
+    /// The rule that produced this response, read from the stamp the transaction carries.
     func appliedRule(for txn: NetworkTransaction) -> OverrideRule? {
         guard let ruleID = txn.overriddenByRuleID else { return nil }
         return rules.first { $0.id == ruleID }
@@ -197,8 +202,8 @@ final class OverridesModel {
                        transport: InterceptTransportID,
                        capabilities: InterceptCapabilities) -> InterceptSkipReason? {
         guard let facts = OverrideMatching.facts(url: url) else { return nil }
-        guard let matched = resolver.current.firstMatch(facts: facts, method: method,
-                                                        deviceID: nil, appID: nil) else { return nil }
+        guard let matched = compiled.firstMatch(facts: facts, method: method,
+                                                deviceID: nil, appID: nil) else { return nil }
         let (_, skip) = OverrideMatching.decide(matched, transport: transport,
                                                 capabilities: capabilities,
                                                 masterEnabled: masterEnabled)
@@ -208,8 +213,7 @@ final class OverridesModel {
     /// Whether an enabled rule matches this request at all (regardless of transport).
     func matchingRule(forURL url: String, method: String) -> OverrideRule? {
         guard let facts = OverrideMatching.facts(url: url) else { return nil }
-        return resolver.current.firstMatch(facts: facts, method: method,
-                                           deviceID: nil, appID: nil)?.rule
+        return compiled.firstMatch(facts: facts, method: method, deviceID: nil, appID: nil)?.rule
     }
 
     func arming(for target: InterceptTarget) -> InterceptArmingState {
@@ -239,40 +243,5 @@ final class OverridesModel {
             body: OverrideRuleStore.makeBodyRef(pretty)
         ))
         return rule
-    }
-
-    // MARK: - Internals
-
-    /// Hosts to route for one target. The real `deviceID` matters: with it hard-coded nil, a
-    /// device-scoped rule contributed no hosts and could never fire.
-    private func routedHosts(for target: InterceptTarget) -> Set<String> {
-        resolver.current.routedHosts(deviceID: target.deviceID, appID: target.package)
-    }
-
-    private func recordHit(ruleID: UUID?) {
-        guard let ruleID else { return }
-        // `debug`, not `info`: one per overridden request, and `JacaLog.append` blocks on the
-        // filesystem from the main actor. `lastActivity` below is the user-facing one.
-        JacaLog.debug("override", "rule applied: \(rules.first { $0.id == ruleID }?.displayName ?? ruleID.uuidString)")
-        hitCounts[ruleID, default: 0] += 1
-        let now = Date()
-        lastHitAt[ruleID] = now
-        let name = rules.first { $0.id == ruleID }?.displayName ?? "a rule"
-        lastActivity = "\(now.formatted(date: .omitted, time: .standard)) · applied \(name)"
-    }
-
-    private func persistAndRepublish() {
-        let ok = OverrideRuleStore.save(rules)
-        JacaLog.info("override", "saved \(rules.count) rule(s) -> \(ok ? "ok" : "FAILED")")
-        republish()
-    }
-
-    /// Recompiles and pushes to the resolver and every armed transport — what makes an edit
-    /// apply on the app's next request with no re-attach.
-    private func republish() {
-        resolver.publish(OverrideCompiler.compile(rules, masterEnabled: masterEnabled))
-        for (target, coordinator) in coordinators {
-            coordinator.updateHosts(routedHosts(for: target))
-        }
     }
 }

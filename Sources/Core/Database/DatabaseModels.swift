@@ -15,7 +15,7 @@ struct DBTable: Identifiable, Hashable, Sendable {
 }
 
 /// The result of a query: ordered columns and rows (a nil cell is SQL NULL).
-struct DBResultSet: Sendable {
+struct DBResultSet: Sendable, Codable, Equatable {
     let columns: [String]
     let rows: [[String?]]
 }

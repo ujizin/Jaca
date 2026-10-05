@@ -8,7 +8,7 @@ import Foundation
 enum CompanionVersion {
     /// Commit hash of the APK Jaca bundles, or nil for dev builds with no bundled APK.
     static let bundled: String? = {
-        guard let url = Bundle.main.url(forResource: "jaca-mobile.apk", withExtension: "version"),
+        guard let url = JacaBundle.app.url(forResource: "jaca-mobile.apk", withExtension: "version"),
               let raw = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

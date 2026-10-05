@@ -23,3 +23,44 @@ struct GradleCacheEntry: Identifiable, Hashable {
     let name: String
     let sizeMB: Int
 }
+
+// MARK: - Wire format (daemon)
+
+extension GradleDaemon: Codable {
+    // `removing` is view state (a row mid-fade) and never crosses the wire.
+    private enum CodingKeys: String, CodingKey { case pid, version, uptime, cpu, memoryMB, jdk, maxHeap }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            pid: try c.decode(Int32.self, forKey: .pid),
+            version: try c.decodeIfPresent(String.self, forKey: .version) ?? "?",
+            uptime: try c.decodeIfPresent(String.self, forKey: .uptime) ?? "",
+            cpu: try c.decodeIfPresent(Double.self, forKey: .cpu) ?? 0,
+            memoryMB: try c.decodeIfPresent(Int.self, forKey: .memoryMB) ?? 0,
+            jdk: try c.decodeIfPresent(String.self, forKey: .jdk),
+            maxHeap: try c.decodeIfPresent(String.self, forKey: .maxHeap)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(pid, forKey: .pid)
+        try c.encode(version, forKey: .version)
+        try c.encode(uptime, forKey: .uptime)
+        try c.encode(cpu, forKey: .cpu)
+        try c.encode(memoryMB, forKey: .memoryMB)
+        try c.encodeIfPresent(jdk, forKey: .jdk)
+        try c.encodeIfPresent(maxHeap, forKey: .maxHeap)
+    }
+}
+
+extension GradleCacheEntry: Codable {
+    private enum CodingKeys: String, CodingKey { case name, sizeMB }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(name: try c.decode(String.self, forKey: .name),
+                  sizeMB: try c.decodeIfPresent(Int.self, forKey: .sizeMB) ?? 0)
+    }
+}

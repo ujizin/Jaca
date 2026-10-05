@@ -1,20 +1,18 @@
 import CoreImage
 import CoreImage.CIFilterBuiltins
-import AppKit
 
-/// Generates a QR code image from a string (CoreImage, no dependency).
+/// Generates a QR code as PNG bytes from a string (CoreImage, no dependency). PNG rather than
+/// an `NSImage` so it can cross the daemon socket and be drawn by a non-AppKit client.
 enum QRCode {
-    static func image(_ string: String, scale: CGFloat = 10) -> NSImage? {
+    static func png(_ string: String, scale: CGFloat = 10) -> Data? {
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(string.utf8)
         filter.correctionLevel = "M"
-        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: scale, y: scale)) else {
+        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: scale, y: scale)),
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else {
             return nil
         }
-        let rep = NSCIImageRep(ciImage: output)
-        let image = NSImage(size: rep.size)
-        image.addRepresentation(rep)
-        return image
+        return CIContext().pngRepresentation(of: output, format: .RGBA8, colorSpace: space)
     }
 }
 

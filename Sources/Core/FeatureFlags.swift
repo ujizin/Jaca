@@ -13,11 +13,11 @@ enum FeatureFlags {
     static var networkInspectionMode: NetworkInspectionMode {
         get {
             NetworkInspectionMode.resolve(
-                stored: UserDefaults.standard.string(forKey: networkInspectionModeKey),
-                legacyHTTPSDecryption: UserDefaults.standard.bool(forKey: legacyHTTPSDecryptionKey),
-                legacyResponseOverrides: UserDefaults.standard.bool(forKey: legacyResponseOverridesKey))
+                stored: JacaDefaults.shared.string(forKey: networkInspectionModeKey),
+                legacyHTTPSDecryption: JacaDefaults.shared.bool(forKey: legacyHTTPSDecryptionKey),
+                legacyResponseOverrides: JacaDefaults.shared.bool(forKey: legacyResponseOverridesKey))
         }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: networkInspectionModeKey) }
+        set { JacaDefaults.shared.set(newValue.rawValue, forKey: networkInspectionModeKey) }
     }
 
     /// The two settings the mode replaced. Read only to migrate, and never deleted, so an older
@@ -48,15 +48,15 @@ enum FeatureFlags {
     static var simulatorAutoReattachEnabled: Bool {
         // `bool(forKey:)` is false for a missing key, which is exactly the wanted default. The
         // stored preference is kept as-is under HTTPS debugging, so switching back restores it.
-        get { UserDefaults.standard.bool(forKey: simulatorAutoReattachKey) && responseOverridesEnabled }
-        set { UserDefaults.standard.set(newValue, forKey: simulatorAutoReattachKey) }
+        get { JacaDefaults.shared.bool(forKey: simulatorAutoReattachKey) && responseOverridesEnabled }
+        set { JacaDefaults.shared.set(newValue, forKey: simulatorAutoReattachKey) }
     }
 
     /// The user's master switch for overrides — distinct from the feature flag above: the flag
     /// says "this feature exists for me", this says "apply my rules right now".
     static let overridesMasterKey = "networkOverridesMasterEnabled"
     static var overridesMasterEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: overridesMasterKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: overridesMasterKey) }
+        get { JacaDefaults.shared.object(forKey: overridesMasterKey) as? Bool ?? true }
+        set { JacaDefaults.shared.set(newValue, forKey: overridesMasterKey) }
     }
 }

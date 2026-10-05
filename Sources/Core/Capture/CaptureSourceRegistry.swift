@@ -43,7 +43,15 @@ enum CaptureSourceRegistry {
         detail: InterceptTransportID.companionMetadata.captureDetail,
         isAvailable: { device, _ in device.companionID != nil },
         needsPackage: false,
-        make: { ctx in CompanionCaptureSource(device: ctx.device, hub: ctx.companion ?? CompanionHub(), ca: ctx.ca) },
+        make: { ctx in
+            guard let ca = ctx.ca else {
+                // Unreachable by construction: a tab that can choose companion capture runs
+                // in-process, where the app always has its CA.
+                DaemonLog.error("companion capture requested without a CA; not starting")
+                return InertCaptureSource()
+            }
+            return CompanionCaptureSource(device: ctx.device, hub: ctx.companion ?? CompanionHub(), ca: ca)
+        },
     )
 
     /// Options offered for a device, in display order. The companion (device-wide HTTPS
@@ -62,4 +70,11 @@ enum CaptureSourceRegistry {
         let opts = options(for: device, context: context)
         return opts.first { $0.kind == .companion } ?? opts.first
     }
+}
+
+/// A source that captures nothing (see the companion descriptor's missing-CA branch).
+@MainActor
+final class InertCaptureSource: CaptureSource {
+    func start(into sink: CaptureSink) {}
+    func stop() {}
 }

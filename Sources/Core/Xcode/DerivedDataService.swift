@@ -51,8 +51,19 @@ struct DerivedDataService: Sendable {
 
     /// Deletes a DerivedData subfolder. Returns true on success.
     func delete(path: String) async -> Bool {
+        guard isEntry(path) else { return false }
         do { try FileManager.default.removeItem(atPath: path); return true }
         catch { return false }
+    }
+
+    /// Whether `path` names a folder directly inside DerivedData. `delete` refuses anything
+    /// else, so a bad path (from the daemon socket or a bug) can't remove an unrelated folder.
+    func isEntry(_ path: String) -> Bool {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let name = url.lastPathComponent
+        guard !name.isEmpty, name != ".", name != ".." else { return false }
+        return url.deletingLastPathComponent().resolvingSymlinksInPath().path
+            == derivedDataDir.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     // MARK: - Helpers

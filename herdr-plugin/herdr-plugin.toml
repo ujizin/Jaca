@@ -1,0 +1,45 @@
+# Jaca for Herdr: Jaca's areas as Herdr panes, driven by the jacad daemon.
+# Link with: herdr plugin link "$PWD"   (see README.md)
+id = "dev.srsouza.jaca"
+name = "Jaca"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Jaca areas (devices and logs, Gradle daemons, projects) as Herdr panes, served by jacad"
+platforms = ["macos"]
+
+[[build]]
+command = ["go", "build", "-o", "bin/jaca-herdr", "./cmd/jaca-herdr"]
+
+# Make sure jacad is running (starts it if needed) when the Herdr server starts.
+[[startup]]
+command = ["bin/jaca-herdr", "ensure"]
+
+[[panes]]
+id = "gradle"
+title = "Gradle"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "gradle"]
+
+[[panes]]
+id = "devices"
+title = "Devices"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "devices"]
+
+[[panes]]
+id = "projects"
+title = "Projects"
+placement = "split"
+command = ["bin/jaca-herdr", "pane", "projects"]
+
+[[actions]]
+id = "gradle-kill-all"
+title = "Kill all Gradle daemons"
+contexts = ["global"]
+command = ["bin/jaca-herdr", "action", "gradle-kill-all"]
+
+[[actions]]
+id = "projects-clear-cache"
+title = "Clear build caches for this worktree"
+contexts = ["workspace", "pane"]
+command = ["bin/jaca-herdr", "action", "projects-clear-cache"]

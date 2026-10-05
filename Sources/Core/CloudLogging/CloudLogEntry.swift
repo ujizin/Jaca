@@ -121,3 +121,60 @@ enum CloudLogEntryDecoder {
         return String(decoding: data, as: UTF8.self)
     }
 }
+
+// MARK: - Wire format (daemon)
+
+extension CloudLogEntry.PayloadKind: Codable {}
+
+extension CloudLogEntry: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case seq, insertId, timestamp, receiveTimestamp, severity, logName, logId, message, payloadKind
+        case labels, resourceType, resourceLabels, trace, spanId, httpRequestSummary, raw, isSynthetic
+    }
+
+    /// Tolerant: only `seq` is required; anything missing (an older daemon) takes a default.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let message = try c.decodeIfPresent(String.self, forKey: .message) ?? ""
+        self.init(
+            seq: try c.decode(UInt64.self, forKey: .seq),
+            insertId: try c.decodeIfPresent(String.self, forKey: .insertId) ?? "",
+            timestamp: Date(timeIntervalSince1970: try c.decodeIfPresent(Double.self, forKey: .timestamp) ?? 0),
+            receiveTimestamp: try c.decodeIfPresent(Double.self, forKey: .receiveTimestamp).map(Date.init(timeIntervalSince1970:)),
+            severity: (try? c.decodeIfPresent(CloudSeverity.self, forKey: .severity)) ?? .default,
+            logName: try c.decodeIfPresent(String.self, forKey: .logName) ?? "",
+            logId: try c.decodeIfPresent(String.self, forKey: .logId) ?? "",
+            message: message,
+            payloadKind: (try? c.decodeIfPresent(PayloadKind.self, forKey: .payloadKind)) ?? .text,
+            labels: try c.decodeIfPresent([String: String].self, forKey: .labels) ?? [:],
+            resourceType: try c.decodeIfPresent(String.self, forKey: .resourceType) ?? "",
+            resourceLabels: try c.decodeIfPresent([String: String].self, forKey: .resourceLabels) ?? [:],
+            trace: try c.decodeIfPresent(String.self, forKey: .trace),
+            spanId: try c.decodeIfPresent(String.self, forKey: .spanId),
+            httpRequestSummary: try c.decodeIfPresent(String.self, forKey: .httpRequestSummary),
+            raw: try c.decodeIfPresent(String.self, forKey: .raw) ?? message,
+            isSynthetic: try c.decodeIfPresent(Bool.self, forKey: .isSynthetic) ?? false
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(seq, forKey: .seq)
+        if !insertId.isEmpty { try c.encode(insertId, forKey: .insertId) }
+        try c.encode(timestamp.timeIntervalSince1970, forKey: .timestamp)
+        try c.encodeIfPresent(receiveTimestamp?.timeIntervalSince1970, forKey: .receiveTimestamp)
+        try c.encode(severity, forKey: .severity)
+        try c.encode(logName, forKey: .logName)
+        try c.encode(logId, forKey: .logId)
+        try c.encode(message, forKey: .message)
+        try c.encode(payloadKind, forKey: .payloadKind)
+        if !labels.isEmpty { try c.encode(labels, forKey: .labels) }
+        if !resourceType.isEmpty { try c.encode(resourceType, forKey: .resourceType) }
+        if !resourceLabels.isEmpty { try c.encode(resourceLabels, forKey: .resourceLabels) }
+        try c.encodeIfPresent(trace, forKey: .trace)
+        try c.encodeIfPresent(spanId, forKey: .spanId)
+        try c.encodeIfPresent(httpRequestSummary, forKey: .httpRequestSummary)
+        if raw != message { try c.encode(raw, forKey: .raw) }
+        if isSynthetic { try c.encode(true, forKey: .isSynthetic) }
+    }
+}
