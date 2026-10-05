@@ -112,7 +112,32 @@ final class CloudEngine {
         self.templateStore = templateStore
         state.projects = store.load()   // synchronous load → first frame already has the project list
         (state.queryTemplates, state.sqlTemplates) = templateStore.load()
+        stamps = currentStamps
         if detectOnInit { detect() }
+    }
+
+    /// Re-reads projects and templates from disk: the app edited them in-process while the
+    /// daemon was unreachable.
+    func reload() {
+        stamps = currentStamps
+        state.projects = store.load()
+        (state.queryTemplates, state.sqlTemplates) = templateStore.load()
+    }
+
+    /// Modification dates of the two files when this engine last read or wrote them.
+    private var stamps: [Date?] = []
+
+    private var currentStamps: [Date?] {
+        [store.fileURL, templateStore.fileURL].map {
+            try? FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date
+        }
+    }
+
+    /// Re-reads when another process (the app or `jacad`) wrote the files since, so a save here
+    /// never overwrites newer edits with a stale list.
+    private func syncFromDisk() {
+        guard currentStamps != stamps else { return }
+        reload()
     }
 
     func project(_ id: String) -> CloudProject? { state.projects.first { $0.projectID == id } }
@@ -147,6 +172,7 @@ final class CloudEngine {
 
     /// False when the name is empty (nothing saved).
     func saveQueryTemplate(name: String, query: CloudLogQuery, rawFilter: String?) -> Bool {
+        syncFromDisk()
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         state.queryTemplates.append(CloudQueryTemplate(name: trimmed, query: query, rawFilter: rawFilter))
@@ -155,11 +181,13 @@ final class CloudEngine {
     }
 
     func deleteQueryTemplate(_ id: UUID) {
+        syncFromDisk()
         state.queryTemplates.removeAll { $0.id == id }
         saveTemplates()
     }
 
     func saveSqlTemplate(name: String, sql: String) -> Bool {
+        syncFromDisk()
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         state.sqlTemplates.append(CloudSqlTemplate(name: trimmed, sql: sql))
@@ -168,11 +196,15 @@ final class CloudEngine {
     }
 
     func deleteSqlTemplate(_ id: UUID) {
+        syncFromDisk()
         state.sqlTemplates.removeAll { $0.id == id }
         saveTemplates()
     }
 
-    private func saveTemplates() { templateStore.save(queries: state.queryTemplates, sql: state.sqlTemplates) }
+    private func saveTemplates() {
+        templateStore.save(queries: state.queryTemplates, sql: state.sqlTemplates)
+        stamps = currentStamps
+    }
 
     // MARK: - Projects
 
@@ -190,6 +222,8 @@ final class CloudEngine {
         } catch {
             return .failure(error.localizedDescription)
         }
+        syncFromDisk()
+        if state.projects.contains(where: { $0.projectID == trimmed }) { return .alreadyExists }
         var project = CloudProject(projectID: trimmed)
         project.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         state.projects.append(project)
@@ -203,6 +237,7 @@ final class CloudEngine {
 
     /// Returns the removed project's title, or nil when it wasn't there.
     func removeProject(_ id: String) -> String? {
+        syncFromDisk()
         guard let title = project(id)?.title else { return nil }
         state.projects.removeAll { $0.projectID == id }
         persist()
@@ -237,6 +272,7 @@ final class CloudEngine {
     /// Merges auto-detected label keys for a (project, log name). Only persists on a real
     /// change, so the hot streaming path doesn't thrash the disk.
     func recordLabelKeys(_ keys: Set<String>, project id: String, logName: String) {
+        syncFromDisk()
         guard !keys.isEmpty, let index = state.projects.firstIndex(where: { $0.projectID == id }) else { return }
         let existing = state.projects[index].labelKeysByLogName[logName] ?? []
         let (merged, changed) = LabelDetector.merge(existing, with: keys)
@@ -247,6 +283,7 @@ final class CloudEngine {
 
     /// Toggles a label key as a favorite for a (project, log name).
     func toggleFavoriteLabel(_ key: String, project id: String, logName: String) {
+        syncFromDisk()
         guard !key.isEmpty, let index = state.projects.firstIndex(where: { $0.projectID == id }) else { return }
         var favorites = state.projects[index].favoriteLabelKeysByLogName[logName] ?? []
         if let at = favorites.firstIndex(of: key) { favorites.remove(at: at) } else { favorites.append(key) }
@@ -260,10 +297,14 @@ final class CloudEngine {
     }
 
     private func update(_ id: String, _ change: (inout CloudProject) -> Void) {
+        syncFromDisk()
         guard let index = state.projects.firstIndex(where: { $0.projectID == id }) else { return }
         change(&state.projects[index])
         persist()
     }
 
-    private func persist() { store.save(state.projects) }
+    private func persist() {
+        store.save(state.projects)
+        stamps = currentStamps
+    }
 }

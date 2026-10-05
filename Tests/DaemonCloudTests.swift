@@ -67,6 +67,26 @@ final class DaemonCloudTests: XCTestCase {
             makeDatabase: { CloudLogDatabase(sessionID: $0, url: dir.appendingPathComponent("\($0.uuidString).sqlite")) })
     }
 
+    // MARK: - Two engines, one file
+
+    /// The app's engine (daemon unreachable) and the daemon's both write `projects.json`; each
+    /// re-reads it before mutating, so neither saves a stale list over the other's edit.
+    func test_engines_neverOverwriteEachOthersEdits() throws {
+        let daemonSide = cloudEngine()
+        let appSide = CloudEngine(store: CloudProjectStore(fileURL: tmp.appendingPathComponent("projects.json")),
+                                  templateStore: CloudTemplateStore(fileURL: tmp.appendingPathComponent("templates.json")),
+                                  detectOnInit: false)
+        appSide.setDisplayName("Renamed", for: "p")
+        let projectsURL = tmp.appendingPathComponent("projects.json")
+        // Timestamps have one-second resolution on some volumes: make the change visible.
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(5)],
+                                              ofItemAtPath: projectsURL.path)
+        daemonSide.toggleFavoriteLabel("pod", project: "p", logName: "projects/p/logs/app")
+        let onDisk = try XCTUnwrap(CloudProjectStore(fileURL: projectsURL).load().first)
+        XCTAssertEqual(onDisk.displayName, "Renamed")
+        XCTAssertEqual(onDisk.favoriteLabelKeysByLogName["projects/p/logs/app"], ["pod"])
+    }
+
     // MARK: - Wire formats
 
     func test_cloudStateAndAuth_roundTrip() throws {

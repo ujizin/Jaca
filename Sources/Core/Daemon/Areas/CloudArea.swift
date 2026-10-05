@@ -167,6 +167,9 @@ enum CloudArea {
         r.register("cloud.state", "gcloud/auth state, projects and templates (also published on cloud.state).") { (_: RPCEmpty, _) in
             await engine.state
         }
+        r.register("cloud.reload", "Re-reads projects and templates from disk (the app edited them while the daemon was away).") { (_: RPCEmpty, _) in
+            await engine.reload(); return RPCEmpty()
+        }
         r.register("cloud.detect", "Re-detects gcloud and refreshes auth.") { (_: RPCEmpty, _) in
             await engine.detect(); return RPCEmpty()
         }
@@ -235,9 +238,6 @@ enum CloudArea {
         r.register("cloud.sessions.loadOlder", "Fetches the next page of older logs (arrives on cloud.older.<id>).",
                    params: SessionIDParams.self) { p, _ in
             try await MainActor.run { try sessions.session(p.id).engine.loadOlder() }; return RPCEmpty()
-        }
-        r.register("cloud.sessions.clearStatus", "Dismisses the session's status message.", params: SessionIDParams.self) { p, _ in
-            try await MainActor.run { try sessions.session(p.id).engine.clearStatus() }; return RPCEmpty()
         }
         r.register("cloud.sessions.query", "Runs read-only SQL over the captured entries.", params: QueryParams.self, concurrent: true) { p, _ in
             guard DatabaseService.isReadOnly(p.sql) else {
