@@ -82,7 +82,6 @@ protocol CloudFeed: AnyObject {
     /// The tab cleared its scrollback: forget loaded ids and the older-page cursor.
     func resetScrollback()
     func loadOlder()
-    func clearStatus()
     /// Runs read-only SQL over the captured entries.
     func query(_ sql: String) async throws -> DBResultSet
     /// Stops and deletes the session's database (the tab closed).
@@ -180,8 +179,6 @@ final class CloudStreamEngine: CloudFeed {
         pollStream = nil
         flush(max: .max)                              // drain anything left
     }
-
-    func clearStatus() { state.statusMessage = nil }
 
     func resetScrollback() {
         oldestSeq = Self.forwardSeqBase

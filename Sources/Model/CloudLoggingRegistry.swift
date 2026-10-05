@@ -78,8 +78,11 @@ final class CloudLoggingRegistry {
                                    onUnavailable: { [weak self] in self?.startLocalEngine() }) { [weak self] event in
             guard let self, let state = try? event.decode(CloudState.self) else { return }
             if let local = self.localEngine {
+                // The app wrote projects/templates while the daemon was away: have it re-read them
+                // (its reloaded state follows on this topic).
                 local.onChange = nil
                 self.localEngine = nil
+                Task { let _: RPCEmpty? = await self.daemon.call("cloud.reload", RPCEmpty()) }
             }
             self.apply(state)
         }

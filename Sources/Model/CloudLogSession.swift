@@ -42,9 +42,7 @@ final class CloudLogSession: WorkspaceTab {
 
     private(set) var isRunning = false
     private(set) var isLoading = false      // backfill query in flight
-    var statusMessage: String? {
-        didSet { if statusMessage == nil, oldValue != nil, feed.state.statusMessage != nil { feed.clearStatus() } }
-    }
+    private(set) var statusMessage: String?
 
     // MARK: Rendering pipeline (mirrors LogSession)
 

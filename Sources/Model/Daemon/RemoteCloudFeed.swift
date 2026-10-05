@@ -24,6 +24,11 @@ final class RemoteCloudFeed: CloudFeed {
     /// Whether this tab has received anything from the current daemon session.
     private var hasHistory = false
     private var backfilling = false
+    /// Live batches held back while a gap (`events.dropped`) is being filled, so `lastSeq` can't
+    /// move past the gap before its entries arrive. nil when not filling.
+    private var held: [[CloudLogEntry]]?
+    /// Another drop arrived while filling: fill again before releasing `held`.
+    private var gapAgain = false
 
     init(id: UUID, config: CloudStreamConfig, autoStart: Bool, daemon: DaemonConnector) {
         self.id = id
@@ -48,7 +53,7 @@ final class RemoteCloudFeed: CloudFeed {
         switch event.topic {
         case CloudArea.entriesTopic(id):
             guard let batch = try? event.decode([CloudLogEntry].self) else { return }
-            deliver(batch)
+            if held != nil { held?.append(batch) } else { deliver(batch) }
         case CloudArea.olderTopic(id):
             guard let page = try? event.decode([CloudLogEntry].self), !page.isEmpty else { return }
             onOlder?(page)
@@ -57,7 +62,12 @@ final class RemoteCloudFeed: CloudFeed {
             wantsRunning = next.isRunning
             setState(next)
         case "events.dropped":
-            Task { await backfill() }
+            if held == nil {
+                held = []
+                Task { await fillGap() }
+            } else {
+                gapAgain = true
+            }
         default:
             break
         }
@@ -101,6 +111,21 @@ final class RemoteCloudFeed: CloudFeed {
         deliver(entries)
     }
 
+    /// Fetches everything after the last entry delivered, then releases the batches held
+    /// meanwhile (deduplicated by seq, so overlap with the fetched entries is harmless).
+    private func fillGap() async {
+        repeat {
+            gapAgain = false
+            let params = CloudArea.RangeParams(id: id, afterSeq: lastSeq, limit: nil)
+            if let entries = await daemon.call("cloud.sessions.range", params, as: [CloudLogEntry].self) {
+                deliver(entries)
+            }
+        } while gapAgain
+        let release = held ?? []
+        held = nil
+        release.forEach(deliver)
+    }
+
     private func lostDaemon() {
         var next = state
         next.isRunning = false
@@ -122,14 +147,13 @@ final class RemoteCloudFeed: CloudFeed {
         send("cloud.sessions.stop")
     }
 
+    /// Keeps `lastSeq`: live seqs keep rising across a reset, and a backfill racing the reset
+    /// must not hand back the entries the viewer just cleared.
     func resetScrollback() {
-        lastSeq = nil
-        hasHistory = false
         send("cloud.sessions.resetScrollback")
     }
 
     func loadOlder() { send("cloud.sessions.loadOlder") }
-    func clearStatus() { send("cloud.sessions.clearStatus") }
 
     func query(_ sql: String) async throws -> DBResultSet {
         guard let result = try await daemon.request("cloud.sessions.query", CloudArea.QueryParams(id: id, sql: sql),
