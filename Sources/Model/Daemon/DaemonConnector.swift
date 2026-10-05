@@ -92,10 +92,10 @@ final class DaemonConnector {
     private func establish() async -> DaemonClient? {
         do {
             var (client, hello) = try await connectAndGreet()
-            if let expected = expectedBuildID, hello.buildID != expected {
+            if let expected = expectedBuildID, DaemonBuild.isOlder(hello.buildID, than: expected) {
                 // A daemon from an older build is still running (the app was rebuilt or
                 // updated under it). Replace it with the one this app ships.
-                DaemonLog.info("daemon build \(hello.buildID) differs from \(expected); restarting it")
+                DaemonLog.info("daemon build \(hello.buildID) is older than \(expected); restarting it")
                 try await replace(client)
                 (client, hello) = try await connectAndGreet()
             }
@@ -151,6 +151,7 @@ final class DaemonConnector {
             if !FileManager.default.fileExists(atPath: paths.socket.path) { return }
             try await Task.sleep(for: .milliseconds(100))
         }
+        DaemonLog.error("the old daemon still holds \(paths.socket.path) after 3s; connecting anyway")
     }
 
     private func connectionClosed(_ closed: DaemonClient) {

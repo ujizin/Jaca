@@ -73,15 +73,17 @@ func printResult(_ line: Data) -> Int32 {
 func call(_ method: String, _ paramsText: String?) async -> Int32 {
     var params: Data?
     if let paramsText {
-        let data = Data(paramsText.utf8)
-        guard (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) != nil else {
+        // Re-serialized compactly: the wire is one message per line, so pasted multi-line JSON
+        // would otherwise be split into fragments the daemon can't answer.
+        guard let object = try? JSONSerialization.jsonObject(with: Data(paramsText.utf8), options: [.fragmentsAllowed]),
+              let compact = try? JSONSerialization.data(withJSONObject: object, options: [.fragmentsAllowed]) else {
             fail("PARAMS_JSON is not valid JSON")
         }
-        params = data
+        params = compact
     }
     let client = await connect()
     do {
-        // callRaw returns error responses as thrown RPCErrors; print those like any other failure.
+        // An error response arrives as a thrown RPCError and is reported by `fail` below.
         return printResult(try await client.callRaw(method, paramsJSON: params))
     } catch {
         fail(error.localizedDescription)
@@ -105,6 +107,14 @@ case "serve":
             ProxyCleanup.revertAll()
             exit(0)
         }
+        // Before anything binds or spawns, so an early SIGTERM still runs the cleanup in `onStop`.
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { server.stop() }
+            source.resume()
+            signalSources.append(source)
+        }
         do {
             try server.start()
         } catch DaemonServer.StartError.alreadyRunning {
@@ -115,13 +125,6 @@ case "serve":
             return 1
         }
         DaemonAreas.install(on: server)
-        for sig in [SIGTERM, SIGINT] {
-            signal(sig, SIG_IGN)
-            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-            source.setEventHandler { server.stop() }
-            source.resume()
-            signalSources.append(source)
-        }
         // Serve until stopped; `onStop` exits the process.
         while true { try? await Task.sleep(for: .seconds(3600)) }
     }
