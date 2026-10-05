@@ -12,6 +12,10 @@ final class PolledTopic<T: Codable & Equatable & Sendable>: @unchecked Sendable 
     private let lock = NSLock()
     private var task: Task<Void, Never>?
     private var last: T?
+    /// One fetch at a time: a slow tick that started before a mutation must not publish after the
+    /// post-mutation `refreshNow`. A request arriving mid-fetch re-polls once it finishes.
+    private var polling = false
+    private var pollAgain = false
 
     init(bus: DaemonEventBus, topic: String, interval: Duration, fetch: @escaping @Sendable () async -> T) {
         self.bus = bus
@@ -47,11 +51,23 @@ final class PolledTopic<T: Codable & Equatable & Sendable>: @unchecked Sendable 
     }
 
     private func poll() async {
-        let value = await fetch()
-        lock.lock()
-        let changed = value != last
-        if changed { last = value }
-        lock.unlock()
-        if changed { bus.publish(topic, value, retain: true) }
+        let proceed: Bool = lock.withLock {
+            if polling { pollAgain = true; return false }
+            polling = true
+            return true
+        }
+        guard proceed else { return }
+        while true {
+            let value = await fetch()
+            let again: Bool = lock.withLock {
+                let changed = value != last
+                if changed { last = value }
+                if changed { bus.publish(topic, value, retain: true) }
+                if pollAgain { pollAgain = false; return true }
+                polling = false
+                return false
+            }
+            if !again { return }
+        }
     }
 }

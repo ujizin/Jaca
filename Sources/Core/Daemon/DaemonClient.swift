@@ -29,8 +29,21 @@ final class DaemonClient: @unchecked Sendable {
     private var subscribers: [UUID: Subscriber] = [:]
     private var closed = false
     private var closeHandlers: [@Sendable () -> Void] = []
+    /// Per stream, topics whose events overflowed its buffer since the last delivery.
+    private var overflowed: [UUID: Set<String>] = [:]
+
+    /// Events a stream holds while its consumer is busy. Past this the oldest are dropped and the
+    /// consumer is told with an `events.dropped` event, as the daemon does for a slow connection
+    /// (the client reads eagerly, so the daemon's own backpressure never sees a slow consumer).
+    static let streamBuffer = 4_096
 
     private init() {}
+
+    deinit {
+        // A client dropped without `close()` (a failed handshake) must not keep its socket open:
+        // the daemon counts it as a connection and would never idle out.
+        peer?.close()
+    }
 
     /// Connects to the socket. Throws if nothing is listening.
     static func connect(paths: DaemonPaths = .default) async throws -> DaemonClient {
@@ -136,7 +149,8 @@ final class DaemonClient: @unchecked Sendable {
     /// (unless another stream on this client still wants them).
     func subscribe(_ topics: [String]) async throws -> AsyncStream<DaemonEventLine> {
         let key = UUID()
-        let (stream, continuation) = AsyncStream<DaemonEventLine>.makeStream(bufferingPolicy: .unbounded)
+        let (stream, continuation) = AsyncStream<DaemonEventLine>.makeStream(
+            bufferingPolicy: .bufferingNewest(Self.streamBuffer))
         let isClosed = lock.withLock {
             if !closed { subscribers[key] = Subscriber(topics: Set(topics), continuation: continuation) }
             return closed
@@ -159,11 +173,21 @@ final class DaemonClient: @unchecked Sendable {
         guard let removed = subscribers.removeValue(forKey: key), !closed else { lock.unlock(); return }
         let stillWanted = subscribers.values.reduce(into: Set<String>()) { $0.formUnion($1.topics) }
         lock.unlock()
+        lock.withLock { _ = overflowed.removeValue(forKey: key) }
         let orphaned = removed.topics.subtracting(stillWanted)
         guard !orphaned.isEmpty else { return }
-        Task { [weak self] in
-            let _: RPCEmpty? = try? await self?.call("events.unsubscribe", DaemonServer.TopicsParams(topics: Array(orphaned)))
+        // Written now, as a notification, rather than from a task: a stream re-subscribing the same
+        // topic right after must reach the daemon after this unsubscribe, never before it.
+        notify("events.unsubscribe", DaemonServer.TopicsParams(topics: orphaned.sorted()))
+    }
+
+    /// Sends a request without an id (no response) immediately, in call order.
+    private func notify<P: Encodable>(_ method: String, _ params: P) {
+        let peer = lock.withLock { closed ? nil : self.peer }
+        guard let peer, let line = try? DaemonLine.encode(RPCRequestEnvelope(id: nil, method: method, params: params)) else {
+            return
         }
+        peer.send(line)
     }
 
     // MARK: - Inbound
@@ -186,10 +210,21 @@ final class DaemonClient: @unchecked Sendable {
         let target = event.topic == "events.dropped"
             ? ((try? event.decode(DroppedEvents.self))?.topic ?? event.topic)
             : event.topic
-        lock.lock()
-        let matching = subscribers.values.filter { $0.topics.contains(target) }.map(\.continuation)
-        lock.unlock()
-        matching.forEach { $0.yield(event) }
+        // Delivery runs on the channel's one event loop, so streams see events in arrival order.
+        let matching = lock.withLock { subscribers.filter { $0.value.topics.contains(target) } }
+        for (key, subscriber) in matching {
+            if let lost = lock.withLock({ overflowed.removeValue(forKey: key) }) {
+                for topic in lost.sorted() {
+                    if let note = try? DaemonLine.encode(RPCEventEnvelope(
+                        topic: "events.dropped", data: DroppedEvents(topic: topic, count: 1))) {
+                        subscriber.continuation.yield(DaemonEventLine(topic: "events.dropped", line: note))
+                    }
+                }
+            }
+            if case .dropped = subscriber.continuation.yield(event) {
+                lock.withLock { _ = overflowed[key, default: []].insert(target) }
+            }
+        }
     }
 
     private func connectionClosed() {

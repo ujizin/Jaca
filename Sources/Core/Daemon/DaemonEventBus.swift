@@ -36,9 +36,12 @@ final class DaemonEventBus: @unchecked Sendable {
         publishLine(topic, line, retain: retain, droppable: droppable)
     }
 
+    /// Sends happen under the lock. `DaemonPeer.send` only enqueues on the channel's event loop, so
+    /// this doesn't block, and it keeps each peer's events in publish order — sending after
+    /// unlocking let a concurrent publish (or a subscribe's replay) overtake a newer line.
     func publishLine(_ topic: String, _ line: Data, retain: Bool, droppable: Bool) {
-        var deliveries: [(DaemonPeer, [Data])] = []
         lock.lock()
+        defer { lock.unlock() }
         if retain { retained[topic] = line }
         for id in subscribers[topic] ?? [] {
             guard let peer = peers[id] else { continue }
@@ -55,10 +58,8 @@ final class DaemonEventBus: @unchecked Sendable {
                 }
             }
             lines.append(line)
-            deliveries.append((peer, lines))
+            lines.forEach(peer.send)
         }
-        lock.unlock()
-        for (peer, lines) in deliveries { lines.forEach(peer.send) }
     }
 
     /// Forgets a retained topic's last value (the thing it described is gone).
@@ -112,19 +113,23 @@ final class DaemonEventBus: @unchecked Sendable {
 
     func subscribe(peerID id: Int, topics: [String]) {
         var started: [String] = []
-        var replay: [Data] = []
         lock.lock()
-        let peer = peers[id]
+        // The connection may already be gone: its request ran after it closed. Registering it then
+        // would leave an id nothing ever removes, keeping the topic's on-demand producer running.
+        guard let peer = peers[id] else {
+            lock.unlock()
+            return
+        }
         for topic in topics {
             var ids = subscribers[topic] ?? []
             if ids.isEmpty { started.append(topic) }
             ids.insert(id)
             subscribers[topic] = ids
-            if let line = retained[topic] { replay.append(line) }
+            // Replayed under the lock, so a publish can't land before the older retained line.
+            if let line = retained[topic] { peer.send(line) }
         }
         let hooks = demands
         lock.unlock()
-        if let peer { replay.forEach(peer.send) }
         for topic in started { hooks.filter { topic.hasPrefix($0.prefix) }.forEach { $0.start(topic) } }
     }
 

@@ -292,6 +292,34 @@ final class DaemonProtocolTests: XCTestCase {
         XCTAssertEqual(status.busy, ["test"])
     }
 
+    func test_subscribeFromAConnectionThatAlreadyClosed_isIgnored() {
+        let bus = DaemonEventBus()
+        let log = Recorder()
+        bus.onDemand(prefix: "poll.", start: { log.add("start \($0)") }, stop: { log.add("stop \($0)") })
+        bus.subscribe(peerID: 42, topics: ["poll.x"])   // no such peer: it disconnected first
+        XCTAssertFalse(bus.hasSubscribers("poll.x"))
+        XCTAssertEqual(log.items, [], "no producer started that nothing would ever stop")
+    }
+
+    func test_resubscribingRightAfterDroppingAStream_keepsDelivery() async throws {
+        let daemon = try TestDaemon()
+        let client = try await daemon.client()
+        var first: AsyncStream<DaemonEventLine>? = try await client.subscribe(["t.re"])
+        XCTAssertNotNil(first)
+        first = nil                                      // unsubscribes
+        var second = try await client.subscribe(["t.re"]).makeAsyncIterator()
+        try await Task.sleep(for: .milliseconds(100))    // let any stray unsubscribe land
+        daemon.server.bus.publish("t.re", "still here")
+        let event = await second.next()
+        XCTAssertEqual(try event?.decode(String.self), "still here")
+    }
+
+    func test_buildAge_onlyAnOlderBuildIsReplaced() {
+        XCTAssertTrue(DaemonBuild.isOlder("/a/jacad@100", than: "/a/jacad@200"))
+        XCTAssertFalse(DaemonBuild.isOlder("/b/jacad@300", than: "/a/jacad@200"), "a newer other build stays")
+        XCTAssertFalse(DaemonBuild.isOlder("unknown", than: "/a/jacad@200"))
+    }
+
     // MARK: - Slow consumers
 
     func test_droppableEvents_areSkippedForASlowPeerAndReported() throws {

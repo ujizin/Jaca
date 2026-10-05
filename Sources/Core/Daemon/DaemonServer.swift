@@ -125,9 +125,13 @@ final class DaemonServer: @unchecked Sendable {
         startIdleMonitor()
     }
 
-    func stop() {
+    func stop() { stop(onlyIfIdle: false) }
+
+    /// `onlyIfIdle` re-checks for connections under the same lock that marks the server stopped,
+    /// so a client accepted between the idle check and the stop isn't dropped.
+    private func stop(onlyIfIdle: Bool) {
         lock.lock()
-        guard !stopped else { lock.unlock(); return }
+        guard !stopped, !onlyIfIdle || connectionCount == 0 else { lock.unlock(); return }
         stopped = true
         let ch = channel
         channel = nil
@@ -171,6 +175,11 @@ final class DaemonServer: @unchecked Sendable {
 
     private func configure(_ channel: Channel) -> EventLoopFuture<Void> {
         lock.lock()
+        // Stopping: refuse rather than accept a connection that is about to be cut.
+        guard !stopped else {
+            lock.unlock()
+            return channel.close()
+        }
         let id = nextPeerID
         nextPeerID += 1
         connectionCount += 1
@@ -218,8 +227,8 @@ final class DaemonServer: @unchecked Sendable {
                 guard let self, !Task.isCancelled else { return }
                 if await self.shouldIdleOut() {
                     DaemonLog.info("idle for \(Int(self.idleTimeout))s with no clients; exiting")
-                    self.stop()
-                    return
+                    self.stop(onlyIfIdle: true)
+                    if self.lock.withLock({ self.stopped }) { return }
                 }
             }
         }
@@ -299,6 +308,16 @@ enum DaemonBuild {
 
     /// This process's build id. Only meaningful inside `jacad`; the app computes the id of the
     /// `jacad` it would spawn with `id(forExecutable:)`.
+    /// Whether a running daemon's build is older than this app's `jacad`: the same check as an
+    /// update replacing the binary. Two different builds (a worktree build and the installed app)
+    /// don't replace each other: the newer one wins, instead of each restarting the other's daemon
+    /// on every reconnect. Unreadable ids are never "older".
+    static func isOlder(_ running: String, than ours: String) -> Bool {
+        func mtime(_ id: String) -> Int? { id.split(separator: "@").last.flatMap { Int($0) } }
+        guard let r = mtime(running), let o = mtime(ours) else { return false }
+        return r < o
+    }
+
     static let currentID: String = {
         guard let exe = Bundle.main.executableURL else { return "unknown" }
         return id(forExecutable: exe)
