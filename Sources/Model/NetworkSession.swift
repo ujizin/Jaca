@@ -409,6 +409,7 @@ final class NetworkSession: WorkspaceTab {
 
     /// Choose a capture source and start it. The single entry point for every source.
     func select(_ descriptor: CaptureSourceDescriptor, package: String? = nil) {
+        statusMessage = nil   // a message the tab set itself (a CA push) belongs to the last run
         feed.select(sourceID: descriptor.id, package: package)
     }
 
@@ -422,9 +423,16 @@ final class NetworkSession: WorkspaceTab {
     func reopenModeChooser() { feed.reopenChooser() }
 
     /// Restart the chosen source — the toolbar play button after a stop.
-    func resume() { feed.resume() }
+    func resume() {
+        statusMessage = nil
+        feed.resume()
+    }
 
-    func start() { feed.resume() }
+    /// Starts the chosen source; a no-op while it already runs, as before the feed split.
+    func start() {
+        guard !isRunning, !isConnecting else { return }
+        resume()
+    }
 
     func stop() { feed.stop() }
 
@@ -484,7 +492,7 @@ final class NetworkSession: WorkspaceTab {
         // touched TLS and the agent never uses the CA, so counting either would dismiss the setup
         // prompt for a user whose CA isn't installed. `== .proxy` was too narrow — companion
         // capture decrypts through `ProxyServer` too, so its CA sheet never saw `caReady` flip.
-        if txn.scheme == "https", txn.error == nil, captureMode.decryptsWithOurCA, !wasOverridden(txn) {
+        if txn.scheme == "https", txn.error == nil, captureMode.decryptsWithOurCA, !txn.wasOverridden {
             caReady = true
             proxyNeedsSetup = false
             caInstaller?.noteInterceptionConfirmed()
@@ -493,6 +501,9 @@ final class NetworkSession: WorkspaceTab {
         if let idx = indexByID[txn.id] {
             transactions[idx] = txn
             invalidateFilterCache()
+            // In daemon mode an update arrives without bodies; the row on screen fetches them again
+            // (it would otherwise show an in-flight request's response as missing).
+            if feed.bodiesOnDemand, txn.id == selectedID { ensureBodies(for: txn.id) }
         } else {
             indexByID[txn.id] = transactions.count
             transactions.append(txn)
@@ -587,12 +598,6 @@ final class NetworkSession: WorkspaceTab {
         if changed { invalidateFilterCache() }
     }
 
-    /// True when a rule produced this response, so it says nothing about the network it never
-    /// reached. Read from the stamp the pipeline leaves.
-    private func wasOverridden(_ txn: NetworkTransaction) -> Bool {
-        txn.responseHeaders.contains { $0.name.lowercased() == JacaHeaders.override.lowercased() }
-    }
-
     /// The currently selected transaction, if any.
     var selectedTransaction: NetworkTransaction? {
         guard let selectedID, let idx = indexByID[selectedID] else { return nil }
@@ -608,7 +613,10 @@ final class NetworkSession: WorkspaceTab {
         guard txn.bodiesEvicted else { return (txn.requestBody, txn.responseBody) }
         let loaded: (req: Data?, resp: Data?)
         if feed.bodiesOnDemand {
-            loaded = await feed.bodies(for: id)     // in the daemon, which holds them
+            // In the daemon, which holds them. Unavailable (daemon gone, capture closed) keeps
+            // the row evicted rather than recording an empty body.
+            guard let fetched = await feed.bodies(for: id) else { return (nil, nil) }
+            loaded = fetched
         } else if let cache = bodyCache {
             loaded = await cache.load(id)
         } else {
@@ -629,7 +637,15 @@ final class NetworkSession: WorkspaceTab {
         let feed = self.feed, cache = bodyCache
         guard feed.bodiesOnDemand || cache != nil else { return }
         Task {
-            let bodies = feed.bodiesOnDemand ? await feed.bodies(for: id) : await cache!.load(id)
+            let fetched: (req: Data?, resp: Data?)?
+            if feed.bodiesOnDemand {
+                fetched = await feed.bodies(for: id)
+            } else if let cache {
+                fetched = await cache.load(id)
+            } else {
+                fetched = nil
+            }
+            guard let bodies = fetched else { return }   // unavailable: the row stays evicted
             await MainActor.run { [weak self] in
                 guard let self, let i = self.indexByID[id] else { return }
                 self.transactions[i].requestBody = bodies.req

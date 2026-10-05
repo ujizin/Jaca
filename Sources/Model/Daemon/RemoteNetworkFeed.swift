@@ -131,10 +131,10 @@ final class RemoteNetworkFeed: NetworkFeed {
     func relaunchToAttach() { send("network.relaunchToAttach") }
     func clear() { send("network.clear") }
 
-    func bodies(for transaction: UUID) async -> (req: Data?, resp: Data?) {
-        let b = await daemon.call("network.body", NetworkArea.BodyParams(id: id, transaction: transaction),
-                                  as: NetworkArea.Bodies.self)
-        return (b?.request, b?.response)
+    func bodies(for transaction: UUID) async -> (req: Data?, resp: Data?)? {
+        guard let b = await daemon.call("network.body", NetworkArea.BodyParams(id: id, transaction: transaction),
+                                        as: NetworkArea.Bodies?.self) ?? nil else { return nil }
+        return (b.request, b.response)
     }
 
     func harData() async -> Data? {

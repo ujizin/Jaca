@@ -39,7 +39,7 @@ final class AttachDetectionTests: XCTestCase {
         let session = try makeSession(overrides: nil)
         XCTAssertEqual(session.armingState, .idle)
 
-        session.localEngine?.capture(didChangeAttach: .detached(appID: "com.example.App"))
+        try XCTUnwrap(session.localEngine).capture(didChangeAttach: .detached(appID: "com.example.App"))
 
         XCTAssertEqual(session.attachState, .detached(appID: "com.example.App"))
         XCTAssertEqual(session.armingState, .detached(appID: "com.example.App"),
@@ -49,10 +49,10 @@ final class AttachDetectionTests: XCTestCase {
     /// A recovered session has to drop the banner, or it stays up for the rest of the tab's life.
     func test_theAgentComingBackClearsTheDetachedState() throws {
         let session = try makeSession(overrides: nil)
-        session.localEngine?.capture(didChangeAttach: .waitingForApp(appID: "com.example.App"))
+        try XCTUnwrap(session.localEngine).capture(didChangeAttach: .waitingForApp(appID: "com.example.App"))
         XCTAssertEqual(session.armingState, .waitingForApp(appID: "com.example.App"))
 
-        session.localEngine?.capture(didChangeAttach: .idle)
+        try XCTUnwrap(session.localEngine).capture(didChangeAttach: .idle)
 
         XCTAssertEqual(session.armingState, .idle)
     }
@@ -61,7 +61,7 @@ final class AttachDetectionTests: XCTestCase {
     /// "relaunch to re-attach" on a tab the user already stopped is noise, not a warning.
     func test_aStoppedSessionNeverShowsTheBanner() throws {
         let session = try makeSession(overrides: nil)
-        session.localEngine?.capture(didChangeAttach: .detached(appID: "com.example.App"))
+        try XCTUnwrap(session.localEngine).capture(didChangeAttach: .detached(appID: "com.example.App"))
         XCTAssertFalse(session.showsAttachBanner)
     }
 }

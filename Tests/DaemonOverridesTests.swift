@@ -61,6 +61,24 @@ final class DaemonOverridesTests: XCTestCase {
         XCTAssertEqual(back.lastActivity, state.lastActivity)
     }
 
+    // MARK: - Two engines, one file
+
+    /// The app's engine and the daemon's both write `rules.json` over time; each re-reads it before
+    /// mutating, so neither saves a stale list over the other's edit.
+    func test_engines_neverOverwriteEachOthersEdits() throws {
+        let app = OverridesEngine()
+        let daemon = OverridesEngine()           // loaded before the app's edit
+        let first = rule("https://a.example.com/*")
+        app.save(first)
+        // File timestamps have one-second resolution on some volumes: make the change visible.
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(5)],
+                                              ofItemAtPath: OverrideRuleStore.rulesURL.path)
+        let second = rule("https://b.example.com/*")
+        daemon.save(second)
+        let onDisk = OverrideRuleStore.load().map(\.id)
+        XCTAssertEqual(Set(onDisk), [first.id, second.id])
+    }
+
     // MARK: - GC grace
 
     func test_gc_keepsAFreshUnsavedBlob() throws {
