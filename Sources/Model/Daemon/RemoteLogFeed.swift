@@ -6,6 +6,10 @@ import Foundation
 /// app relaunched), recreating it when the daemon restarted — then backfills from the daemon's
 /// replay buffer and follows live `logs.lines.<id>` batches. Lines are deduplicated by seq, so
 /// a backfill overlapping live batches never shows a line twice.
+///
+/// When the daemon can't be reached while the tab wants to stream, the tab switches to an
+/// in-process `LogStreamEngine` for the rest of its life, so pressing play never silently does
+/// nothing.
 @MainActor
 final class RemoteLogFeed: LogFeed {
     let id: UUID
@@ -22,12 +26,21 @@ final class RemoteLogFeed: LogFeed {
     private var wantsRunning: Bool
     private var backfilling = false
     private let commands = DaemonCommandQueue()
+    /// Live batches held back while a gap (`events.dropped`) is being filled, so `lastSeq` can't
+    /// move past the gap before its lines arrive. nil when not filling.
+    private var held: [[LogLine]]?
+    /// Another drop arrived while filling: fill again before releasing `held`.
+    private var gapAgain = false
+    /// The in-process stream this tab switched to when the daemon was unreachable.
+    private var fallback: LogStreamEngine?
+    private let makeLocal: (_ seqStart: UInt64) -> LogStreamEngine
 
     init(id: UUID, device: Device, package: String, displayName: String, autoStart: Bool,
-         daemon: DaemonConnector) {
+         daemon: DaemonConnector, makeLocal: @escaping (_ seqStart: UInt64) -> LogStreamEngine) {
         self.id = id
         self.device = device
         self.daemon = daemon
+        self.makeLocal = makeLocal
         self.displayName = displayName
         self.wantsRunning = autoStart
         var initial = LogStreamState()
@@ -52,14 +65,20 @@ final class RemoteLogFeed: LogFeed {
         switch event.topic {
         case LogsArea.linesTopic(id):
             guard let batch = try? event.decode([LogLine].self) else { return }
-            deliver(batch)
+            if held != nil { held?.append(batch) } else { deliver(batch) }
         case LogsArea.stateTopic(id):
             guard let next = try? event.decode(LogStreamState.self) else { return }
             wantsRunning = next.isRunning || next.isConnecting
             setState(next)
         case "events.dropped":
-            // This client fell behind and missed batches: fetch them from the replay buffer.
-            Task { await backfill() }
+            // This client fell behind and missed batches. The notice arrives right before the
+            // first batch after the gap, so hold live batches until the gap is filled.
+            if held == nil {
+                held = []
+                Task { await fillGap() }
+            } else {
+                gapAgain = true
+            }
         default:
             break
         }
@@ -90,6 +109,19 @@ final class RemoteLogFeed: LogFeed {
         await backfill()
     }
 
+    /// Fetches everything after the last line delivered, then releases the batches held meanwhile
+    /// (deduplicated by seq, so overlap with the fetched lines is harmless).
+    private func fillGap() async {
+        repeat {
+            gapAgain = false
+            let params = LogsArea.RangeParams(id: id, afterSeq: lastSeq, limit: nil)
+            if let lines = await daemon.call("logs.range", params, as: [LogLine].self) { deliver(lines) }
+        } while gapAgain
+        let release = held ?? []
+        held = nil
+        release.forEach(deliver)
+    }
+
     private func backfill() async {
         guard !backfilling else { return }
         backfilling = true
@@ -99,32 +131,67 @@ final class RemoteLogFeed: LogFeed {
         deliver(lines)
     }
 
-    /// The daemon went away: the stream isn't running from this tab's point of view.
+    /// The daemon can't be reached. A tab that wants to stream switches to the in-process engine;
+    /// otherwise it just reads as stopped.
     private func lostDaemon() {
+        guard fallback == nil else { return }
+        if wantsRunning {
+            useFallback().connect()
+            return
+        }
         var next = state
         next.isRunning = false
         next.isConnecting = false
         setState(next)
     }
 
+    /// Switches this tab to an in-process stream for good: stops watching the daemon, and hands
+    /// the engine the target and a seq past everything already shown.
+    @discardableResult
+    private func useFallback() -> LogStreamEngine {
+        if let fallback { return fallback }
+        watchTask?.cancel()
+        watchTask = nil
+        held = nil
+        let engine = makeLocal(lastSeq.map { ($0 / 8 + 1) * 8 } ?? 0)
+        if !state.package.isEmpty { engine.setPackage(state.package) }
+        engine.onLines = { [weak self] in self?.deliver($0) }
+        engine.onState = { [weak self] in self?.setState($0) }
+        fallback = engine
+        DaemonLog.info("log tab \(id): jacad unreachable, streaming in-process")
+        return engine
+    }
+
+    /// The daemon is unusable right now (unreachable after a connect attempt).
+    private var daemonUnavailable: Bool {
+        if case .unavailable = daemon.state { return true }
+        return false
+    }
+
     // MARK: - LogFeed
 
     func start() {
         wantsRunning = true
+        if let fallback { return fallback.start() }
+        if daemonUnavailable { return useFallback().start() }
         send("logs.start")
     }
 
     func stop() {
         wantsRunning = false
+        if let fallback { return fallback.stop() }
         send("logs.stop")
     }
 
     func connect() {
         wantsRunning = true
+        if let fallback { return fallback.connect() }
+        if daemonUnavailable { return useFallback().connect() }
         send("logs.connect")
     }
 
     func setPackage(_ package: String) {
+        if let fallback { return fallback.setPackage(package) }
         var next = state
         next.package = package
         setState(next)
@@ -132,20 +199,32 @@ final class RemoteLogFeed: LogFeed {
         commands.enqueue { [daemon] in let _: RPCEmpty? = await daemon.call("logs.setPackage", params) }
     }
 
-    func clearStatus() { send("logs.clearStatus") }
-    func resetBodyPairing() { send("logs.resetPairing") }
-    func clearDeviceBuffer() { send("logs.clearDeviceBuffer") }
+    func resetBodyPairing() {
+        if let fallback { return fallback.resetBodyPairing() }
+        send("logs.resetPairing")
+    }
+
+    func clearDeviceBuffer() {
+        if let fallback { return fallback.clearDeviceBuffer() }
+        send("logs.clearDeviceBuffer")
+    }
 
     func close() {
         watchTask?.cancel()
         watchTask = nil
         onLines = nil
         onState = nil
+        if let fallback { return fallback.close() }
         let params = LogsArea.IDParams(id: id)
         commands.enqueue { [daemon] in let _: Bool? = await daemon.call("logs.close", params) }
     }
 
-    func rename(_ name: String) { displayName = name }
+    func rename(_ name: String) {
+        displayName = name
+        guard fallback == nil else { return }
+        let params = LogsArea.RenameParams(id: id, name: name)
+        commands.enqueue { [daemon] in let _: RPCEmpty? = await daemon.call("logs.rename", params) }
+    }
 
     private func send(_ method: String) {
         let params = LogsArea.IDParams(id: id)
