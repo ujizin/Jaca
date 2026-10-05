@@ -21,6 +21,7 @@ enum LogsArea {
     }
     struct IDParams: Codable, Sendable { var id: UUID }
     struct PackageParams: Codable, Sendable { var id: UUID; var package: String }
+    struct RenameParams: Codable, Sendable { var id: UUID; var name: String }
     struct RangeParams: Codable, Sendable {
         var id: UUID
         /// Lines with a seq above this; nil = from the start of the replay buffer.
@@ -42,11 +43,16 @@ enum LogsArea {
     final class Registry {
         final class Hosted {
             let engine: LogStreamEngine
+            /// History records this run under its own id, never the session id: a session recreated
+            /// with the same id (a relaunch after the daemon restarted) would otherwise replace the
+            /// previous run's history row and interleave both runs' seqs.
+            let historyID: UUID
             var displayName: String
             var replay: [LogLine] = []
             var unwatchedSince: Date? = Date()
-            init(engine: LogStreamEngine, displayName: String) {
+            init(engine: LogStreamEngine, historyID: UUID, displayName: String) {
                 self.engine = engine
+                self.historyID = historyID
                 self.displayName = displayName
             }
         }
@@ -56,21 +62,22 @@ enum LogsArea {
         let history: HistoryStore?
         let replayCap: Int
         let orphanTimeout: TimeInterval
-        private let makeEngine: (UUID, Device, String, UInt64) -> LogStreamEngine
+        /// (session id, history id, device, package, first seq).
+        private let makeEngine: (UUID, UUID, Device, String, UInt64) -> LogStreamEngine
 
         init(bus: DaemonEventBus, history: HistoryStore?, replayCap: Int = 100_000,
              orphanTimeout: TimeInterval = 600,
-             makeEngine: ((UUID, Device, String, UInt64) -> LogStreamEngine)? = nil) {
+             makeEngine: ((UUID, UUID, Device, String, UInt64) -> LogStreamEngine)? = nil) {
             self.bus = bus
             self.history = history
             self.replayCap = replayCap
             self.orphanTimeout = orphanTimeout
-            self.makeEngine = makeEngine ?? { id, device, package, seqStart in
+            self.makeEngine = makeEngine ?? { id, historyID, device, package, seqStart in
                 let adb = AndroidToolchain.adbURL(override: JacaDefaults.shared.string(forKey: DevicesEngine.adbPathKey))
                 let store = history
                 return LogStreamEngine(
                     id: id, device: device, adbURL: adb, package: package, seqStart: seqStart,
-                    onPersist: { sid, lines in Task { await store?.appendLines(sessionID: sid, lines) } })
+                    onPersist: { _, lines in Task { await store?.appendLines(sessionID: historyID, lines) } })
             }
         }
 
@@ -91,8 +98,10 @@ enum LogsArea {
                 throw RPCError.failed("No log source for \(p.device.displayModel) (adb not found).")
             }
             let id = p.id ?? UUID()
-            let engine = makeEngine(id, p.device, p.package ?? "", p.seqStart ?? 0)
-            let hosted = Hosted(engine: engine, displayName: p.displayName ?? p.device.displayModel)
+            let historyID = UUID()
+            let engine = makeEngine(id, historyID, p.device, p.package ?? "", p.seqStart ?? 0)
+            let hosted = Hosted(engine: engine, historyID: historyID,
+                                displayName: p.displayName ?? p.device.displayModel)
             sessions[id] = hosted
 
             let linesTopic = LogsArea.linesTopic(id), stateTopic = LogsArea.stateTopic(id)
@@ -100,7 +109,8 @@ enum LogsArea {
             engine.onLines = { [weak hosted] batch in
                 guard let hosted else { return }
                 hosted.replay.append(contentsOf: batch)
-                if hosted.replay.count > cap { hosted.replay.removeFirst(hosted.replay.count - cap) }
+                // Trimmed in chunks: shifting 100k lines on every 30ms batch was O(n) per batch.
+                if hosted.replay.count > cap + cap / 10 { hosted.replay.removeFirst(hosted.replay.count - cap) }
                 bus.publish(linesTopic, batch, droppable: true)
             }
             engine.onState = { bus.publish(stateTopic, $0, retain: true) }
@@ -110,7 +120,7 @@ enum LogsArea {
                 let pkg = engine.state.package, name = hosted.displayName
                 Task {
                     await store?.upsertDevice(device)
-                    await store?.beginSession(id: id, device: device, package: pkg, displayName: name)
+                    await store?.beginSession(id: historyID, device: device, package: pkg, displayName: name)
                 }
             }
             bus.publish(stateTopic, engine.state, retain: true)
@@ -122,8 +132,8 @@ enum LogsArea {
             guard let hosted = sessions.removeValue(forKey: id) else { return false }
             hosted.engine.close()
             bus.clearRetained(LogsArea.stateTopic(id))
-            let store = history
-            Task { await store?.endSession(id: id) }
+            let store = history, historyID = hosted.historyID
+            Task { await store?.endSession(id: historyID) }
             return true
         }
 
@@ -203,8 +213,13 @@ enum LogsArea {
                    params: PackageParams.self) { p, _ in
             try await registry.withSession(p.id) { $0.setPackage(p.package) }; return RPCEmpty()
         }
-        r.register("logs.clearStatus", "Dismisses the session's status message.", params: IDParams.self) { p, _ in
-            try await registry.withSession(p.id) { $0.clearStatus() }; return RPCEmpty()
+        r.register("logs.rename", "Renames a session (its history entry uses the name on the next start).",
+                   params: RenameParams.self) { p, _ in
+            try await MainActor.run {
+                guard let hosted = registry.sessions[p.id] else { throw RPCError.failed("No log session \(p.id.uuidString).") }
+                hosted.displayName = p.name
+            }
+            return RPCEmpty()
         }
         r.register("logs.resetPairing", "Forgets a half-seen response body (the viewer cleared its scrollback).",
                    params: IDParams.self) { p, _ in

@@ -460,17 +460,36 @@ final class AppModel {
         guard LogSources.isSupported(device, adbURL: adbURL) else { return nil }   // device has a usable source
         var filter = filter
         filter.exclusions = LogExclusionStore.shared.rules            // global hidden-message rules
-        let id = sessionID ?? UUID()
+        // A restored id only matters in daemon mode, where it reattaches to a still-running
+        // session. In-process each run is new, and reusing the id would merge history runs.
+        let id = (daemon.isEnabled(.logs) ? sessionID : nil) ?? UUID()
         // adbURL is only used by the Android pid/clear helpers; a placeholder is
         // fine for iOS sessions (they never call those paths).
         let toolURL = adbURL ?? AppleToolchain.xcrun
         let session: LogSession
         if daemon.isEnabled(.logs) {
             // The stream runs in jacad (which records history); this tab attaches to it by id,
-            // so a relaunch reattaches to a session that is still running.
+            // so a relaunch reattaches to a session that is still running. If jacad can't be
+            // reached the tab streams in-process instead, recording history here.
+            let store = history, adb = adbURL
             let feed = RemoteLogFeed(id: id, device: device, package: filter.packageLabel,
                                      displayName: name ?? device.displayModel, autoStart: autoStart,
-                                     daemon: daemon)
+                                     daemon: daemon, makeLocal: { seqStart in
+                let historyID = UUID()
+                let engine = LogStreamEngine(
+                    device: device, adbURL: adb, seqStart: seqStart,
+                    onPersist: { _, lines in Task { await store?.appendLines(sessionID: historyID, lines) } },
+                    prettifyEnabled: { LogBodyPrettifyStore.shared.enabled })
+                engine.onStarted = { [weak engine] in
+                    let pkg = engine?.state.package ?? ""
+                    Task {
+                        await store?.upsertDevice(device)
+                        await store?.beginSession(id: historyID, device: device, package: pkg,
+                                                  displayName: name ?? device.displayModel)
+                    }
+                }
+                return engine
+            })
             session = LogSession(id: id, device: device, feed: feed, adbURL: toolURL, filter: filter,
                                  displayName: name, isRemote: true)
         } else {

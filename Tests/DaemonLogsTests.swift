@@ -94,7 +94,7 @@ final class DaemonLogsTests: XCTestCase {
     // MARK: - Daemon sessions
 
     private func registry(_ daemon: TestDaemon, source: ScriptedLogSource, orphan: TimeInterval = 600) -> LogsArea.Registry {
-        let r = LogsArea.Registry(bus: daemon.server.bus, history: nil, replayCap: 100, orphanTimeout: orphan) { id, dev, pkg, seqStart in
+        let r = LogsArea.Registry(bus: daemon.server.bus, history: nil, replayCap: 100, orphanTimeout: orphan) { id, _, dev, pkg, seqStart in
             LogStreamEngine(id: id, device: dev, adbURL: nil, package: pkg, seqStart: seqStart,
                             makeSource: { _ in source }, prettifyEnabled: { false })
         }
@@ -156,6 +156,69 @@ final class DaemonLogsTests: XCTestCase {
 
     // MARK: - The app side
 
+    /// Tests that run against a live daemon never fall back.
+    private let noLocal: (UInt64) -> LogStreamEngine = { _ in
+        LogStreamEngine(device: device, adbURL: nil, makeSource: { _ in nil }, prettifyEnabled: { false })
+    }
+
+    func test_remoteTab_fillsAGapReportedByEventsDropped() async throws {
+        let daemon = try TestDaemon()
+        let source = ScriptedLogSource()
+        let reg = registry(daemon, source: source)
+        let connector = DaemonConnector(paths: daemon.paths, executable: nil, enabledAreas: [.logs])
+        let id = UUID()
+        let feed = RemoteLogFeed(id: id, device: device, package: "", displayName: "tab", autoStart: true,
+                                 daemon: connector, makeLocal: noLocal)
+        let tab = LogSession(id: id, device: device, feed: feed, adbURL: URL(fileURLWithPath: "/usr/bin/true"),
+                             filter: LogFilter(), displayName: "tab", isRemote: true)
+        try await waitUntil { tab.isRunning && source.isStreaming }
+        source.emit("one")
+        try await waitUntil { tab.visible.count == 1 }
+
+        // Two lines reach the replay buffer but never this client (it was too slow), then the
+        // daemon reports the drop right before the next live batch.
+        let hosted = try XCTUnwrap(reg.sessions[id])
+        let base = tab.visible[0].seq
+        let missed = [8, 16].map { LogLine(seq: base + $0, timestamp: Date(), level: .info, tag: "T", pid: 1, tid: 0,
+                                           message: "missed \($0)", raw: "missed") }
+        hosted.replay.append(contentsOf: missed)
+        let topic = LogsArea.linesTopic(id)
+        // As the bus sends it: on the lines topic's connection, ahead of the next batch.
+        let note = try DaemonLine.encode(RPCEventEnvelope(topic: "events.dropped",
+                                                          data: DroppedEvents(topic: topic, count: 2)))
+        daemon.server.bus.publishLine(topic, note, retain: false, droppable: false)
+        let after = LogLine(seq: base + 24, timestamp: Date(), level: .info, tag: "T", pid: 1, tid: 0,
+                            message: "after", raw: "after")
+        hosted.replay.append(after)
+        daemon.server.bus.publish(topic, [after])
+
+        try await waitUntil { tab.visible.count == 4 }
+        XCTAssertEqual(tab.visible.map(\.message), ["one", "missed 8", "missed 16", "after"], "the gap is filled, in order")
+        tab.close()
+    }
+
+    func test_remoteTab_streamsInProcessWhenTheDaemonIsUnreachable() async throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("jd-\(UUID().uuidString.prefix(8))")
+        let connector = DaemonConnector(paths: DaemonPaths(directory: dir), executable: nil, enabledAreas: [.logs])
+        let source = ScriptedLogSource()
+        let id = UUID()
+        var madeLocal = false
+        let feed = RemoteLogFeed(id: id, device: device, package: "", displayName: "tab", autoStart: false,
+                                 daemon: connector, makeLocal: { seqStart in
+            madeLocal = true
+            return LogStreamEngine(device: device, adbURL: nil, seqStart: seqStart,
+                                   makeSource: { _ in source }, prettifyEnabled: { false })
+        })
+        let tab = LogSession(id: id, device: device, feed: feed, adbURL: URL(fileURLWithPath: "/usr/bin/true"),
+                             filter: LogFilter(), displayName: "tab", isRemote: true)
+        try await waitUntil(.seconds(5)) { if case .unavailable = connector.state { return true }; return false }
+        tab.start()
+        try await waitUntil { madeLocal && tab.isRunning && source.isStreaming }
+        source.emit("local line")
+        try await waitUntil { tab.visible.count == 1 }
+        tab.close()
+    }
+
     func test_remoteTab_receivesLinesAndReattachesAfterRelaunch() async throws {
         let daemon = try TestDaemon()
         let source = ScriptedLogSource()
@@ -163,7 +226,7 @@ final class DaemonLogsTests: XCTestCase {
         let connector = DaemonConnector(paths: daemon.paths, executable: nil, enabledAreas: [.logs])
         let id = UUID()
 
-        let feed = RemoteLogFeed(id: id, device: device, package: "", displayName: "tab", autoStart: true, daemon: connector)
+        let feed = RemoteLogFeed(id: id, device: device, package: "", displayName: "tab", autoStart: true, daemon: connector, makeLocal: noLocal)
         let tab = LogSession(id: id, device: device, feed: feed, adbURL: URL(fileURLWithPath: "/usr/bin/true"),
                              filter: LogFilter(), displayName: "tab", isRemote: true)
         try await waitUntil { tab.isRunning && source.isStreaming }
@@ -173,7 +236,7 @@ final class DaemonLogsTests: XCTestCase {
 
         // "Relaunch": a new tab with the same id attaches and backfills from the replay buffer.
         feed.onLines = nil
-        let feed2 = RemoteLogFeed(id: id, device: device, package: "", displayName: "tab", autoStart: false, daemon: connector)
+        let feed2 = RemoteLogFeed(id: id, device: device, package: "", displayName: "tab", autoStart: false, daemon: connector, makeLocal: noLocal)
         let tab2 = LogSession(id: id, device: device, feed: feed2, adbURL: URL(fileURLWithPath: "/usr/bin/true"),
                               filter: LogFilter(), displayName: "tab", isRemote: true)
         try await waitUntil { tab2.visible.count == 2 && tab2.isRunning }
@@ -192,7 +255,7 @@ final class DaemonLogsTests: XCTestCase {
         _ = registry(daemon, source: source)
         let connector = DaemonConnector(paths: daemon.paths, executable: nil, enabledAreas: [.logs])
         let id = UUID()
-        let feed = RemoteLogFeed(id: id, device: device, package: "", displayName: "tab", autoStart: true, daemon: connector)
+        let feed = RemoteLogFeed(id: id, device: device, package: "", displayName: "tab", autoStart: true, daemon: connector, makeLocal: noLocal)
         let tab = LogSession(id: id, device: device, feed: feed, adbURL: URL(fileURLWithPath: "/usr/bin/true"),
                              filter: LogFilter(), displayName: "tab", isRemote: true)
         tab.setQuery("keep")

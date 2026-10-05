@@ -10,7 +10,12 @@ import Observation
 @Observable
 final class LogSession: WorkspaceTab {
     let id: UUID
-    var displayName: String { didSet { onStateChanged?() } }
+    var displayName: String {
+        didSet {
+            onStateChanged?()
+            feed.rename(displayName)
+        }
+    }
     let device: Device
 
     /// Called when persisted state (filter/package/name) changes, so the open-tabs
@@ -49,9 +54,7 @@ final class LogSession: WorkspaceTab {
     /// Set to a line seq to request the list scroll to it (crash navigation).
     var scrollTarget: UInt64?
     var followTail = true
-    var statusMessage: String? {
-        didSet { if statusMessage == nil, oldValue != nil, feed.state.statusMessage != nil { feed.clearStatus() } }
-    }
+    private(set) var statusMessage: String?
 
     /// Seqs of prettified response bodies the user has collapsed to a single line
     /// (double-click toggles). Default is expanded; only huge payloads are usually
@@ -333,14 +336,12 @@ final class LogSession: WorkspaceTab {
         for line in batch where filter.matches(line, regex: compiledRegex) {
             visible.append(line)
             displayMap.append(lineCount: effectiveLineCount(line))
-            if !line.isMarker, CrashDetector.isCrash(line) { crashSeqs.append(line.seq) }
+            // Counted from the engine's crash markers, which are always visible, so the badge,
+            // the navigation and the 💥 lines agree (the marker sits right after the crash).
+            if line.isMarker, line.markerCritical { crashSeqs.append(line.seq) }
         }
     }
 
-    /// Accumulates an app's PIDs across restarts (see `LogStreamEngine.accumulatePIDs`).
-    nonisolated static func accumulatePIDs(_ current: Set<Int32>, with resolved: Set<Int32>) -> Set<Int32> {
-        LogStreamEngine.accumulatePIDs(current, with: resolved)
-    }
 
     /// Installed apps/packages on this device, for the filter dropdown.
     func installedApps() async -> [AppEntry] {

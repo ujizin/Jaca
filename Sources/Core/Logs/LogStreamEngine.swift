@@ -42,7 +42,8 @@ protocol LogFeed: AnyObject {
     /// Checks the device (and package) before starting, reporting a status message if not.
     func connect()
     func setPackage(_ package: String)
-    func clearStatus()
+    /// The tab was renamed (history records the name when a run starts).
+    func rename(_ name: String)
     /// Forgets a half-seen response-body pair (the view cleared its scrollback).
     func resetBodyPairing()
     func clearDeviceBuffer()
@@ -150,7 +151,8 @@ final class LogStreamEngine: LogFeed {
         self.device = device
         self.adbURL = adbURL
         self.makeSource = makeSource ?? LogSources.primary(for: device, adbURL: adbURL)
-        self.makeConsoleSource = makeSource == nil ? LogSources.console(for: device) : makeConsoleSource
+        // Each default stands alone: an explicit console factory is used even with the default primary.
+        self.makeConsoleSource = makeConsoleSource ?? (makeSource == nil ? LogSources.console(for: device) : nil)
         self.onPersist = onPersist
         self.prettifyEnabled = prettifyEnabled
         self.seq = SeqCounter(start: seqStart)
@@ -260,11 +262,15 @@ final class LogStreamEngine: LogFeed {
                 state.statusMessage = "App “\(package)” isn’t installed on \(device.displayModel)."
             }
             state.isConnecting = false
+            // `start` clears the status line; the soft warning has to be set after it, or it
+            // never shows.
+            let warning = state.statusMessage
             start()
+            if let warning { state.statusMessage = warning }
         }
     }
 
-    func clearStatus() { state.statusMessage = nil }
+    func rename(_ name: String) {}   // in-process, history reads the tab's name when a run starts
 
     private var deviceUnavailableMessage: String {
         switch device.platform {
