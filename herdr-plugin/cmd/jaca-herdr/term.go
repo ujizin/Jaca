@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 // Terminal control with the standard library only: stty for raw mode and size, ANSI escapes
@@ -23,8 +24,10 @@ func sttyRun(args ...string) (string, error) {
 }
 
 // Once the terminal is restored, paint drops frames, so a frame the main loop was building when a
-// signal arrived can't land on the primary screen. restore only tries screenMu: a paint stuck in
-// a write (Herdr not reading the pty) must not keep a signal from reaching os.Exit.
+// signal arrived can't land on the primary screen. paint and restore share screenMu, so the
+// restore sequence never interleaves with a frame. A paint stuck in a write (Herdr not reading
+// the pty) would then block restore too; the signal path bounds that wait instead of skipping
+// the lock.
 var (
 	screenMu sync.Mutex
 	restored atomic.Bool
@@ -66,27 +69,35 @@ func enterRaw() (func(), error) {
 	}
 	fmt.Print("\x1b[?1049h\x1b[?25l")
 	refreshTermSize()
-	var once sync.Once
 	restore := func() {
-		once.Do(func() {
-			restored.Store(true)
-			if screenMu.TryLock() {
-				defer screenMu.Unlock()
-			}
-			fmt.Print("\x1b[?25h\x1b[?1049l")
-			sttyRun(saved)
-		})
+		if !restored.CompareAndSwap(false, true) {
+			return
+		}
+		screenMu.Lock()
+		defer screenMu.Unlock()
+		fmt.Print("\x1b[?25h\x1b[?1049l")
+		sttyRun(saved)
 	}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 	go func() {
 		sig := <-sigs
-		restore()
-		exitHooksMu.Lock()
-		hooks := append([]func(){}, exitHooks...)
-		exitHooksMu.Unlock()
-		for _, h := range hooks {
-			h()
+		// Restore and the hooks can block (a write to a pty nobody reads): give them a bounded
+		// time, then exit regardless.
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			restore()
+			exitHooksMu.Lock()
+			hooks := append([]func(){}, exitHooks...)
+			exitHooksMu.Unlock()
+			for _, h := range hooks {
+				h()
+			}
+		}()
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
 		}
 		code := 1
 		if s, ok := sig.(syscall.Signal); ok {
