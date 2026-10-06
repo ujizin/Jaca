@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"unicode/utf8"
 )
 
 // Terminal control with the standard library only: stty for raw mode and size, ANSI escapes
@@ -20,6 +19,22 @@ func sttyRun(args ...string) (string, error) {
 	cmd.Stdin = os.Stdin
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+// screenMu orders frames against restore: once the terminal is restored, paint drops frames, so
+// a frame the main loop was building when a signal arrived can't land on the primary screen.
+var (
+	screenMu sync.Mutex
+	restored bool
+)
+
+// paint writes one frame, unless the terminal was already restored.
+func paint(frame string) {
+	screenMu.Lock()
+	defer screenMu.Unlock()
+	if !restored {
+		fmt.Print(frame)
+	}
 }
 
 // enterRaw switches the terminal to raw mode on the alternate screen and returns a restore func,
@@ -38,6 +53,9 @@ func enterRaw() (func(), error) {
 	var once sync.Once
 	restore := func() {
 		once.Do(func() {
+			screenMu.Lock()
+			defer screenMu.Unlock()
+			restored = true
 			fmt.Print("\x1b[?25h\x1b[?1049l")
 			sttyRun(saved)
 		})
@@ -97,15 +115,117 @@ func fit(s string, w int) string {
 	if w <= 0 {
 		return ""
 	}
-	n := utf8.RuneCountInString(s)
-	if n > w {
-		r := []rune(s)
-		if w == 1 {
-			return string(r[:1])
-		}
-		return string(r[:w-1]) + "…"
+	c := clip(s, w)
+	return c + strings.Repeat(" ", w-cellWidth(c))
+}
+
+// clip truncates s (plain text, no escapes) to at most w display cells, ending in "…" when cut.
+func clip(s string, w int) string {
+	if w <= 0 {
+		return ""
 	}
-	return s + strings.Repeat(" ", w-n)
+	if cellWidth(s) <= w {
+		return s
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		rw := runeWidth(r)
+		if used+rw > w-1 {
+			break
+		}
+		b.WriteRune(r)
+		used += rw
+	}
+	b.WriteString("…")
+	return b.String()
+}
+
+// cellWidth is s's width in terminal cells.
+func cellWidth(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeWidth(r)
+	}
+	return n
+}
+
+// runeWidth is a conservative cell width: 0 for combining marks and zero-width joiners, 2 for
+// East Asian wide/fullwidth ranges and emoji, 1 otherwise.
+func runeWidth(r rune) int {
+	switch {
+	case r >= 0x0300 && r <= 0x036F, r >= 0x200B && r <= 0x200F, r >= 0xFE00 && r <= 0xFE0F, r == 0x20E3:
+		return 0
+	case r >= 0x1100 && r <= 0x115F,
+		r >= 0x2E80 && r <= 0x303E, r >= 0x3041 && r <= 0x33FF, r >= 0x3400 && r <= 0x4DBF,
+		r >= 0x4E00 && r <= 0x9FFF, r >= 0xA000 && r <= 0xA4CF, r >= 0xAC00 && r <= 0xD7A3,
+		r >= 0xF900 && r <= 0xFAFF, r >= 0xFE30 && r <= 0xFE4F, r >= 0xFF00 && r <= 0xFF60,
+		r >= 0xFFE0 && r <= 0xFFE6, r >= 0x1F300 && r <= 0x1F64F, r >= 0x1F900 && r <= 0x1F9FF,
+		r >= 0x1F680 && r <= 0x1F6FF, r >= 0x1FA70 && r <= 0x1FAFF, r >= 0x2600 && r <= 0x27BF,
+		r >= 0x20000 && r <= 0x3FFFD:
+		return 2
+	}
+	return 1
+}
+
+// sanitize makes device text safe to draw: tabs become spaces, and escape sequences, other C0
+// controls, DEL and C1 controls are removed, so a log line can't move the cursor or restyle
+// the pane.
+func sanitize(s string) string {
+	if !needsSanitize(s) {
+		return s
+	}
+	var b strings.Builder
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case r == '\t':
+			b.WriteString("    ")
+		case r == 0x1b:
+			i = skipEscape(rs, i)
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func needsSanitize(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return true
+		}
+	}
+	return false
+}
+
+// skipEscape returns the index of the last rune of the escape sequence starting at rs[i] (ESC):
+// CSI (ESC [ … final byte), OSC (ESC ] … BEL or ESC \), or ESC plus one rune.
+func skipEscape(rs []rune, i int) int {
+	if i+1 >= len(rs) {
+		return i
+	}
+	switch rs[i+1] {
+	case '[':
+		j := i + 2
+		for j < len(rs) && !(rs[j] >= 0x40 && rs[j] <= 0x7e) {
+			j++
+		}
+		return min(j, len(rs)-1)
+	case ']':
+		for j := i + 2; j < len(rs); j++ {
+			if rs[j] == 0x07 {
+				return j
+			}
+			if rs[j] == 0x1b && j+1 < len(rs) && rs[j+1] == '\\' {
+				return j + 1
+			}
+		}
+		return len(rs) - 1
+	}
+	return i + 1
 }
 
 // key is one decoded keypress.

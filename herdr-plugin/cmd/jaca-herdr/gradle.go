@@ -75,6 +75,8 @@ func runGradlePane() int {
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	killed := make(chan killResult, 4)
+	done := make(chan struct{})
+	defer close(done)
 
 	p := &gradlePane{}
 	p.draw()
@@ -91,7 +93,7 @@ func runGradlePane() int {
 				// The skipped update may have been the latest list: fetch it.
 				var note droppedNote
 				if json.Unmarshal(ev.Data, &note) == nil && note.Topic == gradleTopic {
-					refreshGradle(c)
+					p.refresh(c)
 				}
 			}
 		case <-c.Closed:
@@ -102,7 +104,7 @@ func runGradlePane() int {
 			if !ok || k == keyQuit {
 				return 0
 			}
-			p.handle(k, c, killed)
+			p.handle(k, c, killed, done)
 		case r := <-killed:
 			// The same toasts as GradleDaemonsModel.kill.
 			if r.ok {
@@ -127,14 +129,14 @@ func (p *gradlePane) setDaemons(list []gradleDaemon) {
 	p.selected = clampIndex(p.selected, len(list))
 }
 
-// refreshGradle fetches the list off the main loop and queues it as a gradle.daemons event.
-func refreshGradle(c *client) {
-	go func() {
-		var list []gradleDaemon
-		if c.Call("gradle.list", nil, &list) == nil {
-			c.inject(event{Topic: gradleTopic, Data: mustJSON(list)})
-		}
-	}()
+// refresh fetches the list on the UI loop, so a live update can't arrive between the reply and
+// its use and be overwritten by the older list. readLoop never blocks on the pane, so the
+// reply can't wait on this loop.
+func (p *gradlePane) refresh(c *client) {
+	var list []gradleDaemon
+	if c.CallTimeout("gradle.list", nil, &list, syncTimeout) == nil {
+		p.setDaemons(list)
+	}
 }
 
 type killResult struct {
@@ -142,7 +144,7 @@ type killResult struct {
 	ok  bool
 }
 
-func (p *gradlePane) handle(k key, c *client, killed chan<- killResult) {
+func (p *gradlePane) handle(k key, c *client, killed chan<- killResult, done <-chan struct{}) {
 	switch k {
 	case keyUp:
 		if p.selected > 0 {
@@ -155,7 +157,7 @@ func (p *gradlePane) handle(k key, c *client, killed chan<- killResult) {
 		}
 		p.confirmPID = 0
 	case keyRefresh:
-		refreshGradle(c)
+		p.refresh(c)
 	case keyKill:
 		if p.selected < 0 || p.selected >= len(p.daemons) {
 			return
@@ -169,7 +171,10 @@ func (p *gradlePane) handle(k key, c *client, killed chan<- killResult) {
 				if err := c.Call("gradle.kill", map[string]any{"pid": pid}, &ok); err != nil {
 					ok = false
 				}
-				killed <- killResult{pid: pid, ok: ok}
+				select {
+				case killed <- killResult{pid: pid, ok: ok}:
+				case <-done:
+				}
 			}(d.PID)
 		} else {
 			p.confirmPID = d.PID
@@ -209,14 +214,21 @@ func (p *gradlePane) draw() {
 	case len(p.daemons) == 0:
 		line("No Gradle daemons running")
 	default:
-		for _, r := range p.table(cols) {
-			line(r)
+		// Windowed around the selection like the projects list, so the header stays put.
+		table := p.table(cols)
+		room := max(1, rows-3)
+		start := 0
+		if p.selected >= room {
+			start = p.selected - room + 1
+		}
+		for i := start; i < len(table) && i < start+room; i++ {
+			line(table[i])
 		}
 	}
 	if p.toast != "" && rows > 4 {
 		b.WriteString(fmt.Sprintf("\x1b[%d;1H%s%s%s\x1b[K", rows, sgrBold, fit(p.toast, cols), sgrReset))
 	}
-	fmt.Print(b.String())
+	paint(b.String())
 }
 
 // table lays out the daemons like GradleDaemonRow, in aligned columns: name, PID, tags,
@@ -225,7 +237,7 @@ func (p *gradlePane) table(cols int) []string {
 	type cells struct{ name, pid, tags, uptime, cpu, button string }
 	rows := make([]cells, len(p.daemons))
 	var w cells
-	width := func(s string) int { return len([]rune(s)) }
+	width := cellWidth
 	widen := func(cur *string, s string) {
 		if width(s) > width(*cur) {
 			*cur = strings.Repeat(" ", width(s))
