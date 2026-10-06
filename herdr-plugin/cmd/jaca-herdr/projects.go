@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -210,9 +209,8 @@ func (p *projectsPane) handleKey(k []byte, toasts chan<- string, done <-chan str
 
 func (p *projectsPane) draw() {
 	rows, cols := termSize()
-	var b strings.Builder
-	b.WriteString("\x1b[H\x1b[2J")
-	line := func(s string) { b.WriteString(s + "\x1b[K\r\n") }
+	var frame []string
+	line := func(s string) { frame = append(frame, s) }
 
 	head := sgrDim + "PROJECTS" + sgrReset
 	if p.state.IsRefreshing {
@@ -254,7 +252,7 @@ func (p *projectsPane) draw() {
 		}
 	}
 	if p.toast != "" && rows > 4 {
-		b.WriteString(fmt.Sprintf("\x1b[%d;1H%s%s%s\x1b[K", rows, sgrBold, fit(sanitize(p.toast), cols), sgrReset))
+		frame = rowAt(frame, rows, sgrBold+fit(sanitize(p.toast), cols)+sgrReset)
 	}
-	paint(b.String())
+	paintRows(frame)
 }

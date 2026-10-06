@@ -3,14 +3,14 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 )
 
 const usage = `usage: jaca-herdr ensure
-       jaca-herdr pane gradle|devices|projects
+       jaca-herdr pane gradle|devices|logs|projects
        jaca-herdr action gradle-kill-all
        jaca-herdr action projects-clear-cache`
 
@@ -26,10 +26,20 @@ func main() {
 			fmt.Fprintln(os.Stderr, "jaca:", err)
 			os.Exit(1)
 		}
+	case len(args) == 3 && args[0] == "focus-tab":
+		// Internal: started by the device picker, see focusTabAfterExit.
+		pid, err := strconv.Atoi(args[2])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		os.Exit(focusTabWhenGone(args[1], pid))
 	case len(args) == 2 && args[0] == "pane" && args[1] == "gradle":
 		os.Exit(runGradlePane())
 	case len(args) == 2 && args[0] == "pane" && args[1] == "devices":
 		os.Exit(runDevicesPane())
+	case len(args) == 2 && args[0] == "pane" && args[1] == "logs":
+		os.Exit(runLogsPane())
 	case len(args) == 2 && args[0] == "pane" && args[1] == "projects":
 		os.Exit(runProjectsPane())
 	case len(args) == 2 && args[0] == "action" && args[1] == "gradle-kill-all":
@@ -72,16 +82,6 @@ func killAllGradle() int {
 	return 0
 }
 
-// herdrContext is the part of HERDR_PLUGIN_CONTEXT_JSON this plugin reads.
-type herdrContext struct {
-	FocusedPaneCwd string `json:"focused_pane_cwd"`
-	WorkspaceCwd   string `json:"workspace_cwd"`
-	Worktree       *struct {
-		CheckoutPath string `json:"checkout_path"`
-		RepoRoot     string `json:"repo_root"`
-	} `json:"worktree"`
-}
-
 type projectCheckout struct {
 	Path string `json:"path"`
 }
@@ -95,10 +95,7 @@ type project struct {
 // workspace's worktree, else the focused pane's directory. The same work as the Projects
 // area's clear-cache action in the app.
 func clearWorktreeCache() int {
-	var ctx herdrContext
-	if raw := os.Getenv("HERDR_PLUGIN_CONTEXT_JSON"); raw != "" {
-		_ = json.Unmarshal([]byte(raw), &ctx)
-	}
+	ctx := readHerdrContext()
 	target := ""
 	if ctx.Worktree != nil && ctx.Worktree.CheckoutPath != "" {
 		target = ctx.Worktree.CheckoutPath

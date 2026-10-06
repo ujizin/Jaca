@@ -105,7 +105,7 @@ after pulling changes.
 Open a pane:
 
 ```bash
-herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint devices    # device list + logs
+herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint devices    # device picker popup; opens logs in a new tab
 herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint gradle     # Gradle daemons
 herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint projects   # projects + cache cleanup
 ```
