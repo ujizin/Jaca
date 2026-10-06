@@ -341,3 +341,26 @@ final class SerialChain: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+
+/// Keeps a background task alive (and cancels it) with the server.
+final class TaskBox {
+    let task: Task<Void, Never>
+    init(_ task: Task<Void, Never>) { self.task = task }
+    deinit { task.cancel() }
+}
+
+enum DaemonDefaults {
+    /// How long a hosted session (logs, cloud, network) may go unwatched before it is closed.
+    /// `JACAD_ORPHAN_SECONDS` overrides it (`JACAD_LOG_ORPHAN_SECONDS`, its first name, still
+    /// works); a non-finite or non-positive value is ignored.
+    static let orphanTimeout: TimeInterval = {
+        let env = ProcessInfo.processInfo.environment
+        let raw = env["JACAD_ORPHAN_SECONDS"] ?? env["JACAD_LOG_ORPHAN_SECONDS"]
+        return raw.flatMap(TimeInterval.init).flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 600
+    }()
+
+    /// Bound on calls that should answer at once (`hello`, status): a daemon that accepts but
+    /// never answers must not hang the caller.
+    static let shortCallTimeout: Duration = .seconds(10)
+}

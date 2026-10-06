@@ -7,9 +7,15 @@ actor NetworkBodyCache {
     private let dir: URL
     private let fm = FileManager.default
 
-    init?() {
-        guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
-        dir = caches.appendingPathComponent("Jaca/net-bodies", isDirectory: true)
+    /// `name` is the folder under `~/Library/Caches/Jaca`. The app and `jacad` each use their
+    /// own: each wipes its folder when it starts, which must not take the other's bodies.
+    convenience init?(name: String = "net-bodies") {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        self.init(directory: caches.appendingPathComponent("Jaca/\(name)", isDirectory: true))
+    }
+
+    init?(directory: URL) {
+        dir = directory
         try? fm.removeItem(at: dir)   // a body cache only needs to outlive the current run
         do { try fm.createDirectory(at: dir, withIntermediateDirectories: true) }
         catch { return nil }

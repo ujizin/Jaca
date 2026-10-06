@@ -1,8 +1,8 @@
 import Foundation
 
 /// Device log sessions running in the daemon. Each session is a `LogStreamEngine` plus a
-/// replay buffer, so a client that (re)attaches — the app after a relaunch, a Herdr pane opened
-/// later, a client that fell behind — can backfill with `logs.range` before following live
+/// replay buffer, so a client that (re)attaches (the app after a relaunch, a Herdr pane opened
+/// later, a client that fell behind) can backfill with `logs.range` before following live
 /// `logs.lines.<id>` batches.
 ///
 /// A session nobody watches (no subscriber on its lines topic) is stopped and closed after
@@ -34,6 +34,8 @@ enum LogsArea {
         var displayName: String
         var state: LogStreamState
         var lastSeq: UInt64?
+        /// False when this open created the session (the daemon didn't have it).
+        var existed = true
     }
 
     static func linesTopic(_ id: UUID) -> String { "logs.lines.\(id.uuidString)" }
@@ -83,9 +85,9 @@ enum LogsArea {
 
         var isBusy: Bool { sessions.values.contains { $0.engine.state.isRunning } }
 
-        func info(_ hosted: Hosted) -> SessionInfo {
+        func info(_ hosted: Hosted, existed: Bool = true) -> SessionInfo {
             SessionInfo(id: hosted.engine.id, device: hosted.engine.device, displayName: hosted.displayName,
-                        state: hosted.engine.state, lastSeq: hosted.replay.last?.seq)
+                        state: hosted.engine.state, lastSeq: hosted.replay.last?.seq, existed: existed)
         }
 
         func open(_ p: OpenParams) throws -> SessionInfo {
@@ -125,7 +127,7 @@ enum LogsArea {
             }
             bus.publish(stateTopic, engine.state, retain: true)
             if p.autoStart == true { engine.start() }
-            return info(hosted)
+            return info(hosted, existed: false)
         }
 
         func close(_ id: UUID) -> Bool {
@@ -179,8 +181,7 @@ enum LogsArea {
 
     @MainActor
     static func install(on server: DaemonServer, registry: Registry? = nil) {
-        let orphan = ProcessInfo.processInfo.environment["JACAD_LOG_ORPHAN_SECONDS"].flatMap(TimeInterval.init)
-            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 600
+        let orphan = DaemonDefaults.orphanTimeout
         let registry = registry ?? Registry(bus: server.bus, history: HistoryStore(), orphanTimeout: orphan)
         server.keep(registry)
         server.addBusyCheck("logs") { registry.isBusy }
@@ -239,9 +240,17 @@ enum LogsArea {
     }
 }
 
-/// Keeps a background task alive (and cancels it) with the server.
-final class TaskBox {
-    let task: Task<Void, Never>
-    init(_ task: Task<Void, Never>) { self.task = task }
-    deinit { task.cancel() }
+extension LogsArea.SessionInfo {
+    private enum CodingKeys: String, CodingKey { case id, device, displayName, state, lastSeq, existed }
+
+    /// Tolerant: `existed` arrived after the first version of this message.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(id: try c.decode(UUID.self, forKey: .id),
+                  device: try c.decode(Device.self, forKey: .device),
+                  displayName: (try? c.decodeIfPresent(String.self, forKey: .displayName)) ?? "",
+                  state: (try? c.decodeIfPresent(LogStreamState.self, forKey: .state)) ?? LogStreamState(),
+                  lastSeq: try? c.decodeIfPresent(UInt64.self, forKey: .lastSeq),
+                  existed: (try? c.decodeIfPresent(Bool.self, forKey: .existed)) ?? true)
+    }
 }

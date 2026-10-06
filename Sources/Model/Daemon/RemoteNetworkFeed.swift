@@ -55,8 +55,13 @@ final class RemoteNetworkFeed: NetworkFeed {
             wantsRunning = next.isRunning || next.isConnecting
             setState(next)
         case "events.dropped":
-            // Missed upserts: fetch the whole list again (upserts are idempotent by id).
-            Task { await resync() }
+            // A lost state is fetched again (reopening returns it). Missed upserts: fetch the whole
+            // list again (upserts are idempotent by id).
+            if (try? event.decode(DroppedEvents.self))?.topic == NetworkArea.stateTopic(id) {
+                Task { await openAndResync() }
+            } else {
+                Task { await resync() }
+            }
         default:
             break
         }
@@ -72,6 +77,8 @@ final class RemoteNetworkFeed: NetworkFeed {
         let params = NetworkArea.OpenParams(id: id, device: device, sourceID: state.selectedSourceID,
                                             package: state.targetPackage, autoStart: wantsRunning)
         guard let info = await daemon.call("network.open", params, as: NetworkArea.SessionInfo.self) else { return }
+        // Same rule as the log and cloud feeds: the daemon's run state wins for a capture it had.
+        if info.existed { wantsRunning = info.state.isRunning || info.state.isConnecting }
         setState(info.state)
         await resync()
     }
@@ -130,7 +137,6 @@ final class RemoteNetworkFeed: NetworkFeed {
 
     func resume() {
         guard state.hasSelectedMode else { return }
-        wantsRunning = true
         if let sourceID = state.selectedSourceID {
             select(sourceID: sourceID, package: state.targetPackage)
         }

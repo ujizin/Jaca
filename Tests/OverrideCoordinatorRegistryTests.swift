@@ -10,6 +10,27 @@ import XCTest
 @MainActor
 final class OverrideCoordinatorRegistryTests: XCTestCase {
 
+    // The rule library goes to a temporary directory and the model runs in-process with no
+    // daemon, so these tests never touch the user's rules or a running jacad.
+    private var overridesDir: URL!
+
+    override func setUpWithError() throws {
+        overridesDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ov-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: overridesDir, withIntermediateDirectories: true)
+        setenv("JACA_OVERRIDES_DIR", overridesDir.path, 1)
+    }
+
+    override func tearDownWithError() throws {
+        unsetenv("JACA_OVERRIDES_DIR")
+        try? FileManager.default.removeItem(at: overridesDir)
+    }
+
+    @MainActor private func makeModel() -> OverridesModel {
+        let offline = DaemonConnector(paths: DaemonPaths(directory: overridesDir), executable: nil, enabledAreas: [])
+        return OverridesModel(daemon: offline, inDaemon: false)
+    }
+
+
     private final class SilentWriter: AgentControlWriter, @unchecked Sendable {
         func write(_ json: String) {}
         func flush(timeout: Duration) async {}
@@ -47,7 +68,7 @@ final class OverrideCoordinatorRegistryTests: XCTestCase {
     /// orphaned the live coordinator: `republish()` could no longer reach it, so host and rule
     /// edits silently stopped routing while the tab still showed itself as armed.
     func test_aSecondTabDoesNotEvictTheLiveCoordinator() async {
-        let model = OverridesModel()
+        let model = makeModel()
         let services = model.services()
         let live = makeCoordinator(services)
         let newcomer = makeCoordinator(services)
@@ -70,7 +91,7 @@ final class OverrideCoordinatorRegistryTests: XCTestCase {
 
     /// …and closing that second tab must not take the live tab's registration with it.
     func test_closingTheSecondTabLeavesTheLiveTabRegistered() async {
-        let model = OverridesModel()
+        let model = makeModel()
         let services = model.services()
         let live = makeCoordinator(services)
         let newcomer = makeCoordinator(services)
@@ -91,7 +112,7 @@ final class OverrideCoordinatorRegistryTests: XCTestCase {
     /// The restart case must still work: a coordinator that has already been stopped is replaced,
     /// because its deregistration is still in flight behind a flush.
     func test_aStoppedCoordinatorIsReplacedByTheRestart() async {
-        let model = OverridesModel()
+        let model = makeModel()
         let services = model.services()
         let outgoing = makeCoordinator(services)
         let incoming = makeCoordinator(services)

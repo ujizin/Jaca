@@ -6,6 +6,27 @@ import XCTest
 /// discarded instead of saved.
 final class OverrideAuthoringTests: XCTestCase {
 
+    // The rule library goes to a temporary directory and the model runs in-process with no
+    // daemon, so these tests never touch the user's rules or a running jacad.
+    private var overridesDir: URL!
+
+    override func setUpWithError() throws {
+        overridesDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ov-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: overridesDir, withIntermediateDirectories: true)
+        setenv("JACA_OVERRIDES_DIR", overridesDir.path, 1)
+    }
+
+    override func tearDownWithError() throws {
+        unsetenv("JACA_OVERRIDES_DIR")
+        try? FileManager.default.removeItem(at: overridesDir)
+    }
+
+    @MainActor private func makeModel() -> OverridesModel {
+        let offline = DaemonConnector(paths: DaemonPaths(directory: overridesDir), executable: nil, enabledAreas: [])
+        return OverridesModel(daemon: offline, inDaemon: false)
+    }
+
+
     // MARK: - Bug 1: every row's override item was disabled
 
     /// `callStack` deliberately strips okhttp/okio frames (`SqueezeTracker.isInfraFrame`) so the
@@ -48,7 +69,7 @@ final class OverrideAuthoringTests: XCTestCase {
     /// every rule created that way vanished on save. `save(_:)` must handle both cases.
     @MainActor
     func test_saveAddsARuleThatDoesNotExistYet() {
-        let model = OverridesModel()
+        let model = makeModel()
         let existingCount = model.rules.count
 
         let fresh = OverrideRule(name: "Fresh",
@@ -62,7 +83,7 @@ final class OverrideAuthoringTests: XCTestCase {
 
     @MainActor
     func test_saveUpdatesARuleThatAlreadyExists() {
-        let model = OverridesModel()
+        let model = makeModel()
         var rule = OverrideRule(name: "Before", matcher: OverrideMatcher(pattern: "https://a.com/**"))
         model.save(rule)
         let countAfterAdd = model.rules.count
@@ -78,7 +99,7 @@ final class OverrideAuthoringTests: XCTestCase {
     /// New rules are enabled by default…
     @MainActor
     func test_newRuleIsEnabledByDefault() {
-        let model = OverridesModel()
+        let model = makeModel()
         let rule = OverrideRule(name: "Default", matcher: OverrideMatcher(pattern: "https://a.com/**"))
         model.save(rule)
         XCTAssertEqual(model.rules.first { $0.id == rule.id }?.enabled, true)
@@ -89,7 +110,7 @@ final class OverrideAuthoringTests: XCTestCase {
     /// `enabled = true`, re-enabling a rule the user had just switched off.
     @MainActor
     func test_explicitlyDisabledNewRuleStaysDisabled() {
-        let model = OverridesModel()
+        let model = makeModel()
         var rule = OverrideRule(name: "Off", matcher: OverrideMatcher(pattern: "https://a.com/**"))
         rule.enabled = false
         model.save(rule)
@@ -102,7 +123,7 @@ final class OverrideAuthoringTests: XCTestCase {
     /// an empty host set arms nothing at all.
     @MainActor
     func test_savingDerivesTheRoutedHostFromThePattern() {
-        let model = OverridesModel()
+        let model = makeModel()
         let rule = OverrideRule(name: "Derived",
                                 matcher: OverrideMatcher(pattern: "https://api.example.com/v1/**"))
         model.save(rule)
@@ -116,7 +137,7 @@ final class OverrideAuthoringTests: XCTestCase {
     /// immutable snapshot, so the risk is that an edit doesn't get republished.
     @MainActor
     func test_editingDelayIsVisibleToTheResolverImmediately() {
-        let model = OverridesModel()
+        let model = makeModel()
         var rule = OverrideRule(name: "delayed",
                                 matcher: OverrideMatcher(pattern: "https://delay.example.com/**"),
                                 delayMillis: 2000)
@@ -147,7 +168,7 @@ final class OverrideAuthoringTests: XCTestCase {
     /// A request that matches no rule must never inherit another rule's delay.
     @MainActor
     func test_unmatchedRequestHasNoDelay() {
-        let model = OverridesModel()
+        let model = makeModel()
         let rule = OverrideRule(name: "slow",
                                 matcher: OverrideMatcher(pattern: "https://slow.example.com/**"),
                                 delayMillis: 5000)

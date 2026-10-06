@@ -2,9 +2,10 @@ import Foundation
 
 /// A Cloud Logging stream running in `jacad`, as a `CloudFeed` for a `CloudLogSession` tab.
 ///
-/// Same shape as `RemoteLogFeed`: on every (re)connection it opens the session by id (attaching,
-/// or recreating it after a daemon restart), backfills from the daemon's replay buffer, and
-/// follows live entries, older pages and state. Commands go through one serial queue.
+/// On every (re)connection it opens the session by id (attaching, or recreating it after a
+/// daemon restart, when the tab resets its rows), backfills from the daemon's replay buffer, and
+/// follows live entries, older pages and state. Commands go through one serial queue. Unlike
+/// `RemoteLogFeed` it has no in-process fallback: an unreachable daemon reads as stopped.
 @MainActor
 final class RemoteCloudFeed: CloudFeed {
     let id: UUID
