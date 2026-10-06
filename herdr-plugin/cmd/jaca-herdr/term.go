@@ -69,14 +69,24 @@ func enterRaw() (func(), error) {
 	}
 	fmt.Print("\x1b[?1049h\x1b[?25l")
 	refreshTermSize()
+	// The first caller restores; later ones wait (bounded) until it has finished, so main can't
+	// print or exit while the terminal is still half restored.
+	restoreDone := make(chan struct{})
 	restore := func() {
 		if !restored.CompareAndSwap(false, true) {
+			select {
+			case <-restoreDone:
+			case <-time.After(time.Second):
+			}
 			return
 		}
+		defer close(restoreDone)
+		// The tty mode first: stty doesn't write to the pty, so a paint stuck in a write can't
+		// leave the terminal raw.
+		sttyRun(saved)
 		screenMu.Lock()
 		defer screenMu.Unlock()
 		fmt.Print("\x1b[?25h\x1b[?1049l")
-		sttyRun(saved)
 	}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
