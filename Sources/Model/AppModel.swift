@@ -237,7 +237,11 @@ final class AppModel {
             old.close()
             // Only fails without a CA, which a network tab already needed: the tab is dropped.
             guard let fresh = makeNetworkSession(for: old.device, name: old.displayName) else { continue }
-            if let kind { fresh.restoreMode(kind, package: package) }
+            // Toggling HTTPS decryption changes what's offered (companion capture needs it): a
+            // mode the rebuilt tab doesn't offer returns it to the chooser.
+            if let kind, fresh.availableSources.contains(where: { $0.kind == kind }) {
+                fresh.restoreMode(kind, package: package)
+            }
             rebuilt.append(fresh)
             if wasSelected { selectedSessionID = fresh.id }
         }
