@@ -45,7 +45,8 @@ func connect() async -> DaemonClient {
     do {
         let client = try await DaemonLauncher.connect(spawn: !noSpawn)
         let _: DaemonServer.HelloResult = try await client.call(
-            "hello", DaemonServer.HelloParams(protocolVersion: DaemonProtocol.version, client: "jacad-cli"))
+            "hello", DaemonServer.HelloParams(protocolVersion: DaemonProtocol.version, client: "jacad-cli"),
+            timeout: .seconds(10))
         return client
     } catch {
         fail(error.localizedDescription)
@@ -70,7 +71,8 @@ func printResult(_ line: Data) -> Int32 {
     return 0
 }
 
-func call(_ method: String, _ paramsText: String?) async -> Int32 {
+/// `timeout` bounds the wait for the response (nil: `jacad call` runs methods that can take minutes).
+func call(_ method: String, _ paramsText: String?, timeout: Duration? = nil) async -> Int32 {
     var params: Data?
     if let paramsText {
         // Re-serialized compactly: the wire is one message per line, so pasted multi-line JSON
@@ -84,7 +86,7 @@ func call(_ method: String, _ paramsText: String?) async -> Int32 {
     let client = await connect()
     do {
         // An error response arrives as a thrown RPCError and is reported by `fail` below.
-        return printResult(try await client.callRaw(method, paramsJSON: params))
+        return printResult(try await client.callRaw(method, paramsJSON: params, timeout: timeout))
     } catch {
         fail(error.localizedDescription)
     }
@@ -93,8 +95,12 @@ func call(_ method: String, _ paramsText: String?) async -> Int32 {
 switch command {
 case "serve":
     var idle: TimeInterval = 300
-    if let i = args.firstIndex(of: "--idle"), i + 1 < args.count, let v = TimeInterval(args[i + 1]) { idle = v }
     if let v = ProcessInfo.processInfo.environment["JACAD_IDLE_SECONDS"].flatMap(TimeInterval.init) { idle = v }
+    // The flag wins over the environment.
+    if let i = args.firstIndex(of: "--idle") {
+        guard i + 1 < args.count, let v = TimeInterval(args[i + 1]) else { fail(usage, code: 2) }
+        idle = v
+    }
     // Leave the spawning app's session so quitting (or killing) it doesn't take the daemon along.
     setsid()
     signal(SIGPIPE, SIG_IGN)
@@ -135,19 +141,29 @@ case "call":
     runMain { await call(method, params) }
 
 case "status":
-    runMain { await call("daemon.status", nil) }
+    runMain { await call("daemon.status", nil, timeout: .seconds(10)) }
 
 case "describe":
-    runMain { await call("api.describe", nil) }
+    runMain { await call("api.describe", nil, timeout: .seconds(10)) }
 
 case "stop":
     runMain {
         guard let client = try? await DaemonClient.connect() else { return 0 }   // not running
-        let code = printResult((try? await client.callRaw("daemon.shutdown", paramsJSON: nil)) ?? Data("{}".utf8))
+        let code: Int32
+        do {
+            code = printResult(try await client.callRaw("daemon.shutdown", paramsJSON: nil, timeout: .seconds(10)))
+        } catch {
+            FileHandle.standardError.write(Data("jacad: \(error.localizedDescription)\n".utf8))
+            return 1
+        }
         // Return once the daemon is gone, so a command run right after can't reach it mid-exit.
         let socket = DaemonPaths.default.socket.path
         for _ in 0..<50 where FileManager.default.fileExists(atPath: socket) {
             try? await Task.sleep(for: .milliseconds(50))
+        }
+        if FileManager.default.fileExists(atPath: socket) {
+            FileHandle.standardError.write(Data("jacad: still running after 2.5s\n".utf8))
+            return 1
         }
         return code
     }

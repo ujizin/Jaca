@@ -10,7 +10,8 @@ enum XcodeArea {
             await service.list()
         }
         server.router.register("xcode.delete", "Deletes one folder directly inside DerivedData. Returns whether it worked.",
-                               params: PathParams.self) { p, _ in
+                               params: PathParams.self, concurrent: true) { p, _ in
+            // Concurrent: deleting several GB must not hold up the connection's other calls.
             await service.delete(path: p.path)
         }
     }

@@ -94,7 +94,8 @@ final class SeqCounter: @unchecked Sendable {
     /// The first line seq past `seq` for a counter with the default stride: where a new stream
     /// continues after lines (and their sub-seqs) already shown.
     static func slot(after seq: UInt64?, stride: UInt64 = 8) -> UInt64 {
-        seq.map { ($0 / stride + 1) * stride } ?? 0
+        // Wrapping arithmetic like `next()`: the seq can come off the wire.
+        seq.map { ($0 / stride &+ 1) &* stride } ?? 0
     }
 }
 

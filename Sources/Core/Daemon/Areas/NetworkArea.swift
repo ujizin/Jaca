@@ -208,7 +208,7 @@ enum NetworkArea {
                     hosted.unwatchedSince = nil
                 } else if let since = hosted.unwatchedSince {
                     if now.timeIntervalSince(since) >= orphanTimeout {
-                        DaemonLog.info("closing network capture \(id): unwatched for \(Int(orphanTimeout))s")
+                        DaemonLog.info("closing network capture \(id): unwatched for \(orphanTimeout)s")
                         _ = close(id)
                     }
                 } else {
@@ -221,7 +221,8 @@ enum NetworkArea {
     @MainActor
     static func install(on server: DaemonServer, captures: Captures? = nil,
                         interceptServices: @escaping () -> InterceptServices? = { nil }) {
-        let orphan = ProcessInfo.processInfo.environment["JACAD_LOG_ORPHAN_SECONDS"].flatMap(TimeInterval.init) ?? 600
+        let orphan = ProcessInfo.processInfo.environment["JACAD_LOG_ORPHAN_SECONDS"].flatMap(TimeInterval.init)
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 600
         let captures = captures ?? Captures(bus: server.bus, orphanTimeout: orphan)
         captures.interceptServices = interceptServices
         server.keep(captures)
@@ -237,6 +238,12 @@ enum NetworkArea {
         r.register("network.open", "Opens (or attaches to, by id) a network capture for a device.",
                    params: OpenParams.self) { p, _ in await captures.open(p) }
         r.register("network.select", "Chooses a capture source (agent) and starts it.", params: SelectParams.self) { p, _ in
+            try await MainActor.run {
+                // Companion capture needs the CA and the gRPC links, which stay in the app.
+                if CaptureSourceRegistry.descriptor(id: p.sourceID)?.kind == .companion {
+                    throw RPCError.invalidParams("Companion capture runs in the app, not in jacad.")
+                }
+            }
             try await MainActor.run { try captures.session(p.id).engine.select(sourceID: p.sourceID, package: p.package) }
             return RPCEmpty()
         }

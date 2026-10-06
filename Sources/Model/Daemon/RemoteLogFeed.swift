@@ -33,10 +33,11 @@ final class RemoteLogFeed: LogFeed {
     private var gapAgain = false
     /// The in-process stream this tab switched to when the daemon was unreachable.
     private var fallback: LogStreamEngine?
-    private let makeLocal: (_ seqStart: UInt64, _ displayName: String) -> LogStreamEngine
+    private let makeLocal: (_ seqStart: UInt64, _ displayName: @escaping @MainActor () -> String) -> LogStreamEngine
 
     init(id: UUID, device: Device, package: String, displayName: String, autoStart: Bool,
-         daemon: DaemonConnector, makeLocal: @escaping (_ seqStart: UInt64, _ displayName: String) -> LogStreamEngine) {
+         daemon: DaemonConnector,
+         makeLocal: @escaping (_ seqStart: UInt64, _ displayName: @escaping @MainActor () -> String) -> LogStreamEngine) {
         self.id = id
         self.device = device
         self.daemon = daemon
@@ -103,10 +104,17 @@ final class RemoteLogFeed: LogFeed {
         let seqStart = SeqCounter.slot(after: lastSeq)
         let params = LogsArea.OpenParams(id: id, device: device, package: state.package,
                                          displayName: displayName, autoStart: wantsRunning, seqStart: seqStart)
-        guard let info = await daemon.call("logs.open", params, as: LogsArea.SessionInfo.self) else {
-            // Reachable but the daemon couldn't open it (say, it resolves no adb): a tab that
+        let info: LogsArea.SessionInfo
+        do {
+            guard let opened = try await daemon.request("logs.open", params, as: LogsArea.SessionInfo.self) else { return }
+            info = opened
+        } catch let error as RPCError where error.code == RPCError.disconnectedCode {
+            return   // the connection dropped: the watch resubscribes and opens again
+        } catch {
+            // The daemon answered but couldn't open it (say, it resolves no adb): a tab that
             // wants to stream does so in-process, where the engine reports why it can't.
-            if wantsRunning, fallback == nil, !daemonUnavailable { useFallback().connect() }
+            DaemonLog.error("logs.open: \(error.localizedDescription)")
+            if wantsRunning, fallback == nil { useFallback().connect() }
             return
         }
         wantsRunning = info.state.isRunning || info.state.isConnecting || wantsRunning
@@ -162,7 +170,8 @@ final class RemoteLogFeed: LogFeed {
         // one tab doesn't stream twice and record two history runs.
         let params = LogsArea.IDParams(id: id)
         commands.enqueue { [daemon] in let _: Bool? = await daemon.call("logs.close", params) }
-        let engine = makeLocal(SeqCounter.slot(after: lastSeq), displayName)
+        let fallbackName = displayName
+        let engine = makeLocal(SeqCounter.slot(after: lastSeq)) { [weak self] in self?.displayName ?? fallbackName }
         if !state.package.isEmpty {
             engine.setPackage(state.package)
             engine.seedPIDs(state.pids ?? [])

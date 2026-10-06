@@ -215,8 +215,9 @@ final class OverridesEngine {
     func move(_ id: UUID, by offset: Int) {
         syncFromDisk()
         guard let index = state.rules.firstIndex(where: { $0.id == id }) else { return }
-        let target = index + offset
-        guard state.rules.indices.contains(target) else { return }
+        // `offset` can come off the wire: no overflow trap.
+        let (target, overflow) = index.addingReportingOverflow(offset)
+        guard !overflow, state.rules.indices.contains(target) else { return }
         state.rules.swapAt(index, target)
         persistAndRepublish()
     }

@@ -157,7 +157,7 @@ final class DaemonLogsTests: XCTestCase {
     // MARK: - The app side
 
     /// Tests that run against a live daemon never fall back.
-    private let noLocal: (UInt64, String) -> LogStreamEngine = { _, _ in
+    private let noLocal: (UInt64, @escaping @MainActor () -> String) -> LogStreamEngine = { _, _ in
         LogStreamEngine(device: device, adbURL: nil, makeSource: { _ in nil }, prettifyEnabled: { false })
     }
 

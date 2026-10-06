@@ -95,6 +95,8 @@ final class RemoteCloudFeed: CloudFeed {
     private func openAndBackfill() async {
         let params = CloudArea.OpenParams(id: id, config: config, autoStart: wantsRunning)
         guard let info = await daemon.call("cloud.sessions.open", params, as: CloudArea.SessionInfo.self) else { return }
+        // The daemon's run state wins over ours (a dropped "stopped" state left ours stale).
+        if info.existed { wantsRunning = info.state.isRunning }
         if !info.existed && hasHistory {
             // The daemon restarted and this is a fresh session: its seqs start over.
             lastSeq = nil
