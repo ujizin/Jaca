@@ -272,8 +272,9 @@ final class CloudEngine {
     /// Merges auto-detected label keys for a (project, log name). Only persists on a real
     /// change, so the hot streaming path doesn't thrash the disk.
     func recordLabelKeys(_ keys: Set<String>, project id: String, logName: String) {
+        guard !keys.isEmpty else { return }
         syncFromDisk()
-        guard !keys.isEmpty, let index = state.projects.firstIndex(where: { $0.projectID == id }) else { return }
+        guard let index = state.projects.firstIndex(where: { $0.projectID == id }) else { return }
         let existing = state.projects[index].labelKeysByLogName[logName] ?? []
         let (merged, changed) = LabelDetector.merge(existing, with: keys)
         guard changed else { return }

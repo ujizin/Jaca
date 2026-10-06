@@ -27,12 +27,12 @@ extension OverridesState {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             rules: CloudPersistence.decodeArrayField(OverrideRule.self, in: c, forKey: .rules),
-            masterEnabled: try c.decodeIfPresent(Bool.self, forKey: .masterEnabled) ?? true,
-            hitCounts: try c.decodeIfPresent([String: Int].self, forKey: .hitCounts) ?? [:],
-            lastHitAt: try c.decodeIfPresent([String: Date].self, forKey: .lastHitAt) ?? [:],
+            masterEnabled: (try? c.decodeIfPresent(Bool.self, forKey: .masterEnabled)) ?? true,
+            hitCounts: (try? c.decodeIfPresent([String: Int].self, forKey: .hitCounts)) ?? [:],
+            lastHitAt: (try? c.decodeIfPresent([String: Date].self, forKey: .lastHitAt)) ?? [:],
             armings: CloudPersistence.decodeArrayField(Arming.self, in: c, forKey: .armings),
-            lastActivity: try c.decodeIfPresent(String.self, forKey: .lastActivity),
-            reclaimedTunnelCount: try c.decodeIfPresent(Int.self, forKey: .reclaimedTunnelCount) ?? 0
+            lastActivity: try? c.decodeIfPresent(String.self, forKey: .lastActivity),
+            reclaimedTunnelCount: (try? c.decodeIfPresent(Int.self, forKey: .reclaimedTunnelCount)) ?? 0
         )
     }
 }
@@ -68,7 +68,11 @@ final class OverridesEngine {
     /// there, and hands the runtime back to this engine.
     func reload() {
         diskStamp = Self.diskModified
-        state.rules = OverrideRuleStore.load()
+        if let rules = OverrideRuleStore.loadIfReadable() {
+            state.rules = rules
+        } else {
+            JacaLog.error("override", "\(OverrideRuleStore.rulesURL.path) isn't readable JSON; keeping the \(state.rules.count) rule(s) in memory")
+        }
         state.masterEnabled = FeatureFlags.overridesMasterEnabled
         republish()
     }
@@ -239,13 +243,14 @@ final class OverridesEngine {
 
     /// Re-reads the library when another process wrote it since (the app while network capture
     /// ran in-process, or `jacad`), so this engine never saves a stale list over newer edits.
+    /// The master switch lives in defaults, not the file, so it is re-read every time.
     private func syncFromDisk() {
-        let modified = Self.diskModified
-        guard modified != diskStamp else { return }
-        diskStamp = modified
-        state.rules = OverrideRuleStore.load()
-        state.masterEnabled = FeatureFlags.overridesMasterEnabled
-        republish()
+        if Self.diskModified != diskStamp {
+            reload()
+        } else if FeatureFlags.overridesMasterEnabled != state.masterEnabled {
+            state.masterEnabled = FeatureFlags.overridesMasterEnabled
+            republish()
+        }
     }
 
     private func persistAndRepublish() {

@@ -54,7 +54,7 @@ final class OverridesModel {
         let daemon = daemon ?? .shared
         self.daemon = daemon
         usesDaemon = inDaemon ?? daemon.networkRunsInDaemon()
-        if usesDaemon { watchDaemon(reload: false) } else { startLocalEngine() }
+        if usesDaemon { watchDaemon() } else { startLocalEngine() }
     }
 
     /// Moves the runtime between this process and `jacad` when network capture moves (the HTTPS
@@ -68,25 +68,31 @@ final class OverridesModel {
                 local.onChange = nil
                 localEngine = nil
             }
-            watchDaemon(reload: true)
+            watchDaemon()
         } else {
             daemonWatch?.cancel()
             daemonWatch = nil
             // After any edit still queued for the daemon, so the local engine reads it from disk.
-            commands.enqueue { [weak self] in self?.startLocalEngine() }
+            // Skipped if the runtime moved back to the daemon meanwhile.
+            commands.enqueue { [weak self] in
+                guard let self, !self.usesDaemon else { return }
+                self.startLocalEngine()
+            }
         }
     }
 
-    private func watchDaemon(reload: Bool) {
+    private func watchDaemon() {
         // First frame from disk (read-only); the daemon's retained state follows.
         var initial = OverridesState()
         initial.rules = OverrideRuleStore.load()
         initial.masterEnabled = FeatureFlags.overridesMasterEnabled
         apply(initial)
-        if reload {
-            commands.enqueue { [daemon] in let _: RPCEmpty? = await daemon.call("overrides.reload") }
-        }
-        daemonWatch = daemon.watch([OverridesArea.stateTopic]) { [weak self] event in
+        // On every (re)connection: the app may have edited the library in-process meanwhile (the
+        // runtime was here, or the daemon was unreachable), and the daemon's retained state
+        // predates that.
+        daemonWatch = daemon.watch([OverridesArea.stateTopic], onSubscribed: { [daemon] in
+            let _: RPCEmpty? = await daemon.call("overrides.reload")
+        }) { [weak self] event in
             guard let self, self.usesDaemon, let state = try? event.decode(OverridesState.self) else { return }
             self.apply(state)
         }
@@ -94,12 +100,14 @@ final class OverridesModel {
 
     @discardableResult
     private func startLocalEngine() -> OverridesEngine {
-        if let localEngine { return localEngine }
-        let engine = OverridesEngine()
+        let existing = localEngine
+        let engine = existing ?? OverridesEngine()
         localEngine = engine
         // Mirrored only while it owns the runtime; `services()` in daemon mode must not let it
-        // overwrite the state mirrored from jacad.
-        if !usesDaemon {
+        // overwrite the state mirrored from jacad. One created in daemon mode is wired (and
+        // re-read) when the runtime moves here.
+        if !usesDaemon, engine.onChange == nil {
+            if existing != nil { engine.reload() }
             engine.onChange = { [weak self] in self?.apply($0) }
             apply(engine.state)
         }
@@ -147,6 +155,10 @@ final class OverridesModel {
                 if try await daemon.request(method, params, as: RPCEmpty.self) != nil { return }
             } catch {
                 DaemonLog.error("\(method) failed in jacad: \(error.localizedDescription)")
+                // Undo the optimistic master switch (and anything else) with the daemon's state.
+                if let state = try? await daemon.request("overrides.state", RPCEmpty(), as: OverridesState.self) {
+                    self?.apply(state)
+                }
                 return
             }
             guard let self else { return }

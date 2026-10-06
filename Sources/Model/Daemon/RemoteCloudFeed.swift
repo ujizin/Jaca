@@ -62,6 +62,9 @@ final class RemoteCloudFeed: CloudFeed {
             wantsRunning = next.isRunning
             setState(next)
         case "events.dropped":
+            // Only live entries can be refetched: state is retained, and an older page is
+            // re-requested by scrolling.
+            guard (try? event.decode(DroppedEvents.self))?.topic == CloudArea.entriesTopic(id) else { return }
             if held == nil {
                 held = []
                 Task { await fillGap() }

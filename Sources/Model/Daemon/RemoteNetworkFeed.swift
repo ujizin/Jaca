@@ -19,6 +19,11 @@ final class RemoteNetworkFeed: NetworkFeed {
     private let commands = DaemonCommandQueue()
     private var wantsRunning: Bool
     private var resyncing = false
+    /// Clears sent but not yet done in the daemon. Upserts arriving meanwhile were published
+    /// before the clear and would bring cleared rows back, so they're dropped; the list is
+    /// fetched again once the clear lands.
+    private var clearsPending = 0
+    private var clearGeneration = 0
 
     init(id: UUID, device: Device, autoStart: Bool, daemon: DaemonConnector) {
         self.id = id
@@ -41,7 +46,7 @@ final class RemoteNetworkFeed: NetworkFeed {
     private func handle(_ event: DaemonEventLine) {
         switch event.topic {
         case NetworkArea.transactionsTopic(id):
-            guard let batch = try? event.decode([NetworkTransaction].self) else { return }
+            guard clearsPending == 0, let batch = try? event.decode([NetworkTransaction].self) else { return }
             onTransactions?(batch)
         case NetworkArea.stateTopic(id):
             guard let next = try? event.decode(NetworkCaptureState.self) else { return }
@@ -73,8 +78,10 @@ final class RemoteNetworkFeed: NetworkFeed {
         guard !resyncing else { return }
         resyncing = true
         defer { resyncing = false }
+        let generation = clearGeneration
         guard let all = await daemon.call("network.transactions", NetworkArea.IDParams(id: id),
-                                          as: [NetworkTransaction].self), !all.isEmpty else { return }
+                                          as: [NetworkTransaction].self), !all.isEmpty,
+              clearsPending == 0, generation == clearGeneration else { return }
         onTransactions?(all)
     }
 
@@ -129,7 +136,17 @@ final class RemoteNetworkFeed: NetworkFeed {
     func clearProxyNeedsSetup() { send("network.clearProxyNeedsSetup") }
     func restartForInterceptChange() { send("network.restartForInterceptChange") }
     func relaunchToAttach() { send("network.relaunchToAttach") }
-    func clear() { send("network.clear") }
+    func clear() {
+        clearsPending += 1
+        clearGeneration += 1
+        let params = NetworkArea.IDParams(id: id)
+        commands.enqueue { [weak self, daemon] in
+            let _: RPCEmpty? = await daemon.call("network.clear", params)
+            guard let self else { return }
+            self.clearsPending -= 1
+            if self.clearsPending == 0 { await self.resync() }
+        }
+    }
 
     func bodies(for transaction: UUID) async -> (req: Data?, resp: Data?)? {
         guard let b = await daemon.call("network.body", NetworkArea.BodyParams(id: id, transaction: transaction),

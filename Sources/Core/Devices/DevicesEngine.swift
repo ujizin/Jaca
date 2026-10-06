@@ -54,8 +54,12 @@ final class DevicesEngine {
     /// The device with this id. When discovery isn't running (nobody watches `devices.list`), it
     /// runs until every provider has reported once or `timeout` passes, then stops again.
     func device(_ id: String, timeout: Duration = .seconds(10)) async -> Device? {
-        if let device = devices.first(where: { $0.id == id }) { return device }
-        guard !isRunning || lookups > 0 else { return nil }
+        if isRunning, lookups == 0 { return devices.first { $0.id == id } }
+        if !isRunning {
+            // What a previous lookup saw is stale (devices come and go while nothing watches).
+            byPlatform.removeAll()
+            devices = []
+        }
         lookups += 1
         startTasks()
         let deadline = ContinuousClock.now + timeout

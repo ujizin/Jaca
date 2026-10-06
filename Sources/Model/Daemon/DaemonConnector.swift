@@ -120,6 +120,12 @@ final class DaemonConnector {
         let client = try await DaemonLauncher.connect(paths: paths, executable: executable)
         do {
             return (client, try await hello(client))
+        } catch let error as RPCError where error == .disconnected {
+            // Accepted just as the daemon stopped for idleness: it's exiting, so spawn the next.
+            DaemonLog.info("daemon closed the connection during hello; retrying")
+            try await waitForExit()
+            let fresh = try await DaemonLauncher.connect(paths: paths, executable: executable)
+            return (fresh, try await hello(fresh))
         } catch let error as RPCError where error.code == RPCError.versionMismatchCode {
             DaemonLog.info("daemon protocol differs: \(error.message); restarting it")
             try await replace(client)

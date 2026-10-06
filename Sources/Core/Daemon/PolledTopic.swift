@@ -32,9 +32,11 @@ final class PolledTopic<T: Codable & Equatable & Sendable>: @unchecked Sendable 
         Task { [weak self] in await self?.poll() }
     }
 
+    /// The bus runs demand hooks outside its lock, so a start and a stop for the same topic can
+    /// arrive in either order. Each re-checks the subscribers and only moves toward that.
     private func start() {
         lock.lock(); defer { lock.unlock() }
-        guard task == nil else { return }
+        guard task == nil, bus.hasSubscribers(topic) else { return }
         let interval = self.interval
         task = Task { [weak self] in
             while !Task.isCancelled {
@@ -46,6 +48,7 @@ final class PolledTopic<T: Codable & Equatable & Sendable>: @unchecked Sendable 
 
     private func stop() {
         lock.lock(); defer { lock.unlock() }
+        guard !bus.hasSubscribers(topic) else { return }
         task?.cancel()
         task = nil
     }

@@ -153,6 +153,18 @@ private struct FixedProvider: DeviceProvider {
     }
 }
 
+/// Reports one device on the first discovery pass and none after (it was unplugged).
+private final class UnpluggingProvider: DeviceProvider, @unchecked Sendable {
+    let platform = DevicePlatform.android
+    private let lock = NSLock()
+    private var passes = 0
+    func deviceStream() -> AsyncStream<[Device]> {
+        let pass = lock.withLock { passes += 1; return passes }
+        let devices = pass == 1 ? [Device(id: "emu-1", platform: .android, model: "Pixel", state: .connected)] : []
+        return AsyncStream { c in c.yield(devices) }
+    }
+}
+
 final class DevicesAreaTests: XCTestCase {
     func test_device_unknownStateAndPlatformDecodeTolerantly() throws {
         let d = try JSONDecoder.daemon.decode(Device.self, from: Data(#"{"id":"emu-1","platform":"tv","state":"sleeping"}"#.utf8))
@@ -193,5 +205,16 @@ final class DevicesAreaTests: XCTestCase {
         XCTAssertFalse(engine.isRunning, "a one-off lookup doesn't leave discovery running")
         let missing = await engine.device("nope", timeout: .milliseconds(200))
         XCTAssertNil(missing)
+    }
+
+    /// A lookup never answers from what an earlier lookup saw: the device may be gone.
+    @MainActor
+    func test_deviceLookup_doesNotReuseAStaleList() async {
+        let provider = UnpluggingProvider()
+        let engine = DevicesEngine(defaults: .standard) { _ in [provider] }
+        let first = await engine.device("emu-1")
+        XCTAssertEqual(first?.id, "emu-1")
+        let gone = await engine.device("emu-1", timeout: .milliseconds(300))
+        XCTAssertNil(gone, "the second discovery pass no longer sees the device")
     }
 }

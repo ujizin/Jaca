@@ -29,8 +29,8 @@ final class DaemonClient: @unchecked Sendable {
     private var subscribers: [UUID: Subscriber] = [:]
     private var closed = false
     private var closeHandlers: [@Sendable () -> Void] = []
-    /// Per stream, topics whose events overflowed its buffer since the last delivery.
-    private var overflowed: [UUID: Set<String>] = [:]
+    /// Per stream, how many events of each topic overflowed its buffer since the last delivery.
+    private var overflowed: [UUID: [String: Int]] = [:]
 
     /// Events a stream holds while its consumer is busy. Past this the oldest are dropped and the
     /// consumer is told with an `events.dropped` event, as the daemon does for a slow connection
@@ -170,10 +170,10 @@ final class DaemonClient: @unchecked Sendable {
 
     private func dropSubscriber(_ key: UUID) {
         lock.lock()
+        overflowed.removeValue(forKey: key)
         guard let removed = subscribers.removeValue(forKey: key), !closed else { lock.unlock(); return }
         let stillWanted = subscribers.values.reduce(into: Set<String>()) { $0.formUnion($1.topics) }
         lock.unlock()
-        lock.withLock { _ = overflowed.removeValue(forKey: key) }
         let orphaned = removed.topics.subtracting(stillWanted)
         guard !orphaned.isEmpty else { return }
         // Written now, as a notification, rather than from a task: a stream re-subscribing the same
@@ -205,24 +205,30 @@ final class DaemonClient: @unchecked Sendable {
         continuation?.resume(returning: line)
     }
 
-    private func deliver(_ event: DaemonEventLine) {
-        // `events.dropped` goes to whoever subscribed to the topic it describes.
-        let target = event.topic == "events.dropped"
+    /// The topic an event belongs to: `events.dropped` belongs to the topic it describes.
+    private static func target(of event: DaemonEventLine) -> String {
+        event.topic == "events.dropped"
             ? ((try? event.decode(DroppedEvents.self))?.topic ?? event.topic)
             : event.topic
+    }
+
+    private func deliver(_ event: DaemonEventLine) {
+        let target = Self.target(of: event)
         // Delivery runs on the channel's one event loop, so streams see events in arrival order.
         let matching = lock.withLock { subscribers.filter { $0.value.topics.contains(target) } }
         for (key, subscriber) in matching {
             if let lost = lock.withLock({ overflowed.removeValue(forKey: key) }) {
-                for topic in lost.sorted() {
+                for (topic, count) in lost.sorted(by: { $0.key < $1.key }) {
                     if let note = try? DaemonLine.encode(RPCEventEnvelope(
-                        topic: "events.dropped", data: DroppedEvents(topic: topic, count: 1))) {
+                        topic: "events.dropped", data: DroppedEvents(topic: topic, count: count))) {
                         subscriber.continuation.yield(DaemonEventLine(topic: "events.dropped", line: note))
                     }
                 }
             }
-            if case .dropped = subscriber.continuation.yield(event) {
-                lock.withLock { _ = overflowed[key, default: []].insert(target) }
+            // `.bufferingNewest` evicts the oldest buffered event, not this one: count that one's topic.
+            if case .dropped(let evicted) = subscriber.continuation.yield(event) {
+                let lostTopic = Self.target(of: evicted)
+                lock.withLock { overflowed[key, default: [:]][lostTopic, default: 0] += 1 }
             }
         }
     }
@@ -232,6 +238,7 @@ final class DaemonClient: @unchecked Sendable {
         closed = true
         let waiting = pending
         pending = [:]
+        overflowed = [:]
         let streams = subscribers.values.map(\.continuation)
         subscribers = [:]
         let handlers = closeHandlers

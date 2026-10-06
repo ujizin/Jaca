@@ -227,13 +227,15 @@ final class AppModel {
         // Built as a new list: dropping a tab mid-walk would shift the indices of the rest.
         var rebuilt: [any WorkspaceTab] = []
         for tab in sessions {
-            guard let old = tab as? NetworkSession, old.isRemote != inDaemon else {
+            // Companion-only devices always capture in-process (`makeNetworkSession`).
+            guard let old = tab as? NetworkSession, old.isRemote != (inDaemon && !old.device.isCompanion) else {
                 rebuilt.append(tab)
                 continue
             }
             let wasSelected = selectedSessionID == old.id
             let kind = old.hasSelectedMode ? old.currentDescriptor?.kind : nil
             let package = old.targetPackage
+            let rows = old.transactions, selectedRow = old.selectedID
             old.close()
             // Only fails without a CA, which a network tab already needed: the tab is dropped.
             guard let fresh = makeNetworkSession(for: old.device, name: old.displayName) else { continue }
@@ -242,6 +244,9 @@ final class AppModel {
             if let kind, fresh.availableSources.contains(where: { $0.kind == kind }) {
                 fresh.restoreMode(kind, package: package)
             }
+            // The capture itself stops (the other process can't take over a live attach), but its
+            // rows stay. Bodies the daemon held for rows outside its memory window don't come along.
+            fresh.adoptRows(rows, selectedID: selectedRow)
             rebuilt.append(fresh)
             if wasSelected { selectedSessionID = fresh.id }
         }

@@ -34,6 +34,15 @@ struct OverrideRuleStore: Sendable {
         return CloudPersistence.decodeArray(OverrideRule.self, from: data, decoder: makeDecoder())
     }
 
+    /// Like `load`, but nil when `rules.json` exists and isn't a JSON array (a hand edit left it
+    /// broken). A caller holding the library in memory keeps that instead of replacing it with
+    /// nothing and saving the empty list over the file.
+    static func loadIfReadable() -> [OverrideRule]? {
+        guard let data = try? Data(contentsOf: rulesURL), !data.isEmpty else { return [] }
+        guard (try? JSONSerialization.jsonObject(with: data)) is [Any] else { return nil }
+        return CloudPersistence.decodeArray(OverrideRule.self, from: data, decoder: makeDecoder())
+    }
+
     /// Must mirror `save`'s encoder exactly. It writes ISO-8601 dates to stay hand-editable, and
     /// decoding those numerically throws on **every** record — the library then loads empty and
     /// the next save wipes the file and every body blob with it.

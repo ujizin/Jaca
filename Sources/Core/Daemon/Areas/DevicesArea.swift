@@ -13,9 +13,14 @@ enum DevicesArea {
         server.keep(engine)
         let bus = server.bus
         engine.onChange = { bus.publish(listTopic, $0, retain: true) }
-        bus.onDemand(prefix: listTopic,
-                     start: { t in if t == listTopic { Task { @MainActor in engine.start() } } },
-                     stop: { t in if t == listTopic { Task { @MainActor in engine.stop() } } })
+        // Start and stop hops can land out of order: each follows the subscribers when it runs.
+        let follow: DaemonEventBus.DemandHook = { t in
+            guard t == listTopic else { return }
+            Task { @MainActor in
+                if bus.hasSubscribers(listTopic) { engine.start() } else { engine.stop() }
+            }
+        }
+        bus.onDemand(prefix: listTopic, start: follow, stop: follow)
 
         let router = server.router
         router.register("devices.list", "Discovered devices (adb, simulators, iOS devices), ordered by platform.") { (_: RPCEmpty, _) in
