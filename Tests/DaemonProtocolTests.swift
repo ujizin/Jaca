@@ -131,6 +131,24 @@ final class DaemonProtocolTests: XCTestCase {
         }
     }
 
+    /// A call with a timeout fails when the handler never answers, and the connection stays usable.
+    func test_callTimeout_failsTheCallAndKeepsTheConnection() async throws {
+        let daemon = try TestDaemon()
+        daemon.server.router.register("test.hang", "", concurrent: true) { (_: RPCEmpty, _) -> RPCEmpty in
+            try? await Task.sleep(for: .seconds(30))
+            return RPCEmpty()
+        }
+        let client = try await daemon.client()
+        do {
+            let _: RPCEmpty = try await client.call("test.hang", RPCEmpty(), timeout: .milliseconds(300))
+            XCTFail("expected a timeout")
+        } catch let error as RPCError {
+            XCTAssertTrue(error.message.contains("no response"), error.message)
+        }
+        let pong: String = try await client.call("ping", RPCEmpty(), timeout: .seconds(5))
+        XCTAssertFalse(pong.isEmpty)
+    }
+
     func test_manyConcurrentCalls_areCorrelatedById() async throws {
         let daemon = try TestDaemon()
         daemon.server.router.register("test.echo", "", params: [Int].self) { p, _ in

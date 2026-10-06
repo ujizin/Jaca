@@ -39,10 +39,12 @@ final class DaemonNetworkTests: XCTestCase {
         let daemon = try TestDaemon()
         let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("nb-\(UUID().uuidString.prefix(8))")
         defer { try? FileManager.default.removeItem(at: dir) }
-        let captures = NetworkArea.Captures(bus: daemon.server.bus, bodiesInMemory: 2)
+        // A private body cache: the default one is jacad's real folder, wiped on creation.
+        let cache = NetworkBodyCache(directory: dir.appendingPathComponent("bodies"))
+        let captures = NetworkArea.Captures(bus: daemon.server.bus, bodyCache: cache, bodiesInMemory: 2)
         NetworkArea.install(on: daemon.server, captures: captures)
         let connector = DaemonConnector(paths: daemon.paths, executable: nil, enabledAreas: [.network])
-        let ca = try XCTUnwrap(try? CertificateAuthority(directory: dir))
+        let ca = try CertificateAuthority(directory: dir)
 
         let id = UUID()
         let feed = RemoteNetworkFeed(id: id, device: device, autoStart: false, daemon: connector)
@@ -75,6 +77,32 @@ final class DaemonNetworkTests: XCTestCase {
 
         tab2.close()
         try await waitUntil { captures.sessions[id] == nil }
+    }
+
+    /// Two quick updates to a row outside the in-memory window spill in order: the cache ends up
+    /// with the newer bodies, never the older ones landing last.
+    func test_spillsOfOneRow_landInOrder() async throws {
+        let daemon = try TestDaemon()
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("nb-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = try XCTUnwrap(NetworkBodyCache(directory: dir))
+        let captures = NetworkArea.Captures(bus: daemon.server.bus, bodyCache: cache, bodiesInMemory: 1)
+        let id = UUID()
+        _ = captures.open(NetworkArea.OpenParams(id: id, device: device, sourceID: nil, package: nil, autoStart: false))
+        let engine = try XCTUnwrap(captures.sessions[id]?.engine)
+
+        var row = txn(0, body: "v1")
+        engine.capture(didReceive: row)
+        engine.capture(didReceive: txn(1, body: "other"))   // pushes row 0 out of the window
+        for version in 2...5 {
+            row.responseBody = Data("v\(version)".utf8)
+            engine.capture(didReceive: row)
+        }
+        try await waitUntil {
+            captures.sessions[id]?.transactions.first?.bodiesEvicted == true
+        }
+        let stored = await cache.load(row.id)
+        XCTAssertEqual(stored.resp, Data("v5".utf8))
     }
 
     func test_agentCapture_onMissingDevice_reportsThroughTheDaemon() async throws {
