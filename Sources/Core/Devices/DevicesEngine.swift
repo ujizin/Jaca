@@ -37,8 +37,39 @@ final class DevicesEngine {
     }
 
     var isRunning: Bool { !tasks.isEmpty }
+    /// Whether a caller asked for discovery (`start()`), as opposed to a one-off `device(_:)` lookup.
+    private var wanted = false
+    private var lookups = 0
 
     func start() {
+        wanted = true
+        startTasks()
+    }
+
+    func stop() {
+        wanted = false
+        stopTasks()
+    }
+
+    /// The device with this id. When discovery isn't running (nobody watches `devices.list`), it
+    /// runs until every provider has reported once or `timeout` passes, then stops again.
+    func device(_ id: String, timeout: Duration = .seconds(10)) async -> Device? {
+        if let device = devices.first(where: { $0.id == id }) { return device }
+        guard !isRunning || lookups > 0 else { return nil }
+        lookups += 1
+        startTasks()
+        let deadline = ContinuousClock.now + timeout
+        while isRunning, byPlatform.count < providers.count, ContinuousClock.now < deadline,
+              !devices.contains(where: { $0.id == id }) {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        let found = devices.first { $0.id == id }
+        lookups -= 1
+        if !wanted, lookups == 0 { stopTasks() }
+        return found
+    }
+
+    private func startTasks() {
         guard tasks.isEmpty else { return }
         for provider in providers {
             let platform = provider.platform
@@ -52,7 +83,7 @@ final class DevicesEngine {
         }
     }
 
-    func stop() {
+    private func stopTasks() {
         tasks.forEach { $0.cancel() }
         tasks.removeAll()
     }
@@ -61,11 +92,11 @@ final class DevicesEngine {
     /// discovery if it was running.
     func reload() {
         let wasRunning = isRunning
-        stop()
+        stopTasks()
         byPlatform.removeAll()
         devices = []
         resolveProviders()
-        if wasRunning { start() }
+        if wasRunning { startTasks() }
     }
 
     private func resolveProviders() {

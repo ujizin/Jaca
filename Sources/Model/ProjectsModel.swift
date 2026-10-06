@@ -270,14 +270,14 @@ final class ProjectsModel {
 
     /// Removes a manually-added project from the list (does not touch the folder on disk).
     func removeUserProject(_ id: String) {
-        guard let project = projects.first(where: { $0.id == id }), project.source == .user else { return }
+        guard projects.contains(where: { $0.id == id && $0.source == .user }) else { return }
         Task { [weak self] in
             guard let self else { return }
             let name = await self.perform("projects.removeFolder", ProjectsArea.IDParams(id: id), as: String.self) {
                 $0.removeUserProject(id)
             }
-            guard name != nil else { return }
-            self.flash("Removed \(project.name)", fallback: "eraser")
+            guard let name else { return }
+            self.flash("Removed \(name)", fallback: "eraser")
         }
     }
 

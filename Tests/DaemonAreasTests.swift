@@ -181,4 +181,17 @@ final class DevicesAreaTests: XCTestCase {
         XCTAssertEqual(ids, ["emu-1", "sim-1"], "ordered by platform")
         XCTAssertTrue(engine.isRunning)
     }
+
+    /// `devices.apps` with nobody watching the list: the lookup runs discovery once, then stops it.
+    @MainActor
+    func test_deviceLookup_runsDiscoveryOnceWhenNobodyWatches() async {
+        let engine = DevicesEngine(defaults: .standard) { _ in [
+            FixedProvider(platform: .android, devices: [Device(id: "emu-1", platform: .android, model: "Pixel", state: .connected)]),
+        ] }
+        let found = await engine.device("emu-1")
+        XCTAssertEqual(found?.id, "emu-1")
+        XCTAssertFalse(engine.isRunning, "a one-off lookup doesn't leave discovery running")
+        let missing = await engine.device("nope", timeout: .milliseconds(200))
+        XCTAssertNil(missing)
+    }
 }
