@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -119,6 +120,18 @@ type devicesPane struct {
 
 	opened chan openResult
 	done   chan struct{} // closed when the pane exits, so result goroutines don't block
+
+	// The open session's id for the signal path, which runs off the UI loop.
+	liveMu sync.Mutex
+	liveID string
+}
+
+// setSession records the open session for the UI loop and the signal path.
+func (p *devicesPane) setSession(id string) {
+	p.session = id
+	p.liveMu.Lock()
+	p.liveID = id
+	p.liveMu.Unlock()
 }
 
 // runDevicesPane: j/k move, Enter streams logs; while streaming space stops/starts, 1-6 set the
@@ -144,6 +157,17 @@ func runDevicesPane() int {
 		return 1
 	}
 	defer restore()
+	// A signal (Herdr closing the pane) skips the deferred closeSession: close the session there
+	// too, or it streams in jacad until the orphan reaper runs. A logs.open still in flight has no
+	// id yet; that session is left to the reaper.
+	onSignalExit(func() {
+		p.liveMu.Lock()
+		id := p.liveID
+		p.liveMu.Unlock()
+		if id != "" {
+			_ = c.CallTimeout("logs.close", map[string]any{"id": id}, nil, teardownTimeout)
+		}
+	})
 
 	keys := make(chan []byte, 16)
 	go readRawKeys(keys)
@@ -267,6 +291,35 @@ func (p *devicesPane) appendLines(batch []logLine) {
 	if len(p.lines) > maxLines+maxLines/10 {
 		p.lines = append([]logLine(nil), p.lines[len(p.lines)-maxLines:]...)
 	}
+	p.clampOffset()
+}
+
+// visibleLines are the held lines at or above the minimum level.
+func (p *devicesPane) visibleLines() []logLine {
+	visible := make([]logLine, 0, len(p.lines))
+	for _, l := range p.lines {
+		if p.isVisible(l) {
+			visible = append(visible, l)
+		}
+	}
+	return visible
+}
+
+// logRoom is how many log lines fit under the stream header.
+func (p *devicesPane) logRoom() int {
+	rows, _ := termSize()
+	room := rows - 2
+	if p.state.StatusMessage != nil {
+		room--
+	}
+	return max(1, room)
+}
+
+// clampOffset keeps a scrolled-up view on a full screen: at most the oldest page, never past it,
+// so scrolling (or the buffer trimming under a view that holds still) can't leave it blank.
+func (p *devicesPane) clampOffset() {
+	limit := max(0, len(p.visibleLines())-p.logRoom())
+	p.offset = max(0, min(p.offset, limit))
 }
 
 func (p *devicesPane) isVisible(l logLine) bool { return l.Marker || l.Level >= p.minLevel }
@@ -298,6 +351,7 @@ func (p *devicesPane) handleKey(k []byte) bool {
 		} else {
 			p.follow = false
 			p.offset++
+			p.clampOffset()
 		}
 	case isDown(k):
 		if p.session == "" {
@@ -320,6 +374,7 @@ func (p *devicesPane) handleKey(k []byte) bool {
 		p.follow, p.offset = true, 0
 	case len(k) == 1 && k[0] >= '1' && k[0] <= '6':
 		p.minLevel = int(k[0] - '1')
+		p.clampOffset()
 	}
 	return false
 }
@@ -335,6 +390,10 @@ func (p *devicesPane) openSession(d device) {
 		select {
 		case p.opened <- openResult{device: d, id: info.ID, err: err}:
 		case <-p.done:
+			// The pane quit while this was in flight: nobody will stream it.
+			if err == nil && info.ID != "" {
+				_ = p.c.CallTimeout("logs.close", map[string]any{"id": info.ID}, nil, teardownTimeout)
+			}
 		}
 	}()
 }
@@ -346,7 +405,8 @@ func (p *devicesPane) finishOpen(r openResult) {
 		return
 	}
 	d := r.device
-	p.session, p.streamOf = r.id, d
+	p.setSession(r.id)
+	p.streamOf = d
 	p.lines, p.lastSeq, p.hasSeq, p.follow, p.offset = nil, 0, false, true, 0
 	p.state = logState{}
 	_ = p.c.CallTimeout("events.subscribe", map[string]any{"topics": []string{"logs.lines." + r.id, "logs.state." + r.id}}, nil, syncTimeout)
@@ -362,7 +422,7 @@ func (p *devicesPane) closeSession(wait bool) {
 		return
 	}
 	id := p.session
-	p.session = ""
+	p.setSession("")
 	teardown := func() {
 		_ = p.c.CallTimeout("events.unsubscribe", map[string]any{"topics": []string{"logs.lines." + id, "logs.state." + id}}, nil, teardownTimeout)
 		_ = p.c.CallTimeout("logs.close", map[string]any{"id": id}, nil, teardownTimeout)
@@ -416,35 +476,27 @@ func (p *devicesPane) draw() {
 		return
 	}
 
-	// Header: the device and the stream state. The name gets what the rest leaves.
-	name := clip(sanitize(p.streamOf.displayModel()), max(1, cols-16))
-	head := sgrBold + name + sgrReset + "  " + sgrDim + "≥" + levelShort[p.minLevel] + sgrReset
+	// Header: the device and the stream state. The name gets what the rest leaves; on a pane too
+	// narrow for both, the name alone, clipped.
+	suffix := "  ≥" + levelShort[p.minLevel]
 	if p.state.IsConnecting {
-		head += "  " + sgrDim + "Connecting…" + sgrReset
+		suffix += "  Connecting…"
 	} else if !p.state.IsRunning {
-		head += "  " + sgrDim + "■" + sgrReset
+		suffix += "  ■"
 	}
-	line(head)
+	if cellWidth(suffix) >= cols {
+		suffix = ""
+	}
+	name := clip(sanitize(p.streamOf.displayModel()), max(1, cols-cellWidth(suffix)))
+	line(sgrBold + name + sgrReset + sgrDim + suffix + sgrReset)
 	if p.state.StatusMessage != nil {
 		line(sgrRed + fit(sanitize(*p.state.StatusMessage), cols) + sgrReset)
 	}
 
-	visible := make([]logLine, 0, len(p.lines))
-	for _, l := range p.lines {
-		if p.isVisible(l) {
-			visible = append(visible, l)
-		}
-	}
-	room := rows - 2
-	if p.state.StatusMessage != nil {
-		room--
-	}
-	room = max(1, room)
+	p.clampOffset() // the level, the status line or the pane size may have changed
+	visible := p.visibleLines()
+	room := p.logRoom()
 	end := len(visible) - p.offset
-	if end < 0 {
-		end = 0
-		p.offset = len(visible)
-	}
 	start := max(0, end-room)
 	for _, l := range visible[start:end] {
 		line(renderLogLine(l, cols))

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -21,20 +22,35 @@ func sttyRun(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// screenMu orders frames against restore: once the terminal is restored, paint drops frames, so
-// a frame the main loop was building when a signal arrived can't land on the primary screen.
+// Once the terminal is restored, paint drops frames, so a frame the main loop was building when a
+// signal arrived can't land on the primary screen. restore only tries screenMu: a paint stuck in
+// a write (Herdr not reading the pty) must not keep a signal from reaching os.Exit.
 var (
 	screenMu sync.Mutex
-	restored bool
+	restored atomic.Bool
 )
 
 // paint writes one frame, unless the terminal was already restored.
 func paint(frame string) {
 	screenMu.Lock()
 	defer screenMu.Unlock()
-	if !restored {
+	if !restored.Load() {
 		fmt.Print(frame)
 	}
+}
+
+// Cleanups to run when a signal ends the process (deferred calls don't run then). Each must bound
+// its own time, so the process still exits.
+var (
+	exitHooksMu sync.Mutex
+	exitHooks   []func()
+)
+
+// onSignalExit registers f to run, after the terminal is restored, when a signal ends the pane.
+func onSignalExit(f func()) {
+	exitHooksMu.Lock()
+	exitHooks = append(exitHooks, f)
+	exitHooksMu.Unlock()
 }
 
 // enterRaw switches the terminal to raw mode on the alternate screen and returns a restore func,
@@ -53,9 +69,10 @@ func enterRaw() (func(), error) {
 	var once sync.Once
 	restore := func() {
 		once.Do(func() {
-			screenMu.Lock()
-			defer screenMu.Unlock()
-			restored = true
+			restored.Store(true)
+			if screenMu.TryLock() {
+				defer screenMu.Unlock()
+			}
 			fmt.Print("\x1b[?25h\x1b[?1049l")
 			sttyRun(saved)
 		})
@@ -65,6 +82,12 @@ func enterRaw() (func(), error) {
 	go func() {
 		sig := <-sigs
 		restore()
+		exitHooksMu.Lock()
+		hooks := append([]func(){}, exitHooks...)
+		exitHooksMu.Unlock()
+		for _, h := range hooks {
+			h()
+		}
 		code := 1
 		if s, ok := sig.(syscall.Signal); ok {
 			code = 128 + int(s)
@@ -128,14 +151,15 @@ func clip(s string, w int) string {
 		return s
 	}
 	var b strings.Builder
-	used := 0
+	used, prev := 0, 0
 	for _, r := range s {
-		rw := runeWidth(r)
+		rw := widthAfter(r, prev)
 		if used+rw > w-1 {
 			break
 		}
 		b.WriteRune(r)
 		used += rw
+		prev = runeWidth(r)
 	}
 	b.WriteString("…")
 	return b.String()
@@ -143,11 +167,21 @@ func clip(s string, w int) string {
 
 // cellWidth is s's width in terminal cells.
 func cellWidth(s string) int {
-	n := 0
+	n, prev := 0, 0
 	for _, r := range s {
-		n += runeWidth(r)
+		n += widthAfter(r, prev)
+		prev = runeWidth(r)
 	}
 	return n
+}
+
+// widthAfter is r's width given the previous rune's: U+FE0F after a narrow rune asks for emoji
+// presentation, which takes a second cell.
+func widthAfter(r rune, prev int) int {
+	if r == 0xFE0F && prev == 1 {
+		return 1
+	}
+	return runeWidth(r)
 }
 
 // runeWidth is a conservative cell width: 0 for combining marks and zero-width joiners, 2 for
@@ -161,11 +195,32 @@ func runeWidth(r rune) int {
 		r >= 0x4E00 && r <= 0x9FFF, r >= 0xA000 && r <= 0xA4CF, r >= 0xAC00 && r <= 0xD7A3,
 		r >= 0xF900 && r <= 0xFAFF, r >= 0xFE30 && r <= 0xFE4F, r >= 0xFF00 && r <= 0xFF60,
 		r >= 0xFFE0 && r <= 0xFFE6, r >= 0x1F300 && r <= 0x1F64F, r >= 0x1F900 && r <= 0x1F9FF,
-		r >= 0x1F680 && r <= 0x1F6FF, r >= 0x1FA70 && r <= 0x1FAFF, r >= 0x2600 && r <= 0x27BF,
-		r >= 0x20000 && r <= 0x3FFFD:
+		r >= 0x1F680 && r <= 0x1F6FF, r >= 0x1FA70 && r <= 0x1FAFF, r >= 0x1F7E0 && r <= 0x1F7EB,
+		r == 0x1F004, r == 0x1F0CF, r == 0x1F18E, r >= 0x1F191 && r <= 0x1F19A,
+		r >= 0x1F200 && r <= 0x1F251, r >= 0x20000 && r <= 0x3FFFD:
+		return 2
+	}
+	if emojiPresentation(r) {
 		return 2
 	}
 	return 1
+}
+
+// emojiPresentation reports the BMP symbols that render as emoji (two cells) by default. The
+// rest of U+2600–27BF (✓ ✗ ★ ❯ ➜) are text symbols, one cell.
+func emojiPresentation(r rune) bool {
+	switch {
+	case r == 0x231A, r == 0x231B, r >= 0x23E9 && r <= 0x23EC, r == 0x23F0, r == 0x23F3,
+		r == 0x25FD, r == 0x25FE, r == 0x2614, r == 0x2615, r >= 0x2648 && r <= 0x2653,
+		r == 0x267F, r == 0x2693, r == 0x26A1, r == 0x26AA, r == 0x26AB, r == 0x26BD, r == 0x26BE,
+		r == 0x26C4, r == 0x26C5, r == 0x26CE, r == 0x26D4, r == 0x26EA, r == 0x26F2, r == 0x26F3,
+		r == 0x26F5, r == 0x26FA, r == 0x26FD, r == 0x2705, r == 0x270A, r == 0x270B, r == 0x2728,
+		r == 0x274C, r == 0x274E, r >= 0x2753 && r <= 0x2755, r == 0x2757,
+		r >= 0x2795 && r <= 0x2797, r == 0x27B0, r == 0x27BF, r == 0x2B1B, r == 0x2B1C,
+		r == 0x2B50, r == 0x2B55:
+		return true
+	}
+	return false
 }
 
 // sanitize makes device text safe to draw: tabs become spaces, and escape sequences, other C0
@@ -202,7 +257,9 @@ func needsSanitize(s string) bool {
 }
 
 // skipEscape returns the index of the last rune of the escape sequence starting at rs[i] (ESC):
-// CSI (ESC [ … final byte), OSC (ESC ] … BEL or ESC \), or ESC plus one rune.
+// CSI (ESC [ parameter/intermediate bytes, then a final byte), OSC (ESC ] … BEL or ESC \),
+// ESC with intermediates plus a final byte (ESC ( B), or ESC plus one rune. A malformed CSI
+// ends at the first byte that can't belong to it, so the text after it survives.
 func skipEscape(rs []rune, i int) int {
 	if i+1 >= len(rs) {
 		return i
@@ -210,10 +267,13 @@ func skipEscape(rs []rune, i int) int {
 	switch rs[i+1] {
 	case '[':
 		j := i + 2
-		for j < len(rs) && !(rs[j] >= 0x40 && rs[j] <= 0x7e) {
+		for j < len(rs) && rs[j] >= 0x20 && rs[j] <= 0x3f {
 			j++
 		}
-		return min(j, len(rs)-1)
+		if j < len(rs) && rs[j] >= 0x40 && rs[j] <= 0x7e {
+			return j
+		}
+		return j - 1
 	case ']':
 		for j := i + 2; j < len(rs); j++ {
 			if rs[j] == 0x07 {
@@ -224,6 +284,16 @@ func skipEscape(rs []rune, i int) int {
 			}
 		}
 		return len(rs) - 1
+	}
+	if rs[i+1] >= 0x20 && rs[i+1] <= 0x2f {
+		j := i + 1
+		for j < len(rs) && rs[j] >= 0x20 && rs[j] <= 0x2f {
+			j++
+		}
+		if j < len(rs) && rs[j] >= 0x30 && rs[j] <= 0x7e {
+			return j
+		}
+		return j - 1
 	}
 	return i + 1
 }
