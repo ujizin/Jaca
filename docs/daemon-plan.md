@@ -4,8 +4,9 @@ Move Jaca's business logic into a long-running background process (`jacad`) so m
 front end can drive it. The SwiftUI app becomes one client. A Herdr plugin, rendering Jaca's
 areas as terminal panes, becomes a second one.
 
-Status: experimental, in progress on branch `exp/daemon`. Nothing merges to `main` until an
-area works end to end through the daemon. Last updated: 2026-09-27.
+Status: experimental, on branches `exp/daemon` and `exp/daemon-overrides` (the latter also
+carries response overrides; see the last section). Nothing merges to `main` until an area works
+end to end through the daemon. Last updated: 2026-10-06.
 
 ## Progress
 
@@ -77,7 +78,8 @@ build away from the real daemon. `Jaca.app/Contents/MacOS/jacad` is also the CLI
   the tab's text filter (before, a crash hidden by the filter got no marker).
 - **Network bodies stay in the daemon.** Transactions stream without bodies; `network.body`
   fetches them when a row is opened, and HAR export runs in the daemon.
-- **Companion capture stays in the app.** With HTTPS decryption on (an experimental opt-in) or a
+- **Companion capture stays in the app.** With "HTTPS debugging" chosen under Settings → Network
+  inspection (an experimental opt-in), or a
   companion-only device, network tabs capture in-process. Moving `CompanionRegistry` means moving
   the gRPC links, mDNS discovery, the CA and onboarding, and nothing here could test it: no phone,
   and the Local Network permission question for a spawned helper is still open. `jacad` never
@@ -99,8 +101,6 @@ build away from the real daemon. `Jaca.app/Contents/MacOS/jacad` is also the CLI
 
 - `AndroidDeviceProvider.queryAVDName` splits on `"\n"`, but `adb` prints `\r\n`, which Swift
   treats as one character: emulator models show as `"Name\r\nOK"`.
-- `LogSession.connect()` sets the "App isn't installed" warning, then `start()` clears it at once,
-  so the warning never shows. Kept as is in `LogStreamEngine`.
 - `IOSDeviceProvider` lists simulators `devicectl` reports as "simulated" as iOS devices.
 - `consumeLoop` is main-actor isolated, so every log line is iterated on the main thread; its
   `await state.isRunning` calls suggest it was meant to run off-main. Kept as is.
@@ -166,6 +166,13 @@ What has to change:
    header.
 
 ## Target architecture
+
+The sections from here on are the original draft. Where they differ from the sections above (method
+and topic names, the bundle path, the plugin's pane and action names, the unavailable state), the
+sections above and the code are current: `gradle.deleteCache`, topics `gradle.daemons`,
+`projects.state` and `devices.list`, `api.describe`, `Contents/MacOS/jacad`, panes `devices`,
+`gradle` and `projects`, actions `gradle-kill-all` and `projects-clear-cache`, and a silent
+in-process fallback when the daemon can't be reached.
 
 ```mermaid
 flowchart LR
@@ -430,9 +437,9 @@ Phase 8 depends on how far the TUI goes.
 
 ## Response overrides in the daemon (branch `exp/daemon-overrides`)
 
-`exp/daemon-overrides` is `exp/daemon` plus the response-override feature from
-`feat/override-http-ios` (commits `5560fec`, `41e35b1`, `3362a79`; the branch's last commit,
-`ffd8f0a`, is a temporary wip holding commit and was left out).
+`exp/daemon-overrides` is `feat/override-http-ios` at `407e9ae` with `exp/daemon` merged in
+(`05df09b`), followed by review fixes. It replaced an earlier version (kept as
+`exp/daemon-overrides-v1`) that cherry-picked three override commits onto `exp/daemon`.
 
 **Where it runs.** Overrides are armed by the capture source, so the runtime lives with the
 capture. `OverridesEngine` (Core) holds the rule library, master switch, hit counts, per-target
@@ -447,8 +454,9 @@ setMaster`, in order.
 running source: `attachState`, `interceptWired`, `interceptCapabilities`, `hasRunningSource`.
 `network.restartForInterceptChange` and `network.relaunchToAttach` reach the daemon's source.
 
-**Settings.** The three new flags (`responseOverridesEnabled`, `networkOverridesMasterEnabled`,
-`simulatorAutoReattachEnabled`) read `JacaDefaults.shared`, so `jacad` sees the app's values.
+**Settings.** `networkInspectionMode` (which replaced `responseOverridesEnabled`, now only read
+to migrate), `networkOverridesMasterEnabled` and `simulatorAutoReattachEnabled` read
+`JacaDefaults.shared`, so `jacad` sees the app's values. So does the verbose-logging toggle.
 
 **Tunnels.** `jacad` reconciles tunnels left by a dead process when it starts and reverts its own
 (`AdbTunnelCleanup`, `ProxyCleanup`) when it stops. The ledger is keyed by pid, so the app's and
@@ -458,20 +466,22 @@ the daemon's reconciliation leave each other's live tunnels alone.
 iOS Simulator with 418 while the agent capture ran in the daemon: the transactions carry the rule
 id, the hit count and `active` arming (with the rule's host) reached `overrides.state`.
 
-**One switch.** Where network capture runs is decided by the HTTPS decryption setting alone
-(`DaemonConnector.networkRunsInDaemon`): on, everything network (companion and agent capture, the
-override engine) runs in the app, since decryption needs the companion links and the CA there; off,
-agent capture and overrides run in `jacad` when the `network` area is enabled. So there is always
+**One switch.** Where network capture runs is decided by Settings → Network inspection alone
+(`DaemonConnector.networkRunsInDaemon`): with "HTTPS debugging", everything network (companion and agent capture, the
+override engine) runs in the app, since decryption needs the companion links and the CA there; with
+"Agent HTTPS debugging", agent capture and overrides run in `jacad` when the `network` area is
+enabled. So there is always
 exactly one override engine and one writer of `rules.json`. Flipping the setting moves the override
 runtime (`OverridesModel.setRuntime`; the daemon re-reads the library with `overrides.reload` when it
 takes over) and replaces every open network tab on the wrong side with one on the right side, in
-place, with its source restored but stopped (restarting could relaunch the user's app).
+place, with its source restored but stopped (restarting could relaunch the user's app) and its
+rows kept.
 
 **Limits.** Android divert through the daemon is untested here (no agent build). The tab migration
 on toggle has no automated test (it needs a full `AppModel`).
 
 **Merge notes.**
-- `3362a79` accidentally reverted #50 (`ProjectsModel.swift`, `DirectorySizer.swift`,
+- (v1 only) `3362a79` accidentally reverted #50 (`ProjectsModel.swift`, `DirectorySizer.swift`,
   `ProjectsAreaView.swift`, and deleted `DirectorySizerTests.swift`); its files match the pre-#50
   versions exactly, and the wip commit restores them. The merge keeps #50.
 - `OverrideRuleStore.collectGarbage` deleted any unreferenced blob, including one written for a
@@ -480,3 +490,17 @@ on toggle has no automated test (it needs a full `AppModel`).
 - `JACA_OVERRIDES_DIR` moves the rule library; the new daemon tests use it. The branch's existing
   `OverrideAuthoringTests` still save into the real `~/.jaca/network-overrides`.
 - `jacad stop` now returns once the daemon has exited.
+
+**Review fixes.** Rounds of review after the rebuild changed these behaviors:
+- Two processes can write the same files, so `OverridesEngine` and `CloudEngine` re-read
+  `rules.json` / `projects.json` and templates (by modification date) before each mutation, and
+  the override engine re-reads the master switch from defaults. The app asks `jacad` to
+  `overrides.reload` on every (re)subscription and `cloud.reload` when it hands the cloud area
+  back. An unreadable `rules.json` is never saved over.
+- Remote feeds hold live batches while they refill a gap reported by `events.dropped` (logs and
+  cloud), and network clears drop upserts published before the clear until it lands.
+- A log tab that falls back in-process closes its daemon copy, ends its own history run, and
+  carries the daemon's PIDs over.
+- Demand hooks (device discovery, project watching, polled topics) follow the subscriber set when
+  they run, so a start and stop arriving out of order can't leave a topic without its producer.
+- The server closes a connection that stays unwritable for 60 s.
