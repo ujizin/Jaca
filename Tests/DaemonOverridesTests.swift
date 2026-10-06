@@ -92,6 +92,16 @@ final class DaemonOverridesTests: XCTestCase {
         XCTAssertEqual(Set(OverrideRuleStore.load().map(\.id)), [kept.id, added.id])
     }
 
+    /// Starting on a broken `rules.json` (nothing in memory yet): edits don't save over it.
+    func test_brokenRulesFileAtLaunch_isNotOverwritten() throws {
+        try FileManager.default.createDirectory(at: OverrideRuleStore.directory, withIntermediateDirectories: true)
+        let broken = Data("[{\"broken\": ".utf8)
+        try broken.write(to: OverrideRuleStore.rulesURL)
+        let engine = OverridesEngine()
+        engine.save(rule("https://a.example.com/*"))
+        XCTAssertEqual(try Data(contentsOf: OverrideRuleStore.rulesURL), broken)
+    }
+
     /// The master switch lives in defaults: a write by the other process is picked up.
     func test_masterSwitch_isReReadBeforeAMutation() {
         let engine = OverridesEngine()

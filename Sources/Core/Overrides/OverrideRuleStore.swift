@@ -38,7 +38,9 @@ struct OverrideRuleStore: Sendable {
     /// broken). A caller holding the library in memory keeps that instead of replacing it with
     /// nothing and saving the empty list over the file.
     static func loadIfReadable() -> [OverrideRule]? {
-        guard let data = try? Data(contentsOf: rulesURL), !data.isEmpty else { return [] }
+        guard FileManager.default.fileExists(atPath: rulesURL.path) else { return [] }
+        guard let data = try? Data(contentsOf: rulesURL) else { return nil }
+        if data.isEmpty { return [] }
         guard (try? JSONSerialization.jsonObject(with: data)) is [Any] else { return nil }
         return CloudPersistence.decodeArray(OverrideRule.self, from: data, decoder: makeDecoder())
     }

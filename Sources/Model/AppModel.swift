@@ -216,7 +216,6 @@ final class AppModel {
         recomputeDevices()
     }
 
-    /// Start or tear down the companion subsystem when the feature flag toggles at runtime.
     /// The inspection mode also decides where network capture runs (see
     /// `DaemonConnector.networkRunsInDaemon`). When that changes, the override runtime moves, and
     /// every network tab on the wrong side is replaced by one on the right side, in place, with its
@@ -245,7 +244,8 @@ final class AppModel {
                 fresh.restoreMode(kind, package: package)
             }
             // The capture itself stops (the other process can't take over a live attach), but its
-            // rows stay. Bodies the daemon held for rows outside its memory window don't come along.
+            // rows stay. Moving out of jacad, rows arrive without bodies: those jacad spilled to the
+            // shared disk cache load again, the ones it still held in memory are lost.
             fresh.adoptRows(rows, selectedID: selectedRow)
             rebuilt.append(fresh)
             if wasSelected { selectedSessionID = fresh.id }
@@ -257,6 +257,7 @@ final class AppModel {
         persistTabs()
     }
 
+    /// Start or tear down the companion subsystem when the feature flag toggles at runtime.
     private func reconfigureCompanion() {
         if httpsDecryptionEnabled {
             companions.start()
@@ -483,7 +484,7 @@ final class AppModel {
             let store = history, adb = adbURL
             let feed = RemoteLogFeed(id: id, device: device, package: filter.packageLabel,
                                      displayName: name ?? device.displayModel, autoStart: autoStart,
-                                     daemon: daemon, makeLocal: { seqStart in
+                                     daemon: daemon, makeLocal: { seqStart, currentName in
                 let historyID = UUID()
                 let engine = LogStreamEngine(
                     device: device, adbURL: adb, seqStart: seqStart,
@@ -494,9 +495,10 @@ final class AppModel {
                     Task {
                         await store?.upsertDevice(device)
                         await store?.beginSession(id: historyID, device: device, package: pkg,
-                                                  displayName: name ?? device.displayModel)
+                                                  displayName: currentName)
                     }
                 }
+                engine.onClosed = { Task { await store?.endSession(id: historyID) } }
                 return engine
             })
             session = LogSession(id: id, device: device, feed: feed, adbURL: toolURL, filter: filter,
@@ -568,7 +570,10 @@ final class AppModel {
                               sessionID: UUID? = nil) -> CloudLogSession {
         mode = .devices   // opening a session returns to the shared session view
         // Same id as before on restore, so a daemon-mode tab reattaches to its stream.
-        let session = CloudLogSession(id: sessionID ?? UUID(), projectID: projectID, registry: cloudLogging,
+        // The persisted id reattaches to the daemon's session. In-process a relaunch starts
+        // fresh: the id names the per-session database, which would mix in the last run's rows.
+        let id = (daemon.isEnabled(.cloudLogging) ? sessionID : nil) ?? UUID()
+        let session = CloudLogSession(id: id, projectID: projectID, registry: cloudLogging,
                                       displayName: displayName, query: query, timeRange: timeRange,
                                       rawFilter: rawFilter, autoStart: autoStart)
         session.onStateChanged = { [weak self] in self?.persistTabs() }
