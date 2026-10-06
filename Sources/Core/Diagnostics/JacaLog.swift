@@ -30,7 +30,7 @@ enum JacaLog {
         // on — a default written outside this setter could otherwise disagree forever.
         get { verboseLock.lock(); defer { verboseLock.unlock() }; return cachedVerbose }
         set {
-            UserDefaults.standard.set(newValue, forKey: verboseKey)
+            JacaDefaults.shared.set(newValue, forKey: verboseKey)
             verboseLock.lock(); cachedVerbose = newValue; verboseLock.unlock()
         }
     }
@@ -38,7 +38,7 @@ enum JacaLog {
     /// Cached because the gate sits in front of a per-request call, and locked because event
     /// loops and reader threads read it while the Settings toggle writes from the main thread.
     private static let verboseLock = NSLock()
-    nonisolated(unsafe) private static var cachedVerbose: Bool = UserDefaults.standard.bool(forKey: verboseKey)
+    nonisolated(unsafe) private static var cachedVerbose: Bool = JacaDefaults.shared.bool(forKey: verboseKey)
 
     /// `DateFormatter` isn't thread-safe and lines are formatted from event loops too, so it is
     /// only ever touched while holding `lock`.

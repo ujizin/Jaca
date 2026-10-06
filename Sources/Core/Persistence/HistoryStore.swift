@@ -52,10 +52,11 @@ actor HistoryStore {
         ) == SQLITE_OK else {
             return nil
         }
-        exec("PRAGMA journal_mode=WAL;")
         // jacad and the app can both write (the daemon records its log sessions, the app
-        // prunes on launch): wait for the other's lock instead of failing the statement.
+        // prunes on launch): wait for the other's lock instead of failing the statement. Set
+        // first: switching to WAL takes a lock too.
         exec("PRAGMA busy_timeout=5000;")
+        exec("PRAGMA journal_mode=WAL;")
         exec("PRAGMA synchronous=NORMAL;")
         migrate()
         prepareInsert()
