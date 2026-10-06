@@ -320,7 +320,8 @@ enum DaemonLauncher {
 
     /// Starts `jacad serve` detached from the caller, logging to `paths.log`.
     static func launch(_ executable: URL, paths: DaemonPaths) throws {
-        try FileManager.default.createDirectory(at: paths.directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: paths.directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
         // Appended to on every spawn: keep one previous generation once it passes 5 MB.
         let size = (try? FileManager.default.attributesOfItem(atPath: paths.log.path)[.size] as? Int) ?? 0
         if size > 5 * 1024 * 1024 {

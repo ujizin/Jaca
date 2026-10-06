@@ -504,3 +504,18 @@ on toggle has no automated test (it needs a full `AppModel`).
 - Demand hooks (device discovery, project watching, polled topics) follow the subscriber set when
   they run, so a start and stop arriving out of order can't leave a topic without its producer.
 - The server closes a connection that stays unwritable for 60 s.
+- jacad registers its areas before binding the socket; package and device ids are validated
+  where they enter jacad; cloud SQL is checked read-only by SQLite itself; the daemon directory
+  is created user-only and the socket bound under umask 077.
+
+**Known limits after review.**
+- `SimulatorAppLauncher` coordinates the Logs stdout launch and the Network agent launch within
+  one process. With "HTTPS debugging" chosen, simulator log tabs run in jacad and agent capture
+  in the app, so a log tab start can relaunch the app without the agent's environment.
+- A log session jacad recreates after a restart re-reads the device buffer; the lines are new
+  seqs, so they show again with no marker explaining it (the marker needs specified copy).
+- An unreadable `rules.json` stops override saves (to keep the user's file) with only a log
+  line; showing it in the popover needs specified copy.
+- A pending call has no deadline except `hello` and the CLI's short commands; a protocol-version
+  mismatch still replaces the running daemon regardless of which build is newer.
+
