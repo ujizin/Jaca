@@ -26,6 +26,8 @@ final class DaemonClient: @unchecked Sendable {
     private var peer: DaemonPeer?
     private var nextID = 1
     private var pending: [Int: CheckedContinuation<Data, Error>] = [:]
+    /// Timeout tasks of calls still waiting, cancelled when the response arrives.
+    private var timeouts: [Int: Task<Void, Never>] = [:]
     private var subscribers: [UUID: Subscriber] = [:]
     private var closed = false
     private var closeHandlers: [@Sendable () -> Void] = []
@@ -139,11 +141,16 @@ final class DaemonClient: @unchecked Sendable {
             lock.unlock()
             peer.send(line)
             if let timeout {
-                Task { [weak self] in
+                let task = Task { [weak self] in
                     try? await Task.sleep(for: timeout)
-                    guard let self, let waiting = self.lock.withLock({ self.pending.removeValue(forKey: id) }) else { return }
-                    waiting.resume(throwing: RPCError.failed("\(method): no response from jacad in \(timeout)"))
+                    guard !Task.isCancelled, let self else { return }
+                    let waiting = self.lock.withLock {
+                        self.timeouts[id] = nil
+                        return self.pending.removeValue(forKey: id)
+                    }
+                    waiting?.resume(throwing: RPCError.failed("\(method): no response from jacad in \(timeout)"))
                 }
+                lock.withLock { if pending[id] != nil { timeouts[id] = task } else { task.cancel() } }
             }
         }
         if let error = (try? JSONDecoder.daemon.decode(RPCHeader.self, from: response))?.error {
@@ -211,7 +218,9 @@ final class DaemonClient: @unchecked Sendable {
         guard case .number(let id)? = header.id else { return }
         lock.lock()
         let continuation = pending.removeValue(forKey: id)
+        let timeout = timeouts.removeValue(forKey: id)
         lock.unlock()
+        timeout?.cancel()
         continuation?.resume(returning: line)
     }
 
@@ -253,6 +262,8 @@ final class DaemonClient: @unchecked Sendable {
         closed = true
         let waiting = pending
         pending = [:]
+        timeouts.values.forEach { $0.cancel() }
+        timeouts = [:]
         overflowed = [:]
         let streams = subscribers.values.map(\.continuation)
         subscribers = [:]

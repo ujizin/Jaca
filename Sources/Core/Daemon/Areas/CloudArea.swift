@@ -80,13 +80,17 @@ enum CloudArea {
             engine.onEntries = { [weak hosted] batch in
                 guard let hosted else { return }
                 hosted.replay.append(contentsOf: batch)
-                if hosted.replay.count > cap { hosted.replay.removeFirst(hosted.replay.count - cap) }
+                // Trimmed in chunks, as in LogsArea: trimming to the cap on every batch moves the
+                // whole buffer each time.
+                if hosted.replay.count > cap + cap / 10 { hosted.replay.removeFirst(hosted.replay.count - cap) }
                 bus.publish(CloudArea.entriesTopic(id), batch, droppable: true)
             }
             engine.onOlder = { [weak hosted] page in
                 guard let hosted else { return }
-                hosted.replay.insert(contentsOf: page, at: 0)
-                if hosted.replay.count > cap { hosted.replay.removeLast(hosted.replay.count - cap) }
+                // Older pages fill only the room left: evicting from the end would drop the newest
+                // live entries, which a gap fill can't get back.
+                let room = max(0, cap + cap / 10 - hosted.replay.count)
+                hosted.replay.insert(contentsOf: page.suffix(room), at: 0)
                 bus.publish(CloudArea.olderTopic(id), page)
             }
             engine.onState = { bus.publish(CloudArea.sessionStateTopic(id), $0, retain: true) }
@@ -145,8 +149,7 @@ enum CloudArea {
         engine.onChange = { bus.publish(stateTopic, $0, retain: true) }
         bus.publish(stateTopic, engine.state, retain: true)
 
-        let orphan = ProcessInfo.processInfo.environment["JACAD_LOG_ORPHAN_SECONDS"].flatMap(TimeInterval.init)
-            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 600
+        let orphan = DaemonDefaults.orphanTimeout
         let sessions = sessions ?? Sessions(bus: bus, orphanTimeout: orphan) { [weak engine] id in
             CloudStreamEngine(
                 id: id,

@@ -46,7 +46,7 @@ func connect() async -> DaemonClient {
         let client = try await DaemonLauncher.connect(spawn: !noSpawn)
         let _: DaemonServer.HelloResult = try await client.call(
             "hello", DaemonServer.HelloParams(protocolVersion: DaemonProtocol.version, client: "jacad-cli"),
-            timeout: .seconds(10))
+            timeout: DaemonDefaults.shortCallTimeout)
         return client
     } catch {
         fail(error.localizedDescription)
@@ -141,17 +141,19 @@ case "call":
     runMain { await call(method, params) }
 
 case "status":
-    runMain { await call("daemon.status", nil, timeout: .seconds(10)) }
+    runMain { await call("daemon.status", nil, timeout: DaemonDefaults.shortCallTimeout) }
 
 case "describe":
-    runMain { await call("api.describe", nil, timeout: .seconds(10)) }
+    runMain { await call("api.describe", nil, timeout: DaemonDefaults.shortCallTimeout) }
 
 case "stop":
     runMain {
         guard let client = try? await DaemonClient.connect() else { return 0 }   // not running
         let code: Int32
         do {
-            code = printResult(try await client.callRaw("daemon.shutdown", paramsJSON: nil, timeout: .seconds(10)))
+            code = printResult(try await client.callRaw("daemon.shutdown", paramsJSON: nil, timeout: DaemonDefaults.shortCallTimeout))
+        } catch let error as RPCError where error.code == RPCError.disconnectedCode {
+            code = 0   // it closed the connection: already stopping (idle), wait for it below
         } catch {
             FileHandle.standardError.write(Data("jacad: \(error.localizedDescription)\n".utf8))
             return 1

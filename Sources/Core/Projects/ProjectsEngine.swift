@@ -215,6 +215,7 @@ final class ProjectsEngine {
         sizePass = []
         sizesAgain = false
         state.isComputingSizes = false
+        saveCache()   // keep the sizes measured so far, as before the engine split
     }
 
     // MARK: - User folders

@@ -62,7 +62,7 @@ final class DaemonPeer: @unchecked Sendable {
     }
 
     /// Whether the socket can take more bytes right now. False while the peer is slow and the
-    /// outbound buffer is above the high watermark — droppable events are skipped then.
+    /// outbound buffer is above the high watermark; droppable events are skipped then.
     var isWritable: Bool { channel.isWritable }
 
     func close() {

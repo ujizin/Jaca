@@ -70,7 +70,7 @@ build away from the real daemon. `Jaca.app/Contents/MacOS/jacad` is also the CLI
   tab's id, which is now persisted in `TabDescriptor.sessionID`. A relaunched app reattaches and
   backfills from the daemon's replay buffer (100k lines / entries) without restarting the stream
   or re-querying gcloud. A session no client has watched for 10 minutes is closed
-  (`JACAD_LOG_ORPHAN_SECONDS`). While a session runs, the daemon doesn't idle out.
+  (`JACAD_ORPHAN_SECONDS`; it applies to log, cloud and network sessions). While a session runs, the daemon doesn't idle out.
 - **Log filtering stays in the client.** The daemon owns the stream (source, reconnects, markers,
   PID tracking, body prettifying, crash markers, history). Level, text, regex, system-log and
   exclusion filters are the viewer's, since the app tab and a Herdr pane can filter differently.

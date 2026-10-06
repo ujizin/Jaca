@@ -60,6 +60,9 @@ final class GradleDaemonsModel {
         Task { [weak self] in self?.apply(await service.list()) }
     }
 
+    /// Pids in the last list received, to tell a failed kill from a daemon that already exited.
+    private var lastListed: Set<Int32> = []
+
     private func apply(_ list: [GradleDaemon]) {
         // Preserve the in-flight removing flag so a row mid-fade doesn't reappear.
         // A row already gone from the list keeps fading out until `kill` removes it: in daemon
@@ -73,6 +76,7 @@ final class GradleDaemonsModel {
             return copy
         }
         let listed = Set(list.map(\.pid))
+        lastListed = listed
         next.append(contentsOf: removing.filter { !listed.contains($0.pid) })
         daemons = next.sorted { $0.pid < $1.pid }
     }
@@ -127,6 +131,9 @@ final class GradleDaemonsModel {
                 try? await Task.sleep(for: .milliseconds(280))
                 self.daemons.removeAll { $0.pid == pid }
                 self.flash("Killed \(pid)", fallback: "eraser")
+            } else if !self.lastListed.contains(pid) {
+                // It exited on its own meanwhile (the kill found nothing to kill): finish the fade.
+                self.daemons.removeAll { $0.pid == pid }
             } else {
                 if let j = self.daemons.firstIndex(where: { $0.pid == pid }) {
                     self.daemons[j].removing = false

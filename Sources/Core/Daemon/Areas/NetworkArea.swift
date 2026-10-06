@@ -57,7 +57,7 @@ enum NetworkArea {
         /// Override services for a new capture source (nil when overrides are off).
         var interceptServices: () -> InterceptServices? = { nil }
 
-        init(bus: DaemonEventBus, bodyCache: NetworkBodyCache? = NetworkBodyCache(),
+        init(bus: DaemonEventBus, bodyCache: NetworkBodyCache? = NetworkBodyCache(name: "net-bodies-jacad"),
              bodiesInMemory: Int = 1_000, orphanTimeout: TimeInterval = 600) {
             self.bus = bus
             self.bodyCache = bodyCache
@@ -85,7 +85,9 @@ enum NetworkArea {
                 self.scheduleFlush()
             }
             engine.onState = { bus.publish(NetworkArea.stateTopic(id), $0, retain: true) }
-            engine.restoreMode(sourceID: p.sourceID, package: p.package)
+            // Companion capture stays in the app (see `network.select`): such a tab reopens at the chooser.
+            let sourceID = p.sourceID.flatMap { CaptureSourceRegistry.descriptor(id: $0)?.kind == .companion ? nil : $0 }
+            engine.restoreMode(sourceID: sourceID, package: p.package)
             bus.publish(NetworkArea.stateTopic(id), engine.state, retain: true)
             if p.autoStart == true { engine.resume() }
             return SessionInfo(id: id, state: engine.state, existed: false)
@@ -172,7 +174,7 @@ enum NetworkArea {
         }
 
         /// HAR of everything captured. Bodies still in memory are included, spilled ones are
-        /// not — the same as exporting from the app's list.
+        /// not, the same as exporting from the app's list.
         func har(_ id: UUID) -> Data? {
             guard let hosted = sessions[id] else { return nil }
             return HARExport.data(from: hosted.transactions)
@@ -221,8 +223,7 @@ enum NetworkArea {
     @MainActor
     static func install(on server: DaemonServer, captures: Captures? = nil,
                         interceptServices: @escaping () -> InterceptServices? = { nil }) {
-        let orphan = ProcessInfo.processInfo.environment["JACAD_LOG_ORPHAN_SECONDS"].flatMap(TimeInterval.init)
-            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 600
+        let orphan = DaemonDefaults.orphanTimeout
         let captures = captures ?? Captures(bus: server.bus, orphanTimeout: orphan)
         captures.interceptServices = interceptServices
         server.keep(captures)
@@ -243,15 +244,12 @@ enum NetworkArea {
                 if CaptureSourceRegistry.descriptor(id: p.sourceID)?.kind == .companion {
                     throw RPCError.invalidParams("Companion capture runs in the app, not in jacad.")
                 }
+                try captures.session(p.id).engine.select(sourceID: p.sourceID, package: p.package)
             }
-            try await MainActor.run { try captures.session(p.id).engine.select(sourceID: p.sourceID, package: p.package) }
             return RPCEmpty()
         }
         r.register("network.reopenChooser", "Stops and returns to source selection.", params: IDParams.self) { p, _ in
             try await MainActor.run { try captures.session(p.id).engine.reopenChooser() }; return RPCEmpty()
-        }
-        r.register("network.resume", "Restarts the chosen source.", params: IDParams.self) { p, _ in
-            try await MainActor.run { try captures.session(p.id).engine.resume() }; return RPCEmpty()
         }
         r.register("network.stop", "Stops capturing.", params: IDParams.self) { p, _ in
             try await MainActor.run { try captures.session(p.id).engine.stop() }; return RPCEmpty()

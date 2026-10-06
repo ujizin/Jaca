@@ -124,7 +124,7 @@ final class CloudStreamEngine: CloudFeed {
     private var pollStream: AsyncStream<CloudPollEvent>?
     private var database: CloudLogDatabase?
 
-    /// Lowest seq assigned so far — the next older page is stamped below this.
+    /// Lowest seq assigned so far: the next older page is stamped below this.
     private var oldestSeq = CloudStreamEngine.forwardSeqBase
     /// Timestamp of the oldest entry handed out: the cursor for the next older page.
     private var oldestTimestamp: Date?

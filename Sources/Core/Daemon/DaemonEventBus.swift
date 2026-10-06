@@ -37,7 +37,7 @@ final class DaemonEventBus: @unchecked Sendable {
     }
 
     /// Sends happen under the lock. `DaemonPeer.send` only enqueues on the channel's event loop, so
-    /// this doesn't block, and it keeps each peer's events in publish order — sending after
+    /// this doesn't block, and it keeps each peer's events in publish order. Sending after
     /// unlocking let a concurrent publish (or a subscribe's replay) overtake a newer line.
     func publishLine(_ topic: String, _ line: Data, retain: Bool, droppable: Bool) {
         lock.lock()

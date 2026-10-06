@@ -138,7 +138,7 @@ final class DaemonConnector {
         // Bounded: a daemon that accepts but never answers must not hang every area's connect.
         try await client.call(
             "hello", DaemonServer.HelloParams(protocolVersion: DaemonProtocol.version, client: "Jaca.app"),
-            timeout: .seconds(10))
+            timeout: DaemonDefaults.shortCallTimeout)
     }
 
     /// Asks a running daemon to exit and waits for it to release the socket.
@@ -171,7 +171,7 @@ final class DaemonConnector {
     // MARK: - Calls
 
     /// Calls `method` on the daemon. Returns nil when the daemon is unreachable or the call
-    /// failed, after logging why; callers fall back to in-process work.
+    /// failed, after logging why. `request` tells the two apart.
     func call<P: Encodable & Sendable, R: Decodable & Sendable>(_ method: String, _ params: P, as type: R.Type = R.self) async -> R? {
         guard let client = await connectedClient() else { return nil }
         do {

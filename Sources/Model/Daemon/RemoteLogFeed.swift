@@ -2,8 +2,8 @@ import Foundation
 
 /// A log session running in `jacad`, as a `LogFeed` for a `LogSession` tab.
 ///
-/// On every (re)connection it opens the session by id — attaching when it still exists (the
-/// app relaunched), recreating it when the daemon restarted — then backfills from the daemon's
+/// On every (re)connection it opens the session by id, attaching when it still exists (the
+/// app relaunched) or recreating it when the daemon restarted, then backfills from the daemon's
 /// replay buffer and follows live `logs.lines.<id>` batches. Lines are deduplicated by seq, so
 /// a backfill overlapping live batches never shows a line twice.
 ///
@@ -51,7 +51,7 @@ final class RemoteLogFeed: LogFeed {
     }
 
     private func watch() {
-        // `events.dropped` notices for the lines topic arrive on this same stream.
+        // `events.dropped` notices for both topics arrive on this same stream.
         let topics = [LogsArea.linesTopic(id), LogsArea.stateTopic(id)]
         watchTask = daemon.watch(
             topics,
@@ -72,6 +72,9 @@ final class RemoteLogFeed: LogFeed {
             wantsRunning = next.isRunning || next.isConnecting
             setState(next)
         case "events.dropped":
+            let lost = (try? event.decode(DroppedEvents.self))?.topic
+            // A lost state is fetched again (reopening returns it).
+            if lost == LogsArea.stateTopic(id) { Task { await openAndBackfill() }; return }
             // This client fell behind and missed batches. The notice arrives right before the
             // first batch after the gap, so hold live batches until the gap is filled.
             if held == nil {
@@ -117,7 +120,9 @@ final class RemoteLogFeed: LogFeed {
             if wantsRunning, fallback == nil { useFallback().connect() }
             return
         }
-        wantsRunning = info.state.isRunning || info.state.isConnecting || wantsRunning
+        // The daemon's run state wins for a session it already had (a dropped "stopped" state
+        // left ours stale); a new one was started from ours (`autoStart`).
+        if info.existed { wantsRunning = info.state.isRunning || info.state.isConnecting }
         setState(info.state)
         await backfill()
     }
