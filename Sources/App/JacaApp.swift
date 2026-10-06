@@ -27,7 +27,11 @@ final class JacaAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         adoptMainWindow()
         // A SIGKILLed run leaves its adb tunnels behind, pointing the device's localhost at a
         // listener that no longer exists. Reclaim them now.
-        AdbTunnelCleanup.reconcileOrphansFromPreviousRuns()
+        // When network capture runs in jacad, jacad does this when it starts: two processes
+        // rewriting the tunnel ledger at once could drop each other's entries.
+        if !DaemonConnector.shared.networkRunsInDaemon() {
+            AdbTunnelCleanup.reconcileOrphansFromPreviousRuns()
+        }
     }
 
     /// Applies the Dock/⌘-Tab preference live. Changing the policy hides the window and

@@ -122,7 +122,11 @@ case "serve":
             signalSources.append(source)
         }
         do {
-            try server.start()
+            try server.prepare()
+            // Before listening: a client reconnecting the moment the socket appears must find
+            // every area's methods registered.
+            DaemonAreas.install(on: server)
+            try server.listen()
         } catch DaemonServer.StartError.alreadyRunning {
             DaemonLog.info("another jacad holds the lock; exiting")
             return 0
@@ -130,7 +134,6 @@ case "serve":
             DaemonLog.error(error.localizedDescription)
             return 1
         }
-        DaemonAreas.install(on: server)
         // Serve until stopped; `onStop` exits the process.
         while true { try? await Task.sleep(for: .seconds(3600)) }
     }

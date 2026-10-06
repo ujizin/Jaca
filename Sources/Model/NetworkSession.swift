@@ -314,9 +314,13 @@ final class NetworkSession: WorkspaceTab {
         adopting = true
         defer { adopting = false }
         for txn in rows { upsert(txn) }
+        // Evicted bodies of these rows live in the other process's cache, which this tab can't
+        // read: they stay evicted (shown as unavailable) instead of loading as empty.
+        unreachableBodies.formUnion(rows.filter(\.bodiesEvicted).map(\.id))
         selectedID = selected
     }
     @ObservationIgnored private var adopting = false
+    @ObservationIgnored private var unreachableBodies: Set<UUID> = []
 
     /// Restarts the running capture source so it picks up a changed intercept configuration
     /// (the source snapshots the override services at launch). Keeps the captured rows.
@@ -622,6 +626,7 @@ final class NetworkSession: WorkspaceTab {
         guard let idx = indexByID[id] else { return (nil, nil) }
         let txn = transactions[idx]
         guard txn.bodiesEvicted else { return (txn.requestBody, txn.responseBody) }
+        guard !unreachableBodies.contains(id) else { return (nil, nil) }
         let loaded: (req: Data?, resp: Data?)
         if feed.bodiesOnDemand {
             // In the daemon, which holds them. Unavailable (daemon gone, capture closed) keeps
@@ -648,7 +653,7 @@ final class NetworkSession: WorkspaceTab {
     @ObservationIgnored private var bodyFetchCounter = 0
 
     func ensureBodies(for id: UUID) {
-        guard let idx = indexByID[id], transactions[idx].bodiesEvicted,
+        guard let idx = indexByID[id], transactions[idx].bodiesEvicted, !unreachableBodies.contains(id),
               transactions[idx].requestBody == nil, transactions[idx].responseBody == nil else { return }
         let feed = self.feed, cache = bodyCache
         guard feed.bodiesOnDemand || cache != nil else { return }

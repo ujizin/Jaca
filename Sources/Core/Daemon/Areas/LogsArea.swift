@@ -141,7 +141,8 @@ enum LogsArea {
 
         func range(_ p: RangeParams) -> [LogLine] {
             guard let hosted = sessions[p.id] else { return [] }
-            let limit = max(1, min(p.limit ?? 50_000, replayCap))
+            // Default: everything replayed (a reattach or gap fill must not skip the oldest part).
+            let limit = max(1, min(p.limit ?? Int.max, hosted.replay.count))
             let slice: ArraySlice<LogLine>
             if let after = p.afterSeq {
                 // Replay is seq-ordered: binary search for the first line past `after`.
