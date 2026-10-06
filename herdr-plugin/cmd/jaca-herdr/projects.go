@@ -94,6 +94,8 @@ func runProjectsPane() int {
 	tick := time.NewTicker(500 * time.Millisecond)
 	defer tick.Stop()
 	toasts := make(chan string, 4)
+	done := make(chan struct{})
+	defer close(done)
 
 	p := &projectsPane{c: c}
 	p.draw()
@@ -109,15 +111,16 @@ func runProjectsPane() int {
 			case "events.dropped":
 				// The skipped update may have been the latest state: fetch it.
 				var note droppedNote
-				if json.Unmarshal(ev.Data, &note) == nil && note.Topic == projectsTopic {
-					go func() {
-						var st projectsState
-						if c.Call("projects.state", nil, &st) == nil {
-							c.inject(event{Topic: projectsTopic, Data: mustJSON(st)})
-						}
-					}()
+				// Fetched on the UI loop, so a newer live update can't be overwritten by this
+				// reply (readLoop never blocks on the pane, so the reply can't wait on this loop).
+				if json.Unmarshal(ev.Data, &note) != nil || note.Topic != projectsTopic {
+					continue
 				}
-				continue
+				var st projectsState
+				if c.CallTimeout("projects.state", nil, &st, syncTimeout) != nil {
+					continue
+				}
+				p.setState(st)
 			}
 		case <-c.Closed:
 			restore()
@@ -127,7 +130,7 @@ func runProjectsPane() int {
 			if !ok || (len(k) == 1 && (k[0] == 'q' || k[0] == 0x03)) {
 				return 0
 			}
-			p.handleKey(k, toasts)
+			p.handleKey(k, toasts, done)
 		case t := <-toasts:
 			p.toast, p.toastAt = t, time.Now()
 		case <-resize:
@@ -158,7 +161,7 @@ func (p *projectsPane) rows() []projRowRef {
 	return out
 }
 
-func (p *projectsPane) handleKey(k []byte, toasts chan<- string) {
+func (p *projectsPane) handleKey(k []byte, toasts chan<- string, done <-chan struct{}) {
 	rows := p.rows()
 	switch {
 	case isUp(k):
@@ -180,18 +183,26 @@ func (p *projectsPane) handleKey(k []byte, toasts chan<- string) {
 				FreedMB int     `json:"freedMB"`
 				Error   *string `json:"error"`
 			}
-			if p.c.Call("projects.clearCache", map[string]any{"project": pr.Path, "checkout": co.Path}, &outcome) != nil || outcome == nil {
-				return
-			}
-			// The same toasts as ProjectsModel.clearCache.
-			if outcome.Error != nil {
+			var toast string
+			// The failure lines are the projects-clear-cache action's (main.go); the outcome
+			// toasts are ProjectsModel.clearCache's.
+			switch err := p.c.CallTimeout("projects.clearCache", map[string]any{"project": pr.Path, "checkout": co.Path}, &outcome, 10*time.Minute); {
+			case err != nil:
+				toast = "jaca: " + err.Error()
+			case outcome == nil:
+				toast = "jaca: already cleaning, or the checkout is gone"
+			case outcome.Error != nil:
 				msg := []rune(*outcome.Error)
 				if len(msg) > 50 {
 					msg = msg[:50]
 				}
-				toasts <- "Clean failed · " + string(msg)
-			} else {
-				toasts <- fmt.Sprintf("Freed %s · %s", formatSize(outcome.FreedMB), outcome.Name)
+				toast = "Clean failed · " + string(msg)
+			default:
+				toast = fmt.Sprintf("Freed %s · %s", formatSize(outcome.FreedMB), outcome.Name)
+			}
+			select {
+			case toasts <- toast:
+			case <-done:
 			}
 		}()
 	}
@@ -228,7 +239,7 @@ func (p *projectsPane) draw() {
 			}
 			pr := p.state.Projects[ref.project]
 			if ref.checkout < 0 {
-				line(marker + sgrBold + fit(pr.name(), cols-2) + sgrReset)
+				line(marker + sgrBold + fit(sanitize(pr.name()), cols-2) + sgrReset)
 				continue
 			}
 			co := pr.Checkouts[ref.checkout]
@@ -238,12 +249,12 @@ func (p *projectsPane) draw() {
 			} else if co.SizeComputed {
 				size = formatSize(co.SizeMB)
 			}
-			nameW := max(10, cols-len([]rune(size))-8)
-			line(marker + "  " + fit(co.name(), nameW) + "  " + sgrDim + size + sgrReset)
+			nameW := max(10, cols-cellWidth(size)-8)
+			line(marker + "  " + fit(sanitize(co.name()), nameW) + "  " + sgrDim + size + sgrReset)
 		}
 	}
 	if p.toast != "" && rows > 4 {
-		b.WriteString(fmt.Sprintf("\x1b[%d;1H%s%s%s\x1b[K", rows, sgrBold, fit(p.toast, cols), sgrReset))
+		b.WriteString(fmt.Sprintf("\x1b[%d;1H%s%s%s\x1b[K", rows, sgrBold, fit(sanitize(p.toast), cols), sgrReset))
 	}
-	fmt.Print(b.String())
+	paint(b.String())
 }

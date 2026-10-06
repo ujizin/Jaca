@@ -82,12 +82,29 @@ type logState struct {
 const devicesTopic = "devices.list"
 const maxLines = 20000
 
+// syncTimeout bounds the calls the UI loop waits on, so a stalled jacad can't freeze the keys
+// for callTimeout; teardownTimeout bounds the ones made while leaving a stream or the pane.
+const (
+	syncTimeout     = 5 * time.Second
+	teardownTimeout = 2 * time.Second
+)
+
+// openResult is a finished logs.open, handed back to the UI loop.
+type openResult struct {
+	device device
+	id     string
+	err    error
+}
+
 // devicesPane lists devices; Enter streams the selected device's logs in the same pane.
 type devicesPane struct {
 	c        *client
 	devices  []device
 	loaded   bool
 	selected int
+
+	opening bool   // a logs.open is in flight
+	err     string // why the last logs.open failed, as jacad reported it
 
 	// Streaming (session non-empty).
 	session  string
@@ -97,8 +114,11 @@ type devicesPane struct {
 	hasSeq   bool
 	state    logState
 	minLevel int
-	follow   bool
-	offset   int // lines scrolled up from the tail when not following
+	follow   bool // pinned to the tail; false once scrolled up
+	offset   int  // visible lines scrolled up from the tail when not following
+
+	opened chan openResult
+	done   chan struct{} // closed when the pane exits, so result goroutines don't block
 }
 
 // runDevicesPane: j/k move, Enter streams logs; while streaming space stops/starts, 1-6 set the
@@ -114,6 +134,10 @@ func runDevicesPane() int {
 		fmt.Fprintln(os.Stderr, "jaca:", err)
 		return 1
 	}
+	p := &devicesPane{c: c, follow: true, opened: make(chan openResult, 1), done: make(chan struct{})}
+	defer close(p.done)
+	// Deferred before restore so it runs after it: the terminal is back before teardown waits.
+	defer p.closeSession(true)
 	restore, err := enterRaw()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "jaca: not a terminal:", err)
@@ -128,8 +152,6 @@ func runDevicesPane() int {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 
-	p := &devicesPane{c: c, follow: true}
-	defer p.closeSession()
 	// Keys and resizes redraw at once; events only mark the pane dirty and the tick draws, so a
 	// chatty device costs one frame per tick rather than one per batch.
 	p.draw()
@@ -151,6 +173,8 @@ func runDevicesPane() int {
 			if quit := p.handleKey(k); quit {
 				return 0
 			}
+		case r := <-p.opened:
+			p.finishOpen(r)
 		case <-resize:
 			refreshTermSize()
 		case <-tick.C:
@@ -179,7 +203,7 @@ func (p *devicesPane) handleEvent(ev event) {
 		case note.Topic == devicesTopic:
 			// The skipped update may have been the latest list: fetch it.
 			var list []device
-			if p.c.Call("devices.list", nil, &list) == nil {
+			if p.c.CallTimeout("devices.list", nil, &list, syncTimeout) == nil {
 				p.setDevices(list)
 			}
 		case p.session != "" && note.Topic == "logs.lines."+p.session:
@@ -189,7 +213,7 @@ func (p *devicesPane) handleEvent(ev event) {
 				ID    string   `json:"id"`
 				State logState `json:"state"`
 			}
-			if p.c.Call("logs.list", nil, &sessions) == nil {
+			if p.c.CallTimeout("logs.list", nil, &sessions, syncTimeout) == nil {
 				for _, s := range sessions {
 					if s.ID == p.session {
 						p.state = s.State
@@ -222,19 +246,30 @@ func clampIndex(i, n int) int {
 
 // appendLines adds lines newer than the last one held. Seqs grow but skip values (one line can
 // split into sub-seqs), so they order lines without revealing gaps; gaps are reported by
-// events.dropped and filled by backfill.
+// events.dropped and filled by backfill. A scrolled-up view moves its offset by the visible
+// lines added, so it holds still while the device keeps logging.
 func (p *devicesPane) appendLines(batch []logLine) {
+	added := 0
 	for _, l := range batch {
 		if p.hasSeq && l.Seq <= p.lastSeq {
 			continue
 		}
 		p.lines = append(p.lines, l)
 		p.lastSeq, p.hasSeq = l.Seq, true
+		if p.isVisible(l) {
+			added++
+		}
 	}
-	if len(p.lines) > maxLines {
+	if !p.follow {
+		p.offset += added
+	}
+	// Trimmed in chunks so a full buffer isn't copied on every batch.
+	if len(p.lines) > maxLines+maxLines/10 {
 		p.lines = append([]logLine(nil), p.lines[len(p.lines)-maxLines:]...)
 	}
 }
+
+func (p *devicesPane) isVisible(l logLine) bool { return l.Marker || l.Level >= p.minLevel }
 
 // backfill fetches the session's lines after the newest one held (all of the daemon's replay
 // when none is held yet). Live batches that overlap it are skipped by appendLines.
@@ -244,7 +279,7 @@ func (p *devicesPane) backfill() {
 		params["afterSeq"] = p.lastSeq
 	}
 	var lines []logLine
-	if p.c.Call("logs.range", params, &lines) == nil {
+	if p.c.CallTimeout("logs.range", params, &lines, syncTimeout) == nil {
 		p.appendLines(lines)
 	}
 }
@@ -255,7 +290,7 @@ func (p *devicesPane) handleKey(k []byte) bool {
 		return true
 	case len(k) == 1 && k[0] == 0x1b: // Esc
 		if p.session != "" {
-			p.closeSession()
+			p.closeSession(false)
 		}
 	case isUp(k):
 		if p.session == "" {
@@ -269,9 +304,10 @@ func (p *devicesPane) handleKey(k []byte) bool {
 			p.selected = clampIndex(p.selected+1, len(p.devices))
 		} else if p.offset > 0 {
 			p.offset--
+			p.follow = p.offset == 0
 		}
 	case len(k) == 1 && (k[0] == '\r' || k[0] == '\n'):
-		if p.session == "" && p.selected >= 0 && p.selected < len(p.devices) {
+		if p.session == "" && !p.opening && p.selected >= 0 && p.selected < len(p.devices) {
 			p.openSession(p.devices[p.selected])
 		}
 	case len(k) == 1 && k[0] == ' ' && p.session != "":
@@ -288,30 +324,54 @@ func (p *devicesPane) handleKey(k []byte) bool {
 	return false
 }
 
+// openSession asks jacad for a stream off the UI loop; finishOpen takes the result.
 func (p *devicesPane) openSession(d device) {
-	var info struct {
-		ID string `json:"id"`
-	}
-	if err := p.c.Call("logs.open", map[string]any{"device": d, "autoStart": true, "displayName": d.displayModel()}, &info); err != nil {
+	p.opening, p.err = true, ""
+	go func() {
+		var info struct {
+			ID string `json:"id"`
+		}
+		err := p.c.Call("logs.open", map[string]any{"device": d, "autoStart": true, "displayName": d.displayModel()}, &info)
+		select {
+		case p.opened <- openResult{device: d, id: info.ID, err: err}:
+		case <-p.done:
+		}
+	}()
+}
+
+func (p *devicesPane) finishOpen(r openResult) {
+	p.opening = false
+	if r.err != nil {
+		p.err = r.err.Error()
 		return
 	}
-	p.session, p.streamOf = info.ID, d
+	d := r.device
+	p.session, p.streamOf = r.id, d
 	p.lines, p.lastSeq, p.hasSeq, p.follow, p.offset = nil, 0, false, true, 0
 	p.state = logState{}
-	_ = p.c.Subscribe("logs.lines."+info.ID, "logs.state."+info.ID)
+	_ = p.c.CallTimeout("events.subscribe", map[string]any{"topics": []string{"logs.lines." + r.id, "logs.state." + r.id}}, nil, syncTimeout)
 	// Lines published between logs.open and the subscribe never reach this connection; the
 	// daemon's replay has them.
 	p.backfill()
 }
 
-func (p *devicesPane) closeSession() {
+// closeSession leaves the stream. While the pane keeps running the calls go off the UI loop;
+// on exit (wait) they run before the connection closes, each bounded by teardownTimeout.
+func (p *devicesPane) closeSession(wait bool) {
 	if p.session == "" {
 		return
 	}
 	id := p.session
 	p.session = ""
-	_ = p.c.Call("events.unsubscribe", map[string]any{"topics": []string{"logs.lines." + id, "logs.state." + id}}, nil)
-	_ = p.c.Call("logs.close", map[string]any{"id": id}, nil)
+	teardown := func() {
+		_ = p.c.CallTimeout("events.unsubscribe", map[string]any{"topics": []string{"logs.lines." + id, "logs.state." + id}}, nil, teardownTimeout)
+		_ = p.c.CallTimeout("logs.close", map[string]any{"id": id}, nil, teardownTimeout)
+	}
+	if wait {
+		teardown()
+	} else {
+		go teardown()
+	}
 }
 
 func (p *devicesPane) draw() {
@@ -323,17 +383,28 @@ func (p *devicesPane) draw() {
 	if p.session == "" {
 		line(sgrDim + "Devices" + sgrReset)
 		line("")
+		room := rows - 3
+		if p.err != "" {
+			line(sgrRed + fit(sanitize(p.err), cols) + sgrReset)
+			room--
+		}
+		room = max(1, room)
 		switch {
 		case !p.loaded:
 		case len(p.devices) == 0:
 			line("No devices connected")
 		default:
-			for i, d := range p.devices {
+			start := 0
+			if p.selected >= room {
+				start = p.selected - room + 1
+			}
+			for i := start; i < len(p.devices) && i < start+room; i++ {
+				d := p.devices[i]
 				marker := "  "
 				if i == p.selected {
 					marker = sgrRev + " " + sgrReset + " "
 				}
-				name := sgrBold + fit(d.displayModel(), max(10, cols/2-4)) + sgrReset
+				name := sgrBold + fit(sanitize(d.displayModel()), max(10, cols/2-4)) + sgrReset
 				state := d.stateLabel()
 				if !d.isReady() {
 					state = sgrDim + state + sgrReset
@@ -341,12 +412,13 @@ func (p *devicesPane) draw() {
 				line(marker + name + "  " + fit(d.platformName(), 14) + "  " + state)
 			}
 		}
-		fmt.Print(b.String())
+		paint(b.String())
 		return
 	}
 
-	// Header: the device and the stream state.
-	head := sgrBold + p.streamOf.displayModel() + sgrReset + "  " + sgrDim + "≥" + levelShort[p.minLevel] + sgrReset
+	// Header: the device and the stream state. The name gets what the rest leaves.
+	name := clip(sanitize(p.streamOf.displayModel()), max(1, cols-16))
+	head := sgrBold + name + sgrReset + "  " + sgrDim + "≥" + levelShort[p.minLevel] + sgrReset
 	if p.state.IsConnecting {
 		head += "  " + sgrDim + "Connecting…" + sgrReset
 	} else if !p.state.IsRunning {
@@ -354,12 +426,12 @@ func (p *devicesPane) draw() {
 	}
 	line(head)
 	if p.state.StatusMessage != nil {
-		line(sgrRed + fit(*p.state.StatusMessage, cols) + sgrReset)
+		line(sgrRed + fit(sanitize(*p.state.StatusMessage), cols) + sgrReset)
 	}
 
 	visible := make([]logLine, 0, len(p.lines))
 	for _, l := range p.lines {
-		if l.Marker || l.Level >= p.minLevel {
+		if p.isVisible(l) {
 			visible = append(visible, l)
 		}
 	}
@@ -377,11 +449,11 @@ func (p *devicesPane) draw() {
 	for _, l := range visible[start:end] {
 		line(renderLogLine(l, cols))
 	}
-	fmt.Print(b.String())
+	paint(b.String())
 }
 
 func renderLogLine(l logLine, cols int) string {
-	msg := strings.ReplaceAll(l.Message, "\n", " ⏎ ")
+	msg := sanitize(strings.ReplaceAll(l.Message, "\n", " ⏎ "))
 	if l.Marker {
 		color := sgrDim
 		if l.Critical {
@@ -404,6 +476,6 @@ func renderLogLine(l logLine, cols int) string {
 		color = sgrDim
 	}
 	prefix := ts + " " + level + " "
-	rest := fit(l.Tag+": "+msg, max(0, cols-len(prefix)))
+	rest := fit(sanitize(l.Tag)+": "+msg, max(0, cols-cellWidth(prefix)))
 	return sgrDim + ts + sgrReset + " " + color + level + " " + rest + sgrReset
 }
