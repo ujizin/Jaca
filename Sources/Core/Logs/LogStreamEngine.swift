@@ -90,6 +90,12 @@ final class SeqCounter: @unchecked Sendable {
     /// ≤ 3 parts a split ever produces.
     init(start: UInt64 = 0, stride: UInt64 = 8) { self.value = start; self.stride = stride }
     func next() -> UInt64 { lock.lock(); defer { lock.unlock() }; let v = value; value &+= stride; return v }
+
+    /// The first line seq past `seq` for a counter with the default stride: where a new stream
+    /// continues after lines (and their sub-seqs) already shown.
+    static func slot(after seq: UInt64?, stride: UInt64 = 8) -> UInt64 {
+        seq.map { ($0 / stride + 1) * stride } ?? 0
+    }
 }
 
 /// One device log stream with everything that isn't a view: the source and its automatic
@@ -111,6 +117,11 @@ final class LogStreamEngine: LogFeed {
     var onState: ((LogStreamState) -> Void)?
     /// Called each time the stream starts (history records a session run).
     var onStarted: (() -> Void)?
+    /// Called once by `close()` (history ends the run).
+    var onClosed: (() -> Void)?
+    private var closed = false
+    /// Bumped by every connect and stop; a device check finishing under an older one is stale.
+    private var connectGeneration = 0
 
     private let adbURL: URL?
     private let makeSource: @Sendable (_ bundleID: String) -> LogSource?
@@ -219,6 +230,9 @@ final class LogStreamEngine: LogFeed {
     }
 
     func stop() {
+        // A stop during the device check cancels the start that check would make.
+        connectGeneration &+= 1
+        if state.isConnecting { state.isConnecting = false }
         guard state.isRunning else { return }
         state.isRunning = false
         source?.stop(); source = nil
@@ -238,9 +252,21 @@ final class LogStreamEngine: LogFeed {
     }
 
     func close() {
+        closed = true
         stop()
         onLines = nil
         onState = nil
+        let closedHandler = onClosed
+        onClosed = nil
+        closedHandler?()
+    }
+
+    /// Carries over the target app's PIDs seen by another engine (the daemon's, when this one
+    /// takes over in-process), so lines from an earlier run of the app stay visible.
+    func seedPIDs(_ pids: [Int32]) {
+        guard state.pids != nil, !pids.isEmpty else { return }
+        accumulatedPids.formUnion(pids)
+        state.pids = accumulatedPids.sorted()
     }
 
     /// Verifies the device is reachable (and, for Android, that a filtered package
@@ -249,8 +275,12 @@ final class LogStreamEngine: LogFeed {
         guard !state.isRunning, !state.isConnecting else { return }
         state.isConnecting = true
         state.statusMessage = nil
+        connectGeneration &+= 1
+        let generation = connectGeneration
         Task { @MainActor in
             let available = await checkDeviceAvailable()
+            // Stopped or closed while checking: nobody wants this stream any more.
+            guard !closed, generation == connectGeneration else { return }
             guard available else {
                 state.isConnecting = false
                 state.statusMessage = deviceUnavailableMessage
@@ -261,6 +291,7 @@ final class LogStreamEngine: LogFeed {
             if device.platform == .android, !package.isEmpty, await !isPackageInstalled(package) {
                 state.statusMessage = "App “\(package)” isn’t installed on \(device.displayModel)."
             }
+            guard !closed, generation == connectGeneration else { return }
             state.isConnecting = false
             // `start` clears the status line; the soft warning has to be set after it, or it
             // never shows.

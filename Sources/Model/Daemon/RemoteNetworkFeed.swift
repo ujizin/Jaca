@@ -19,6 +19,8 @@ final class RemoteNetworkFeed: NetworkFeed {
     private let commands = DaemonCommandQueue()
     private var wantsRunning: Bool
     private var resyncing = false
+    /// A resync was asked for while one ran: run again once it ends.
+    private var resyncAgain = false
     /// Clears sent but not yet done in the daemon. Upserts arriving meanwhile were published
     /// before the clear and would bring cleared rows back, so they're dropped; the list is
     /// fetched again once the clear lands.
@@ -75,14 +77,16 @@ final class RemoteNetworkFeed: NetworkFeed {
     }
 
     private func resync() async {
-        guard !resyncing else { return }
+        guard !resyncing else { resyncAgain = true; return }
         resyncing = true
         defer { resyncing = false }
-        let generation = clearGeneration
-        guard let all = await daemon.call("network.transactions", NetworkArea.IDParams(id: id),
-                                          as: [NetworkTransaction].self), !all.isEmpty,
-              clearsPending == 0, generation == clearGeneration else { return }
-        onTransactions?(all)
+        repeat {
+            resyncAgain = false
+            let generation = clearGeneration
+            guard let all = await daemon.call("network.transactions", NetworkArea.IDParams(id: id),
+                                              as: [NetworkTransaction].self) else { return }
+            if !all.isEmpty, clearsPending == 0, generation == clearGeneration { onTransactions?(all) }
+        } while resyncAgain
     }
 
     private func lostDaemon() {

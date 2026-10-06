@@ -221,16 +221,21 @@ final class DaemonClient: @unchecked Sendable {
                 for (topic, count) in lost.sorted(by: { $0.key < $1.key }) {
                     if let note = try? DaemonLine.encode(RPCEventEnvelope(
                         topic: "events.dropped", data: DroppedEvents(topic: topic, count: count))) {
-                        subscriber.continuation.yield(DaemonEventLine(topic: "events.dropped", line: note))
+                        record(subscriber.continuation.yield(DaemonEventLine(topic: "events.dropped", line: note)), for: key)
                     }
                 }
             }
-            // `.bufferingNewest` evicts the oldest buffered event, not this one: count that one's topic.
-            if case .dropped(let evicted) = subscriber.continuation.yield(event) {
-                let lostTopic = Self.target(of: evicted)
-                lock.withLock { overflowed[key, default: [:]][lostTopic, default: 0] += 1 }
-            }
+            record(subscriber.continuation.yield(event), for: key)
         }
+    }
+
+    /// `.bufferingNewest` evicts the oldest buffered event, not the one just yielded: count the
+    /// evicted one's topic (an evicted drop note carries its own count).
+    private func record(_ result: AsyncStream<DaemonEventLine>.Continuation.YieldResult, for key: UUID) {
+        guard case .dropped(let evicted) = result else { return }
+        let count = evicted.topic == "events.dropped" ? ((try? evicted.decode(DroppedEvents.self))?.count ?? 1) : 1
+        let lostTopic = Self.target(of: evicted)
+        lock.withLock { overflowed[key, default: [:]][lostTopic, default: 0] += count }
     }
 
     private func connectionClosed() {

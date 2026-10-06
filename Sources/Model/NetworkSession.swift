@@ -310,9 +310,13 @@ final class NetworkSession: WorkspaceTab {
     /// Takes over the rows and selection of the tab this one replaces (the capture moved between
     /// the app and `jacad`), so the user keeps what they captured.
     func adoptRows(_ rows: [NetworkTransaction], selectedID selected: UUID?) {
+        // Rows captured by another source are no proof this tab's CA is trusted.
+        adopting = true
+        defer { adopting = false }
         for txn in rows { upsert(txn) }
         selectedID = selected
     }
+    @ObservationIgnored private var adopting = false
 
     /// Restarts the running capture source so it picks up a changed intercept configuration
     /// (the source snapshots the override services at launch). Keeps the captured rows.
@@ -499,7 +503,7 @@ final class NetworkSession: WorkspaceTab {
         // touched TLS and the agent never uses the CA, so counting either would dismiss the setup
         // prompt for a user whose CA isn't installed. `== .proxy` was too narrow — companion
         // capture decrypts through `ProxyServer` too, so its CA sheet never saw `caReady` flip.
-        if txn.scheme == "https", txn.error == nil, captureMode.decryptsWithOurCA, !txn.wasOverridden {
+        if !adopting, txn.scheme == "https", txn.error == nil, captureMode.decryptsWithOurCA, !txn.wasOverridden {
             caReady = true
             proxyNeedsSetup = false
             caInstaller?.noteInterceptionConfirmed()
@@ -660,11 +664,11 @@ final class NetworkSession: WorkspaceTab {
             } else {
                 fetched = nil
             }
-            guard let bodies = fetched else { return }   // unavailable: the row stays evicted
             await MainActor.run { [weak self] in
                 guard let self, self.bodyFetch[id] == fetch else { return }
                 self.bodyFetch[id] = nil
-                guard let i = self.indexByID[id] else { return }
+                // Unavailable: the row stays evicted.
+                guard let bodies = fetched, let i = self.indexByID[id] else { return }
                 self.transactions[i].requestBody = bodies.req
                 self.transactions[i].responseBody = bodies.resp
                 self.transactions[i].bodiesEvicted = false

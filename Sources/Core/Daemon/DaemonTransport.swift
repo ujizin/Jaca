@@ -77,8 +77,9 @@ final class DaemonLineHandler: ChannelInboundHandler {
     private let onLine: (Data) -> Void
     private let onClose: () -> Void
     /// Closes the connection when it stays unwritable this long. Droppable events stop at the
-    /// watermark, but responses and retained/ordered events don't, so a reader that stopped
-    /// reading (a paused `jacad watch | less`) would otherwise grow the outbound buffer forever.
+    /// watermark, but responses and retained/ordered events don't, so a client that stopped
+    /// reading its socket (a raw-socket script, a hung process) would otherwise grow the outbound
+    /// buffer forever. `DaemonClient` reads eagerly, so the app and `jacad` never trip this.
     private let stallLimit: TimeAmount?
     private var stallCheck: Scheduled<Void>?
 

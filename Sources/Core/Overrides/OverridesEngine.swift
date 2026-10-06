@@ -56,7 +56,14 @@ final class OverridesEngine {
 
     init() {
         // Synchronous so the first frame already has the user's rules — the cache-first rule.
-        state.rules = OverrideRuleStore.load()
+        if let rules = OverrideRuleStore.loadIfReadable() {
+            state.rules = rules
+        } else {
+            // Nothing in memory to fall back on: hold saves until the file reads again, so the
+            // first edit doesn't replace the user's library with one rule.
+            diskUnreadable = true
+            JacaLog.error("override", "\(OverrideRuleStore.rulesURL.path) isn't readable JSON; not saving over it")
+        }
         state.masterEnabled = FeatureFlags.overridesMasterEnabled
         diskStamp = Self.diskModified
         JacaLog.info("override",
@@ -70,6 +77,7 @@ final class OverridesEngine {
         diskStamp = Self.diskModified
         if let rules = OverrideRuleStore.loadIfReadable() {
             state.rules = rules
+            diskUnreadable = false
         } else {
             JacaLog.error("override", "\(OverrideRuleStore.rulesURL.path) isn't readable JSON; keeping the \(state.rules.count) rule(s) in memory")
         }
@@ -253,8 +261,16 @@ final class OverridesEngine {
         }
     }
 
+    /// Set when the engine started on an unreadable `rules.json`, and cleared once it reads.
+    private var diskUnreadable = false
+
     private func persistAndRepublish() {
         defer { diskStamp = Self.diskModified }
+        guard !diskUnreadable else {
+            JacaLog.error("override", "not saving: \(OverrideRuleStore.rulesURL.path) is unreadable")
+            republish()
+            return
+        }
         let ok = OverrideRuleStore.save(state.rules)
         JacaLog.info("override", "saved \(state.rules.count) rule(s) -> \(ok ? "ok" : "FAILED")")
         republish()

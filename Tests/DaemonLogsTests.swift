@@ -157,7 +157,7 @@ final class DaemonLogsTests: XCTestCase {
     // MARK: - The app side
 
     /// Tests that run against a live daemon never fall back.
-    private let noLocal: (UInt64) -> LogStreamEngine = { _ in
+    private let noLocal: (UInt64, String) -> LogStreamEngine = { _, _ in
         LogStreamEngine(device: device, adbURL: nil, makeSource: { _ in nil }, prettifyEnabled: { false })
     }
 
@@ -204,7 +204,7 @@ final class DaemonLogsTests: XCTestCase {
         let id = UUID()
         var madeLocal = false
         let feed = RemoteLogFeed(id: id, device: device, package: "", displayName: "tab", autoStart: false,
-                                 daemon: connector, makeLocal: { seqStart in
+                                 daemon: connector, makeLocal: { seqStart, _ in
             madeLocal = true
             return LogStreamEngine(device: device, adbURL: nil, seqStart: seqStart,
                                    makeSource: { _ in source }, prettifyEnabled: { false })
