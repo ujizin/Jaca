@@ -307,6 +307,13 @@ final class NetworkSession: WorkspaceTab {
         for txn in batch { upsert(txn) }
     }
 
+    /// Takes over the rows and selection of the tab this one replaces (the capture moved between
+    /// the app and `jacad`), so the user keeps what they captured.
+    func adoptRows(_ rows: [NetworkTransaction], selectedID selected: UUID?) {
+        for txn in rows { upsert(txn) }
+        selectedID = selected
+    }
+
     /// Restarts the running capture source so it picks up a changed intercept configuration
     /// (the source snapshots the override services at launch). Keeps the captured rows.
     func restartForInterceptChange() { feed.restartForInterceptChange() }
@@ -631,11 +638,19 @@ final class NetworkSession: WorkspaceTab {
         return (loaded.req, loaded.resp)
     }
 
+    /// The latest body fetch per row: fetches can finish out of order, and an older one landing
+    /// last would show stale bodies with nothing left to refetch.
+    @ObservationIgnored private var bodyFetch: [UUID: Int] = [:]
+    @ObservationIgnored private var bodyFetchCounter = 0
+
     func ensureBodies(for id: UUID) {
         guard let idx = indexByID[id], transactions[idx].bodiesEvicted,
               transactions[idx].requestBody == nil, transactions[idx].responseBody == nil else { return }
         let feed = self.feed, cache = bodyCache
         guard feed.bodiesOnDemand || cache != nil else { return }
+        bodyFetchCounter &+= 1
+        let fetch = bodyFetchCounter
+        bodyFetch[id] = fetch
         Task {
             let fetched: (req: Data?, resp: Data?)?
             if feed.bodiesOnDemand {
@@ -647,7 +662,9 @@ final class NetworkSession: WorkspaceTab {
             }
             guard let bodies = fetched else { return }   // unavailable: the row stays evicted
             await MainActor.run { [weak self] in
-                guard let self, let i = self.indexByID[id] else { return }
+                guard let self, self.bodyFetch[id] == fetch else { return }
+                self.bodyFetch[id] = nil
+                guard let i = self.indexByID[id] else { return }
                 self.transactions[i].requestBody = bodies.req
                 self.transactions[i].responseBody = bodies.resp
                 self.transactions[i].bodiesEvicted = false

@@ -166,8 +166,8 @@ final class ProjectsEngine {
 
     /// Computes disk usage for every git checkout in the background, `sizeBatch` checkouts
     /// at a time, patching rows as each batch lands, then re-saves the cache. A request while a
-    /// walk runs (a rescan, a second client) adds only the checkouts that walk doesn't cover, so
-    /// frequent rescans don't restart it from the first checkout.
+    /// walk runs (a client asking again after a rescan, or a second client) adds only the
+    /// checkouts that walk doesn't cover, instead of restarting it from the first checkout.
     func computeSizes() {
         let work: [(pid: String, cid: String, url: URL)] = state.projects
             .filter(\.isGitRepo)

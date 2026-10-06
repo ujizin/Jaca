@@ -128,7 +128,8 @@ final class DaemonServer: @unchecked Sendable {
     func stop() { stop(onlyIfIdle: false) }
 
     /// `onlyIfIdle` re-checks for connections under the same lock that marks the server stopped,
-    /// so a client accepted between the idle check and the stop isn't dropped.
+    /// so a client already configured isn't cut. One the kernel accepts after that is closed by
+    /// `configure`; the app's connector retries its `hello` against the next daemon.
     private func stop(onlyIfIdle: Bool) {
         lock.lock()
         guard !stopped, !onlyIfIdle || connectionCount == 0 else { lock.unlock(); return }
@@ -201,7 +202,8 @@ final class DaemonServer: @unchecked Sendable {
                     ordered.enqueue(respond)
                 }
             },
-            onClose: { [weak self] in self?.peerClosed(id) }
+            onClose: { [weak self] in self?.peerClosed(id) },
+            closeIfStalledFor: .seconds(60)
         )
         return channel.eventLoop.makeCompletedFuture {
             try channel.pipeline.syncOperations.addHandlers([ByteToMessageHandler(LineFrameDecoder()), handler])
@@ -306,8 +308,6 @@ enum DaemonBuild {
         return "\(url.standardizedFileURL.path)@\(mtime)"
     }
 
-    /// This process's build id. Only meaningful inside `jacad`; the app computes the id of the
-    /// `jacad` it would spawn with `id(forExecutable:)`.
     /// Whether a running daemon's build is older than this app's `jacad`: the same check as an
     /// update replacing the binary. Two different builds (a worktree build and the installed app)
     /// don't replace each other: the newer one wins, instead of each restarting the other's daemon
@@ -318,6 +318,8 @@ enum DaemonBuild {
         return r < o
     }
 
+    /// This process's build id. Only meaningful inside `jacad`; the app computes the id of the
+    /// `jacad` it would spawn with `id(forExecutable:)`.
     static let currentID: String = {
         guard let exe = Bundle.main.executableURL else { return "unknown" }
         return id(forExecutable: exe)

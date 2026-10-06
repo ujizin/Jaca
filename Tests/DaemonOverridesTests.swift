@@ -79,6 +79,29 @@ final class DaemonOverridesTests: XCTestCase {
         XCTAssertEqual(Set(onDisk), [first.id, second.id])
     }
 
+    /// A hand edit that breaks `rules.json` must not empty the library on the next mutation.
+    func test_brokenRulesFile_keepsTheLibraryInMemory() throws {
+        let engine = OverridesEngine()
+        let kept = rule("https://a.example.com/*")
+        engine.save(kept)
+        try Data("[{\"broken\": ".utf8).write(to: OverrideRuleStore.rulesURL)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(5)],
+                                              ofItemAtPath: OverrideRuleStore.rulesURL.path)
+        let added = rule("https://b.example.com/*")
+        engine.save(added)
+        XCTAssertEqual(Set(OverrideRuleStore.load().map(\.id)), [kept.id, added.id])
+    }
+
+    /// The master switch lives in defaults: a write by the other process is picked up.
+    func test_masterSwitch_isReReadBeforeAMutation() {
+        let engine = OverridesEngine()
+        let before = FeatureFlags.overridesMasterEnabled
+        defer { FeatureFlags.overridesMasterEnabled = before }
+        FeatureFlags.overridesMasterEnabled = !engine.state.masterEnabled
+        engine.save(rule("https://c.example.com/*"))
+        XCTAssertEqual(engine.state.masterEnabled, FeatureFlags.overridesMasterEnabled)
+    }
+
     // MARK: - GC grace
 
     func test_gc_keepsAFreshUnsavedBlob() throws {

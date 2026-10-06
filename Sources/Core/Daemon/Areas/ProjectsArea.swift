@@ -16,9 +16,14 @@ enum ProjectsArea {
         let bus = server.bus
         engine.onChange = { bus.publish(stateTopic, $0, retain: true) }
         bus.publish(stateTopic, engine.state, retain: true)
-        bus.onDemand(prefix: stateTopic,
-                     start: { t in if t == stateTopic { Task { @MainActor in engine.startWatching() } } },
-                     stop: { t in if t == stateTopic { Task { @MainActor in engine.stopWatching() } } })
+        // Start and stop hops can land out of order: each follows the subscribers when it runs.
+        let follow: DaemonEventBus.DemandHook = { t in
+            guard t == stateTopic else { return }
+            Task { @MainActor in
+                if bus.hasSubscribers(stateTopic) { engine.startWatching() } else { engine.stopWatching() }
+            }
+        }
+        bus.onDemand(prefix: stateTopic, start: follow, stop: follow)
 
         let router = server.router
         router.register("projects.state", "The current projects state (also published on projects.state).") { (_: RPCEmpty, _) in

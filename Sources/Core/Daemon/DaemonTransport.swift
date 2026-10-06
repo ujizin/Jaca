@@ -76,14 +76,18 @@ final class DaemonLineHandler: ChannelInboundHandler {
 
     private let onLine: (Data) -> Void
     private let onClose: () -> Void
-    private let onWritabilityChange: () -> Void
+    /// Closes the connection when it stays unwritable this long. Droppable events stop at the
+    /// watermark, but responses and retained/ordered events don't, so a reader that stopped
+    /// reading (a paused `jacad watch | less`) would otherwise grow the outbound buffer forever.
+    private let stallLimit: TimeAmount?
+    private var stallCheck: Scheduled<Void>?
 
     init(onLine: @escaping (Data) -> Void,
          onClose: @escaping () -> Void,
-         onWritabilityChange: @escaping () -> Void = {}) {
+         closeIfStalledFor stallLimit: TimeAmount? = nil) {
         self.onLine = onLine
         self.onClose = onClose
-        self.onWritabilityChange = onWritabilityChange
+        self.stallLimit = stallLimit
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -98,7 +102,16 @@ final class DaemonLineHandler: ChannelInboundHandler {
     }
 
     func channelWritabilityChanged(context: ChannelHandlerContext) {
-        onWritabilityChange()
+        if let stallLimit {
+            stallCheck?.cancel()
+            stallCheck = nil
+            if !context.channel.isWritable {
+                let channel = context.channel
+                stallCheck = context.eventLoop.scheduleTask(in: stallLimit) {
+                    if !channel.isWritable { channel.close(promise: nil) }
+                }
+            }
+        }
         context.fireChannelWritabilityChanged()
     }
 

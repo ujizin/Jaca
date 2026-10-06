@@ -50,6 +50,10 @@ enum NetworkArea {
         let bodiesInMemory: Int
         let orphanTimeout: TimeInterval
         private var flushTask: Task<Void, Never>?
+        /// The latest spill per transaction. A later one waits for it, so two saves of one row
+        /// can't reach the cache out of order and leave its older bodies there.
+        private var spills: [UUID: (generation: Int, task: Task<Void, Never>)] = [:]
+        private var spillGeneration = 0
         /// Override services for a new capture source (nil when overrides are off).
         var interceptServices: () -> InterceptServices? = { nil }
 
@@ -115,19 +119,23 @@ enum NetworkArea {
             let txn = hosted.transactions[index]
             guard !txn.bodiesEvicted, txn.requestBody != nil || txn.responseBody != nil, let cache = bodyCache else { return }
             let id = txn.id, req = txn.requestBody, resp = txn.responseBody
-            Task { [weak hosted] in
+            let previous = spills[id]?.task
+            spillGeneration &+= 1
+            let generation = spillGeneration
+            let task = Task { @MainActor [weak self, weak hosted] in
+                await previous?.value
                 await cache.save(id, req: req, resp: resp)
-                await MainActor.run {
-                    guard let hosted, let i = hosted.indexByID[id] else { return }
-                    // Only the bodies that were saved: an update that landed during the save
-                    // brought new ones, which stay (the next update or window pass spills them).
-                    guard hosted.transactions[i].requestBody == req,
-                          hosted.transactions[i].responseBody == resp else { return }
-                    hosted.transactions[i].requestBody = nil
-                    hosted.transactions[i].responseBody = nil
-                    hosted.transactions[i].bodiesEvicted = true
-                }
+                if self?.spills[id]?.generation == generation { self?.spills[id] = nil }
+                guard let hosted, let i = hosted.indexByID[id] else { return }
+                // Only the bodies that were saved: an update that landed during the save
+                // brought new ones, which stay (the next update or window pass spills them).
+                guard hosted.transactions[i].requestBody == req,
+                      hosted.transactions[i].responseBody == resp else { return }
+                hosted.transactions[i].requestBody = nil
+                hosted.transactions[i].responseBody = nil
+                hosted.transactions[i].bodiesEvicted = true
             }
+            spills[id] = (generation, task)
         }
 
         /// Publishes coalesced upserts every 50ms, bodies stripped.
