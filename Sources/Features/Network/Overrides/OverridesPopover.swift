@@ -89,6 +89,9 @@ struct OverridesPopover: View {
                     }
                 }
             }
+            // In daemon mode the edit lands later, from jacad's state, outside the button's
+            // `withAnimation`: animate list changes whenever they arrive.
+            .animation(.easeInOut(duration: 0.2), value: overrides.rules.map(\.id))
         }
         .frame(maxHeight: 320)
     }
