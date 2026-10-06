@@ -95,10 +95,12 @@ final class RemoteNetworkFeed: NetworkFeed {
     // MARK: - NetworkFeed
 
     func select(sourceID: String, package: String?) {
-        // Remember the choice locally too, so a daemon restart can recreate the capture.
+        guard let descriptor = CaptureSourceRegistry.descriptor(id: sourceID) else { return }
+        // Remember the choice locally too, so a daemon restart can recreate the capture. Same
+        // package rule as `NetworkCaptureEngine.select`.
         var next = state
         next.selectedSourceID = sourceID
-        next.targetPackage = package
+        next.targetPackage = descriptor.needsPackage ? package : nil
         next.hasSelectedMode = true
         setState(next)
         wantsRunning = true
@@ -107,10 +109,12 @@ final class RemoteNetworkFeed: NetworkFeed {
     }
 
     func restoreMode(sourceID: String?, package: String?) {
+        // Same rule as `NetworkCaptureEngine.restoreMode`.
+        guard let sourceID, let descriptor = CaptureSourceRegistry.descriptor(id: sourceID) else { return }
         var next = state
         next.selectedSourceID = sourceID
-        next.targetPackage = package
-        next.hasSelectedMode = sourceID != nil
+        next.targetPackage = descriptor.kind == .agent ? package : nil
+        next.hasSelectedMode = true
         setState(next)
         // Applied by the next `network.open` (the capture may not exist in the daemon yet).
     }
