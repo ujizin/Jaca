@@ -66,7 +66,14 @@ final class RemoteCloudFeed: CloudFeed {
             // A lost state is fetched again (reopening returns it); a lost older page is
             // re-requested by scrolling; lost live entries are refilled below.
             let lost = (try? event.decode(DroppedEvents.self))?.topic
-            if lost == CloudArea.sessionStateTopic(id) { Task { await openAndBackfill() }; return }
+            if lost == CloudArea.sessionStateTopic(id) {
+                Task { [weak self] in
+                    // Not after the tab was disposed: that would recreate the session.
+                    guard let self, self.watchTask != nil else { return }
+                    await self.openAndBackfill()
+                }
+                return
+            }
             guard lost == CloudArea.entriesTopic(id) else { return }
             if held == nil {
                 held = []

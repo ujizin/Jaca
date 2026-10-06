@@ -244,7 +244,8 @@ final class AppModel {
                 fresh.restoreMode(kind, package: package)
             }
             // The capture itself stops (the other process can't take over a live attach), but its
-            // rows stay. Moving out of jacad, rows arrive without bodies, which stay with jacad.
+            // rows stay. Bodies evicted to the other process's cache don't come along: those rows
+            // keep their metadata and read as evicted.
             fresh.adoptRows(rows, selectedID: selectedRow)
             rebuilt.append(fresh)
             if wasSelected { selectedSessionID = fresh.id }

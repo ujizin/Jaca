@@ -58,7 +58,11 @@ final class RemoteNetworkFeed: NetworkFeed {
             // A lost state is fetched again (reopening returns it). Missed upserts: fetch the whole
             // list again (upserts are idempotent by id).
             if (try? event.decode(DroppedEvents.self))?.topic == NetworkArea.stateTopic(id) {
-                Task { await openAndResync() }
+                Task { [weak self] in
+                    // Not after the tab closed: that would recreate the capture.
+                    guard let self, self.watchTask != nil else { return }
+                    await self.openAndResync()
+                }
             } else {
                 Task { await resync() }
             }
@@ -74,8 +78,10 @@ final class RemoteNetworkFeed: NetworkFeed {
     }
 
     private func openAndResync() async {
+        // Never auto-started: reattaching ignores it, and a capture recreated after a daemon
+        // restart comes back stopped, since starting the agent relaunches the user's app.
         let params = NetworkArea.OpenParams(id: id, device: device, sourceID: state.selectedSourceID,
-                                            package: state.targetPackage, autoStart: wantsRunning)
+                                            package: state.targetPackage, autoStart: false)
         guard let info = await daemon.call("network.open", params, as: NetworkArea.SessionInfo.self) else { return }
         // Same rule as the log and cloud feeds: the daemon's run state wins for a capture it had.
         if info.existed { wantsRunning = info.state.isRunning || info.state.isConnecting }

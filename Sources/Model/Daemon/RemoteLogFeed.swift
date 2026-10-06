@@ -74,7 +74,14 @@ final class RemoteLogFeed: LogFeed {
         case "events.dropped":
             let lost = (try? event.decode(DroppedEvents.self))?.topic
             // A lost state is fetched again (reopening returns it).
-            if lost == LogsArea.stateTopic(id) { Task { await openAndBackfill() }; return }
+            if lost == LogsArea.stateTopic(id) {
+                Task { [weak self] in
+                    // Not after the tab closed or moved in-process: that would recreate the session.
+                    guard let self, self.watchTask != nil, self.fallback == nil else { return }
+                    await self.openAndBackfill()
+                }
+                return
+            }
             // This client fell behind and missed batches. The notice arrives right before the
             // first batch after the gap, so hold live batches until the gap is filled.
             if held == nil {

@@ -95,7 +95,15 @@ final class DaemonServer: @unchecked Sendable {
 
     // MARK: - Lifecycle
 
+    /// `prepare()` then `listen()`. jacad installs its areas between the two, so no client can
+    /// reach a method before it is registered.
     func start() throws {
+        try prepare()
+        try listen()
+    }
+
+    /// Takes the single-instance lock (throws `alreadyRunning` when another daemon holds it).
+    func prepare() throws {
         guard paths.socketPathFits else { throw StartError.socketPathTooLong(paths.socket.path) }
         do {
             try FileManager.default.createDirectory(at: paths.directory, withIntermediateDirectories: true,
@@ -111,6 +119,10 @@ final class DaemonServer: @unchecked Sendable {
         try acquireLock()
         // We hold the lock, so any socket file left behind belongs to a dead daemon.
         try? FileManager.default.removeItem(at: paths.socket)
+    }
+
+    /// Binds the socket and starts serving.
+    func listen() throws {
 
         let bootstrap = ServerBootstrap(group: DaemonTransport.group)
             .serverChannelOption(ChannelOptions.backlog, value: 64)
