@@ -202,9 +202,8 @@ func (p *gradlePane) expire() bool {
 
 func (p *gradlePane) draw() {
 	rows, cols := termSize()
-	var b strings.Builder
-	b.WriteString("\x1b[H\x1b[2J")
-	line := func(s string) { b.WriteString(s + "\x1b[K\r\n") }
+	var frame []string
+	line := func(s string) { frame = append(frame, s) }
 
 	line(sgrDim + "DAEMONS" + sgrReset)
 	line("")
@@ -226,9 +225,9 @@ func (p *gradlePane) draw() {
 		}
 	}
 	if p.toast != "" && rows > 4 {
-		b.WriteString(fmt.Sprintf("\x1b[%d;1H%s%s%s\x1b[K", rows, sgrBold, fit(p.toast, cols), sgrReset))
+		frame = rowAt(frame, rows, sgrBold+fit(p.toast, cols)+sgrReset)
 	}
-	paint(b.String())
+	paintRows(frame)
 }
 
 // table lays out the daemons like GradleDaemonRow, in aligned columns: name, PID, tags,

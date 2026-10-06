@@ -20,11 +20,20 @@ title = "Gradle"
 placement = "tab"
 command = ["bin/jaca-herdr", "pane", "gradle"]
 
+# The device picker. Choosing a device and an option opens that option's pane in a new tab.
 [[panes]]
 id = "devices"
 title = "Devices"
-placement = "tab"
+placement = "popup"
 command = ["bin/jaca-herdr", "pane", "devices"]
+
+# Opened by the device picker, which passes the device in JACA_HERDR_DEVICE. Opened directly,
+# it shows the picker first.
+[[panes]]
+id = "logs"
+title = "Logs"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "logs"]
 
 [[panes]]
 id = "projects"
