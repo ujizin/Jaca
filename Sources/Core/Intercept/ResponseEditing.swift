@@ -51,6 +51,8 @@ enum OverrideBodyLoader {
         case .inline(let text):
             return Data(text.utf8)
         case .blob(let filename):
+            // Only a plain file name inside `bodies/` (rules.json is hand-editable).
+            guard !filename.isEmpty, !filename.contains("/"), filename != "..", filename != "." else { return nil }
             return try? Data(contentsOf: blobsDirectory.appendingPathComponent(filename))
         case .file(let path, _):
             return try? Data(contentsOf: URL(fileURLWithPath: path))

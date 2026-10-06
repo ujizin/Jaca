@@ -260,8 +260,9 @@ func (p *gradlePane) table(cols int) []string {
 		if p.confirmPID == d.PID {
 			button = "Confirm kill?"
 		}
-		rows[i] = cells{fmt.Sprintf("Gradle %s", d.Version), fmt.Sprintf("PID %d", d.PID),
-			strings.Join(tags, " · "), d.Uptime, d.cpuText(), "[" + button + "]"}
+		// Fields come from process command lines: strip control bytes before they reach the terminal.
+		rows[i] = cells{sanitize(fmt.Sprintf("Gradle %s", d.Version)), fmt.Sprintf("PID %d", d.PID),
+			sanitize(strings.Join(tags, " · ")), sanitize(d.Uptime), d.cpuText(), "[" + button + "]"}
 		widen(&w.name, rows[i].name)
 		widen(&w.pid, rows[i].pid)
 		widen(&w.tags, rows[i].tags)

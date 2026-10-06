@@ -98,9 +98,15 @@ final class DaemonServer: @unchecked Sendable {
     func start() throws {
         guard paths.socketPathFits else { throw StartError.socketPathTooLong(paths.socket.path) }
         do {
-            try FileManager.default.createDirectory(at: paths.directory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: paths.directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
         } catch {
             throw StartError.io("can't create \(paths.directory.path): \(error.localizedDescription)")
+        }
+        // The socket and lock live here: refuse a directory someone else owns.
+        var st = stat()
+        guard lstat(paths.directory.path, &st) == 0, st.st_uid == geteuid(), (st.st_mode & S_IFMT) == S_IFDIR else {
+            throw StartError.io("\(paths.directory.path) isn't a directory owned by this user")
         }
         try acquireLock()
         // We hold the lock, so any socket file left behind belongs to a dead daemon.
@@ -114,6 +120,9 @@ final class DaemonServer: @unchecked Sendable {
                 return self.configure(channel)
             }
         do {
+            // Created user-only: `chmod` after the bind would leave a window.
+            let previous = umask(0o077)
+            defer { umask(previous) }
             let ch = try bootstrap.bind(unixDomainSocketPath: paths.socket.path).wait()
             lock.lock(); channel = ch; lock.unlock()
         } catch {
@@ -150,7 +159,7 @@ final class DaemonServer: @unchecked Sendable {
     }
 
     private func acquireLock() throws {
-        let fd = open(paths.lock.path, O_CREAT | O_RDWR, 0o600)
+        let fd = open(paths.lock.path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw StartError.io("can't open \(paths.lock.path): errno \(errno)") }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             close(fd)
@@ -363,4 +372,25 @@ enum DaemonDefaults {
     /// Bound on calls that should answer at once (`hello`, status): a daemon that accepts but
     /// never answers must not hang the caller.
     static let shortCallTimeout: Duration = .seconds(10)
+}
+
+/// Checks on RPC params that reach a device shell or a command line. `adb shell` joins its
+/// arguments into one remote `sh` command, so a package name with `;` or a space would run there.
+enum DaemonInput {
+    /// An Android package or iOS bundle id: letters, digits, `_`, `-` and `.`. Empty means none.
+    static func package(_ value: String?) throws {
+        guard let value, !value.isEmpty else { return }
+        guard value.first?.isLetter == true,
+              value.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) }) else {
+            throw RPCError.invalidParams("Not a package or bundle id: \(value)")
+        }
+    }
+
+    /// A device id as discovery reports it (adb serial, simulator UDID): never a flag.
+    static func device(_ device: Device) throws {
+        guard !device.id.isEmpty, !device.id.hasPrefix("-"),
+              device.id.allSatisfy({ $0.isASCII && !$0.isWhitespace }) else {
+            throw RPCError.invalidParams("Not a device id: \(device.id)")
+        }
+    }
 }
