@@ -82,8 +82,8 @@ and so on as the panes), turn on the areas you want. Run from any shell, then re
 defaults write dev.srsouza.Jaca daemonAreas -array gradle xcode projects devices logs cloudLogging network
 ```
 
-`network` only takes effect while HTTPS decryption is off in Jaca's settings; with it on, network
-capture stays in the app.
+`network` only takes effect while Settings → Network inspection is set to "Agent HTTPS debugging";
+with "HTTPS debugging", network capture stays in the app.
 
 ### 4. Build and link the plugin
 
