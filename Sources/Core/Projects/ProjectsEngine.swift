@@ -66,6 +66,11 @@ final class ProjectsEngine {
     private var watchers: [FolderWatcher] = []
     private var watching = false
     private var sizeTask: Task<Void, Never>?
+    /// Checkout paths queued in the running size walk; a repeat request only adds new ones.
+    private var sizePass: Set<String> = []
+    private var sizesAgain = false
+    /// Checkout paths being cleaned. Kept here so a rescan mid-clean can't start a second one.
+    private var cleaning: Set<String> = []
     private var scanToken = 0
 
     /// Checkouts sized at a time. With `DirectorySizer.width` readers each, the whole
@@ -81,6 +86,7 @@ final class ProjectsEngine {
         self.scanner = scanner
         self.cache = cache
         if let cached = cache.load() { state.projects = cached }
+        migrateLegacyFolder()
     }
 
     // MARK: - Watching
@@ -137,6 +143,8 @@ final class ProjectsEngine {
             next.projects = scanned.map { project in
                 var p = project
                 p.checkouts = p.checkouts.map { c in
+                    var c = c
+                    c.cleaning = self.cleaning.contains(c.path)
                     guard let old = previous[c.path], old.sizeComputed else { return c }
                     var merged = c
                     merged.sizeMB = old.sizeMB
@@ -157,16 +165,18 @@ final class ProjectsEngine {
     }
 
     /// Computes disk usage for every git checkout in the background, `sizeBatch` checkouts
-    /// at a time, patching rows as each batch lands, then re-saves the cache. A new scan
-    /// cancels the one in flight, so superseded walks stop instead of piling up.
+    /// at a time, patching rows as each batch lands, then re-saves the cache. A request while a
+    /// walk runs (a rescan, a second client) adds only the checkouts that walk doesn't cover, so
+    /// frequent rescans don't restart it from the first checkout.
     func computeSizes() {
-        let token = scanToken
         let work: [(pid: String, cid: String, url: URL)] = state.projects
             .filter(\.isGitRepo)
             .flatMap { p in p.checkouts.map { (p.id, $0.id, $0.url) } }
+            .filter { !sizePass.contains($0.url.path) }
         guard !work.isEmpty else { return }
+        if sizeTask != nil { sizesAgain = true; return }
+        sizePass.formUnion(work.map(\.url.path))
         let git = self.git
-        sizeTask?.cancel()
         state.isComputingSizes = true
         sizeTask = Task { [weak self] in
             for start in stride(from: 0, to: work.count, by: Self.sizeBatch) {
@@ -180,14 +190,21 @@ final class ProjectsEngine {
                         }
                     }
                     for await (pid, cid, size, cacheMB) in group {
-                        guard let self, token == self.scanToken else { continue }
+                        guard let self else { continue }
                         self.patchCheckout(pid, cid) { $0.sizeMB = size; $0.cacheMB = cacheMB; $0.sizeComputed = true }
                     }
                 }
             }
-            guard let self, token == self.scanToken, !Task.isCancelled else { return }
-            self.state.isComputingSizes = false
+            guard let self, !Task.isCancelled else { return }
             self.sizeTask = nil
+            if self.sizesAgain {
+                self.sizesAgain = false
+                self.computeSizes()
+            }
+            if self.sizeTask == nil {
+                self.sizePass = []
+                self.state.isComputingSizes = false
+            }
             self.saveCache()
         }
     }
@@ -195,20 +212,25 @@ final class ProjectsEngine {
     func cancelSizes() {
         sizeTask?.cancel()
         sizeTask = nil
+        sizePass = []
+        sizesAgain = false
         state.isComputingSizes = false
     }
 
     // MARK: - User folders
 
-    /// Manually added project folders. Migrates the old single Worktrees folder once.
-    var userFolders: [String] {
-        var folders = defaults.stringArray(forKey: Self.userFoldersKey) ?? []
-        if let legacy = defaults.url(forKey: Self.legacyWorktreeKey)?.path, !folders.contains(legacy) {
+    /// Manually added project folders.
+    var userFolders: [String] { defaults.stringArray(forKey: Self.userFoldersKey) ?? [] }
+
+    /// Moves the old single Worktrees folder into the user-folder list, once.
+    private func migrateLegacyFolder() {
+        guard let legacy = defaults.url(forKey: Self.legacyWorktreeKey)?.path else { return }
+        var folders = userFolders
+        if !folders.contains(legacy) {
             folders.append(legacy)
             defaults.set(folders, forKey: Self.userFoldersKey)
-            defaults.removeObject(forKey: Self.legacyWorktreeKey)
         }
-        return folders
+        defaults.removeObject(forKey: Self.legacyWorktreeKey)
     }
 
     /// Adds a folder and rescans. False when it was already added.
@@ -236,11 +258,13 @@ final class ProjectsEngine {
     /// Clears build caches for a checkout (the per-worktree `.gradle/` + every `build/`
     /// + matching iOS DerivedData). Nil when the checkout is gone or already cleaning.
     func clearCache(project pid: String, checkout cid: String) async -> ProjectsClearCacheOutcome? {
-        guard let c = checkout(pid, cid), !c.cleaning else { return nil }
+        guard let c = checkout(pid, cid), !cleaning.contains(c.path) else { return nil }
         let oldSize = c.sizeMB
         let name = c.name
+        cleaning.insert(c.path)
         patchCheckout(pid, cid) { $0.cleaning = true }
         let result = await cleaner.clearCache(worktree: c.url)
+        cleaning.remove(c.path)
         let freed = max(0, oldSize - result.newSizeMB) + result.derivedFreedMB
         patchCheckout(pid, cid) {
             $0.cleaning = false

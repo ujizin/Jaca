@@ -27,7 +27,7 @@ enum DevicesArea {
         }
         router.register("devices.apps", "Installed apps on a device. Empty when the device is unknown or unreachable.",
                         params: DeviceParams.self, concurrent: true) { p, _ in
-            guard let device = await engine.devices.first(where: { $0.id == p.deviceID }) else { return [AppEntry]() }
+            guard let device = await engine.device(p.deviceID) else { return [AppEntry]() }
             return await InstalledApps.list(for: device, adbURL: engine.adbURL)
         }
         router.describeTopic(listTopic, "Discovered devices after every change; discovery runs while subscribed. Data: [Device].",
