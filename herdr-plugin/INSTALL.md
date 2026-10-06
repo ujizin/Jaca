@@ -146,7 +146,7 @@ Stop the daemon and remove its runtime files (the socket, lock and log; nothing 
 
 ```bash
 ~/Applications/Jaca.app/Contents/MacOS/jacad stop    # or /Applications/…
-rm -f ~/.jaca/jacad.sock ~/.jaca/jacad.lock ~/.jaca/jacad.log
+rm -f ~/.jaca/jacad.sock ~/.jaca/jacad.lock ~/.jaca/jacad.log ~/.jaca/jacad.log.1
 ```
 
 Leave the rest of `~/.jaca` alone: it holds Jaca's own data (cloud logging projects, override

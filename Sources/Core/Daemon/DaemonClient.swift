@@ -86,8 +86,11 @@ final class DaemonClient: @unchecked Sendable {
 
     /// Calls `method` and decodes its `result` as `R`. Throws the daemon's `RPCError` on an
     /// error response.
-    func call<P: Encodable, R: Decodable>(_ method: String, _ params: P, as type: R.Type = R.self) async throws -> R {
-        let line = try await send(method: method) { id in
+    /// `timeout` fails the call with an error if no response arrives in time (nil waits as long
+    /// as the connection is open: some handlers legitimately run for minutes).
+    func call<P: Encodable, R: Decodable>(_ method: String, _ params: P, as type: R.Type = R.self,
+                                         timeout: Duration? = nil) async throws -> R {
+        let line = try await send(method: method, timeout: timeout) { id in
             try DaemonLine.encode(RPCRequestEnvelope(id: .number(id), method: method, params: params))
         }
         do {
@@ -103,8 +106,8 @@ final class DaemonClient: @unchecked Sendable {
 
     /// Sends raw params JSON (already an object, array or null) and returns the raw response
     /// line. Used by `jacad call`, which doesn't know payload types.
-    func callRaw(_ method: String, paramsJSON: Data?) async throws -> Data {
-        try await send(method: method) { id in
+    func callRaw(_ method: String, paramsJSON: Data?, timeout: Duration? = nil) async throws -> Data {
+        try await send(method: method, timeout: timeout) { id in
             var line = Data("{\"id\":\(id),\"jsonrpc\":\"2.0\",\"method\":".utf8)
             line.append(try JSONEncoder.daemon.encode(method))
             if let paramsJSON {
@@ -116,7 +119,7 @@ final class DaemonClient: @unchecked Sendable {
         }
     }
 
-    private func send(method: String, encode: (Int) throws -> Data) async throws -> Data {
+    private func send(method: String, timeout: Duration?, encode: (Int) throws -> Data) async throws -> Data {
         let next: (Int, DaemonPeer)? = lock.withLock {
             guard !closed, let peer else { return nil }
             defer { nextID += 1 }
@@ -135,6 +138,13 @@ final class DaemonClient: @unchecked Sendable {
             pending[id] = continuation
             lock.unlock()
             peer.send(line)
+            if let timeout {
+                Task { [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    guard let self, let waiting = self.lock.withLock({ self.pending.removeValue(forKey: id) }) else { return }
+                    waiting.resume(throwing: RPCError.failed("\(method): no response from jacad in \(timeout)"))
+                }
+            }
         }
         if let error = (try? JSONDecoder.daemon.decode(RPCHeader.self, from: response))?.error {
             throw error
@@ -300,6 +310,13 @@ enum DaemonLauncher {
     /// Starts `jacad serve` detached from the caller, logging to `paths.log`.
     static func launch(_ executable: URL, paths: DaemonPaths) throws {
         try FileManager.default.createDirectory(at: paths.directory, withIntermediateDirectories: true)
+        // Appended to on every spawn: keep one previous generation once it passes 5 MB.
+        let size = (try? FileManager.default.attributesOfItem(atPath: paths.log.path)[.size] as? Int) ?? 0
+        if size > 5 * 1024 * 1024 {
+            let previous = paths.log.appendingPathExtension("1")
+            try? FileManager.default.removeItem(at: previous)
+            try? FileManager.default.moveItem(at: paths.log, to: previous)
+        }
         if !FileManager.default.fileExists(atPath: paths.log.path) {
             FileManager.default.createFile(atPath: paths.log.path, contents: nil)
         }

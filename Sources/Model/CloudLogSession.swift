@@ -632,13 +632,19 @@ struct SqlResultColumns: Sendable {
         markerCol = find(["is_marker", "is_synthetic", "marker"])
     }
 
-    func id(_ row: [String?]) -> String? { idCol.flatMap { row[$0] } }
-    func seq(_ row: [String?]) -> UInt64? { seqCol.flatMap { row[$0] }.flatMap { UInt64($0) } }
-    func message(_ row: [String?]) -> String? { messageCol.flatMap { row[$0] } }
-    func severityName(_ row: [String?]) -> String? { severityCol.flatMap { row[$0] } }
+    /// Rows can come off the wire (the daemon runs the query), so a short row reads as missing.
+    private func cell(_ row: [String?], _ col: Int?) -> String? {
+        guard let col, row.indices.contains(col) else { return nil }
+        return row[col]
+    }
+
+    func id(_ row: [String?]) -> String? { cell(row, idCol) }
+    func seq(_ row: [String?]) -> UInt64? { cell(row, seqCol).flatMap { UInt64($0) } }
+    func message(_ row: [String?]) -> String? { cell(row, messageCol) }
+    func severityName(_ row: [String?]) -> String? { cell(row, severityCol) }
     /// A row is a synthetic marker when an `is_marker`-style column is truthy.
     func isMarker(_ row: [String?]) -> Bool {
-        guard let markerCol, let v = row[markerCol]?.lowercased() else { return false }
+        guard let v = cell(row, markerCol)?.lowercased() else { return false }
         return v == "1" || v == "true" || v == "yes"
     }
 }

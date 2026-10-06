@@ -127,7 +127,7 @@ enum CloudArea {
                     hosted.unwatchedSince = nil
                 } else if let since = hosted.unwatchedSince {
                     if now.timeIntervalSince(since) >= orphanTimeout {
-                        DaemonLog.info("closing cloud session \(id): unwatched for \(Int(orphanTimeout))s")
+                        DaemonLog.info("closing cloud session \(id): unwatched for \(orphanTimeout)s")
                         _ = close(id)
                     }
                 } else {
@@ -145,7 +145,8 @@ enum CloudArea {
         engine.onChange = { bus.publish(stateTopic, $0, retain: true) }
         bus.publish(stateTopic, engine.state, retain: true)
 
-        let orphan = ProcessInfo.processInfo.environment["JACAD_LOG_ORPHAN_SECONDS"].flatMap(TimeInterval.init) ?? 600
+        let orphan = ProcessInfo.processInfo.environment["JACAD_LOG_ORPHAN_SECONDS"].flatMap(TimeInterval.init)
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 600
         let sessions = sessions ?? Sessions(bus: bus, orphanTimeout: orphan) { [weak engine] id in
             CloudStreamEngine(
                 id: id,

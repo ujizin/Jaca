@@ -135,8 +135,10 @@ final class DaemonConnector {
     }
 
     private func hello(_ client: DaemonClient) async throws -> DaemonServer.HelloResult {
+        // Bounded: a daemon that accepts but never answers must not hang every area's connect.
         try await client.call(
-            "hello", DaemonServer.HelloParams(protocolVersion: DaemonProtocol.version, client: "Jaca.app"))
+            "hello", DaemonServer.HelloParams(protocolVersion: DaemonProtocol.version, client: "Jaca.app"),
+            timeout: .seconds(10))
     }
 
     /// Asks a running daemon to exit and waits for it to release the socket.

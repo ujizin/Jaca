@@ -492,10 +492,11 @@ final class AppModel {
                     prettifyEnabled: { LogBodyPrettifyStore.shared.enabled })
                 engine.onStarted = { [weak engine] in
                     let pkg = engine?.state.package ?? ""
+                    let name = currentName()   // the tab's name now: it may have been renamed
                     Task {
                         await store?.upsertDevice(device)
                         await store?.beginSession(id: historyID, device: device, package: pkg,
-                                                  displayName: currentName)
+                                                  displayName: name)
                     }
                 }
                 engine.onClosed = { Task { await store?.endSession(id: historyID) } }

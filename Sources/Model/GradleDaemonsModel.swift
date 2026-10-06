@@ -62,13 +62,19 @@ final class GradleDaemonsModel {
 
     private func apply(_ list: [GradleDaemon]) {
         // Preserve the in-flight removing flag so a row mid-fade doesn't reappear.
-        let removing = Set(daemons.filter(\.removing).map(\.pid))
-        daemons = list.map { d in
-            guard removing.contains(d.pid) else { return d }
+        // A row already gone from the list keeps fading out until `kill` removes it: in daemon
+        // mode the list without it arrives before the fade ends.
+        let removing = daemons.filter(\.removing)
+        let removingPIDs = Set(removing.map(\.pid))
+        var next = list.map { d in
+            guard removingPIDs.contains(d.pid) else { return d }
             var copy = d
             copy.removing = true
             return copy
         }
+        let listed = Set(list.map(\.pid))
+        next.append(contentsOf: removing.filter { !listed.contains($0.pid) })
+        daemons = next.sorted { $0.pid < $1.pid }
     }
 
     /// Per-version `~/.gradle/caches` sizes. Computed on demand (du is slow), not polled.

@@ -162,7 +162,7 @@ enum LogsArea {
                     hosted.unwatchedSince = nil
                 } else if let since = hosted.unwatchedSince {
                     if now.timeIntervalSince(since) >= orphanTimeout {
-                        DaemonLog.info("closing log session \(id): unwatched for \(Int(orphanTimeout))s")
+                        DaemonLog.info("closing log session \(id): unwatched for \(orphanTimeout)s")
                         _ = close(id)
                     }
                 } else {
@@ -179,7 +179,8 @@ enum LogsArea {
 
     @MainActor
     static func install(on server: DaemonServer, registry: Registry? = nil) {
-        let orphan = ProcessInfo.processInfo.environment["JACAD_LOG_ORPHAN_SECONDS"].flatMap(TimeInterval.init) ?? 600
+        let orphan = ProcessInfo.processInfo.environment["JACAD_LOG_ORPHAN_SECONDS"].flatMap(TimeInterval.init)
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 600
         let registry = registry ?? Registry(bus: server.bus, history: HistoryStore(), orphanTimeout: orphan)
         server.keep(registry)
         server.addBusyCheck("logs") { registry.isBusy }
