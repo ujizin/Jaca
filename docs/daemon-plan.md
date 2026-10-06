@@ -21,7 +21,7 @@ end to end through the daemon. Last updated: 2026-10-06.
 | 6. Cloud logging | Done. Tested with a scripted poller, not against GCP. |
 | 7. Network capture | Done for the in-process agent. Companion capture stays in the app (see below). |
 | 7b. Response overrides | Done on branch `exp/daemon-overrides` (see below). |
-| 8. Herdr plugin, full | Partly done: `devices` (with log streaming), `gradle` and `projects` panes, two actions. No cloud or network panes yet. |
+| 8. Herdr plugin, full | Partly done: `devices` (a picker popup), `logs` (the log tab's filters, package picker and status bar), `gradle` and `projects` panes, two actions. No cloud or network panes yet. |
 
 ### Trying it
 
