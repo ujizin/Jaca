@@ -121,6 +121,8 @@ actor CloudLogDatabase {
     /// connection as the inserts guarantees the latest rows are visible — a *separate* read-only
     /// handle on a live WAL database can return nothing, which made the default query look broken.
     /// (The caller pre-checks `DatabaseService.isReadOnly`; nothing but `sql` runs here.)
+    static let maxQueryRows = 200_000
+
     func query(_ sql: String) throws -> DBResultSet {
         guard let db else { throw QueryError(message: "the session database is closed") }
         var stmt: OpaquePointer?
@@ -128,10 +130,16 @@ actor CloudLogDatabase {
             throw QueryError(message: String(cString: sqlite3_errmsg(db)))
         }
         defer { sqlite3_finalize(stmt) }
+        // The prefix check passes `WITH … DELETE` and writing PRAGMAs; SQLite knows for sure.
+        // (Same message as the session's own check.)
+        guard sqlite3_stmt_readonly(stmt) != 0 else {
+            throw QueryError(message: "Only read-only queries are allowed (SELECT / WITH / PRAGMA / EXPLAIN).")
+        }
         let n = Int(sqlite3_column_count(stmt))
         let columns = (0..<n).map { String(cString: sqlite3_column_name(stmt, Int32($0))) }
         var rows: [[String?]] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        // Bounded: a recursive CTE can produce rows forever while this holds the writer.
+        while rows.count < Self.maxQueryRows, sqlite3_step(stmt) == SQLITE_ROW {
             rows.append((0..<n).map { cellValue(stmt, Int32($0)) })
         }
         return DBResultSet(columns: columns, rows: rows)

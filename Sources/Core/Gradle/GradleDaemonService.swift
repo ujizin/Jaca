@@ -9,7 +9,8 @@ struct GradleDaemonService: Sendable {
     func list() async -> [GradleDaemon] {
         guard let result = try? await CommandRunner.run(
             URL(fileURLWithPath: "/bin/ps"),
-            ["-axo", "pid=,etime=,pcpu=,rss=,command="]
+            // This user's processes only: another account's command line is not ours to list or kill.
+            ["-x", "-U", String(getuid()), "-o", "pid=,etime=,pcpu=,rss=,command="]
         ) else { return [] }
 
         var daemons: [GradleDaemon] = []

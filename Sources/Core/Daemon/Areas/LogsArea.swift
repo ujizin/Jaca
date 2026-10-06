@@ -195,7 +195,11 @@ enum LogsArea {
 
         let r = server.router
         r.register("logs.open", "Opens (or attaches to, by id) a device log session. Returns its info.",
-                   params: OpenParams.self) { p, _ in try await registry.open(p) }
+                   params: OpenParams.self) { p, _ in
+            try DaemonInput.device(p.device)
+            try DaemonInput.package(p.package)
+            return try await registry.open(p)
+        }
         r.register("logs.list", "Every open log session.") { (_: RPCEmpty, _) in
             await MainActor.run {
                 registry.sessions.values.map { registry.info($0) }.sorted { $0.id.uuidString < $1.id.uuidString }
@@ -213,6 +217,7 @@ enum LogsArea {
         }
         r.register("logs.setPackage", "Targets an app (PID tracking, simulator stdout, iOS scoping). Empty = whole device.",
                    params: PackageParams.self) { p, _ in
+            try DaemonInput.package(p.package)
             try await registry.withSession(p.id) { $0.setPackage(p.package) }; return RPCEmpty()
         }
         r.register("logs.rename", "Renames a session (its history entry uses the name on the next start).",

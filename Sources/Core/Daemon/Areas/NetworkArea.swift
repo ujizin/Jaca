@@ -237,8 +237,13 @@ enum NetworkArea {
 
         let r = server.router
         r.register("network.open", "Opens (or attaches to, by id) a network capture for a device.",
-                   params: OpenParams.self) { p, _ in await captures.open(p) }
+                   params: OpenParams.self) { p, _ in
+            try DaemonInput.device(p.device)
+            try DaemonInput.package(p.package)
+            return await captures.open(p)
+        }
         r.register("network.select", "Chooses a capture source (agent) and starts it.", params: SelectParams.self) { p, _ in
+            try DaemonInput.package(p.package)
             try await MainActor.run {
                 // Companion capture needs the CA and the gRPC links, which stay in the app.
                 if CaptureSourceRegistry.descriptor(id: p.sourceID)?.kind == .companion {
