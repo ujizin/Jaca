@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 )
 
 const usage = `usage: jaca-herdr ensure
@@ -134,7 +135,7 @@ func clearWorktreeCache() int {
 		FreedMB int     `json:"freedMB"`
 		Error   *string `json:"error"`
 	}
-	if err := c.Call("projects.clearCache", map[string]any{"project": pid, "checkout": cid}, &outcome); err != nil {
+	if err := c.CallTimeout("projects.clearCache", map[string]any{"project": pid, "checkout": cid}, &outcome, 10*time.Minute); err != nil {
 		fmt.Fprintln(os.Stderr, "jaca:", err)
 		return 1
 	}
