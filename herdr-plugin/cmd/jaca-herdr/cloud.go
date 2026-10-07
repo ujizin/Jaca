@@ -96,6 +96,11 @@ type cloudHome struct {
 	follow   bool
 	moved    bool // an event changed the rows since they were drawn
 
+	// popup is the home in Herdr's popup: drawn on the panel under a close button, closed by Esc
+	// and by opening a session. closeX0..closeX1 are the button's columns as last drawn.
+	popup            bool
+	closeX0, closeX1 int
+
 	armed      map[string]time.Time // the Remove buttons waiting for their second press
 	guard      pressGuard           // so a held key doesn't arm and confirm by itself
 	authUntil  time.Time            // sign-in is re-checked until then
@@ -141,6 +146,7 @@ func runCloudPane() int {
 
 func newCloudHome(p *pane) *cloudHome {
 	h := buildCloudHome(p, newCloudCalls(p))
+	h.popup = underHerdr()
 	h.open()
 	return h
 }
@@ -149,7 +155,9 @@ func newCloudHome(p *pane) *cloudHome {
 func buildCloudHome(p *pane, calls cloudCalls) *cloudHome {
 	h := &cloudHome{p: p, cloudCalls: calls, armed: map[string]time.Time{}, action: actionNewSession, follow: true}
 	h.launch = func(spec cloudSessionSpec) {
-		launchCloudSession(p, spec, h.back, h.failed)
+		// Under Herdr the home is a popup: it closes once the session's tab is open, and the
+		// tab takes the focus.
+		launchCloudSession(p, spec, h.back, h.failed, func() { p.quit = true })
 		// Without Herdr the session took over this pane.
 		if p.screen != screen(h) {
 			h.away = true
@@ -542,7 +550,11 @@ func (h *cloudHome) handleKey(k []byte) bool {
 	if m, ok := parseMouse(k); ok {
 		if m.press && m.button == 0 {
 			h.guard.drop()
+			if h.closeHit(m) {
+				return true
+			}
 		}
+		m.y -= h.pad() // the home's rows start under the close button
 		h.mouse(m)
 		return false
 	}
@@ -580,6 +592,10 @@ func (h *cloudHome) handleKey(k []byte) bool {
 		h.move(-1)
 	case isDown(k):
 		h.move(1)
+	case isEsc(k):
+		if h.popup {
+			return true
+		}
 	case isEnter(k):
 		if len(h.state.Projects) == 0 {
 			h.guard.press(h.after, h.openAddSheet)
@@ -613,6 +629,19 @@ func (h *cloudHome) handleKey(k []byte) bool {
 	return false
 }
 
+// pad is the rows the popup's close button takes above the home.
+func (h *cloudHome) pad() int {
+	if h.popup {
+		return 2
+	}
+	return 0
+}
+
+// closeHit is whether a click is on the popup's close button, with nothing open over it.
+func (h *cloudHome) closeHit(m mouseEvent) bool {
+	return h.popup && !h.help && h.sheet == nil && m.y == 2 && h.closeX0 > 0 && m.x >= h.closeX0 && m.x <= h.closeX1
+}
+
 func (h *cloudHome) mouse(m mouseEvent) {
 	const wheelUp, wheelDown, wheelLines = 64, 65, 3
 	if !m.press {
@@ -625,6 +654,7 @@ func (h *cloudHome) mouse(m mouseEvent) {
 		return
 	}
 	if h.sheet != nil {
+		m.y += h.pad() // a sheet is placed on the whole pane
 		h.sheet.mouse(m)
 		return
 	}
@@ -676,7 +706,18 @@ func (h *cloudHome) helpKeys() [][2]string {
 
 func (h *cloudHome) draw() {
 	rows, cols := termSize()
-	frame := h.frame(rows, cols)
+	frame := h.frame(max(1, rows-h.pad()), cols)
+	if h.popup {
+		// The close button at the top right, a row down and a cell in from the border as in the
+		// other popups.
+		button := ""
+		h.closeX0, h.closeX1 = 0, 0
+		if w := cols - len(escClose) - 1; w >= 0 {
+			h.closeX0, h.closeX1 = w+1, w+len(escClose)
+			button = strings.Repeat(" ", w) + closeButton(escClose)
+		}
+		frame = append([]string{"", button}, frame...)
+	}
 	switch {
 	case h.help:
 		if box := keysBox(h.helpKeys(), rows, cols); len(box) > 0 {
@@ -688,6 +729,9 @@ func (h *cloudHome) draw() {
 		if box, top, left := h.sheet.box(rows, cols); len(box) > 0 {
 			frame = overlay(frame, box, top, left)
 		}
+	}
+	if h.popup {
+		frame = panelFrame(frame, rows, cols)
 	}
 	paintRows(frame)
 }

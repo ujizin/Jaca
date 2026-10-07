@@ -159,7 +159,8 @@ last.
 ## Cloud Logging
 
 The `cloud` pane is the app's Cloud Logging area on jacad's `cloud.*` methods. It opens on the
-home; each session opens in its own tab named `Jaca cloud - <project>`.
+home, in a popup (`Esc` closes it); opening a session closes the popup and switches to the
+session's own tab, named `Jaca cloud - <project>`.
 
 To open it with a key, in `~/.config/herdr/config.toml`:
 
@@ -182,7 +183,8 @@ URL…, `r` Re-check.
 **Session.** `p` or `space` starts and stops, `c` clears, `f` toggles Follow tail (`G` turns
 it on), `l` opens the log names, `t` the time range, `u` the share menu, `1`–`6` set the
 minimum severity (All, D, I, W, E, C), `F` opens the Filters bar, `/` searches the loaded
-logs, `S` exports, `C` copies the selection, `y` sets the copy format. A click or `Enter`
+logs, `↑`/`↓` and `PgUp`/`PgDn` move a selection over the entries (an open details panel
+follows it; `j`/`k` scroll without selecting), `S` exports, `C` copies the selection, `y` sets the copy format. A click or `Enter`
 opens an entry's details beside the list; there `j`/`k` move between fields, `Enter` opens a
 field's actions (filter by a label or severity, open it in a new session, favorite a label),
 and `[` `]` step between entries. Scrolling to the top loads older logs.

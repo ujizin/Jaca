@@ -530,7 +530,7 @@ func TestCloudSessionDetailActions(t *testing.T) {
 	t.Setenv("HERDR_ENV", "1") // a fork opens a tab; this session stays
 	var forks []cloudSessionSpec
 	real := launchCloudFork
-	launchCloudFork = func(_ *pane, spec cloudSessionSpec, _ func(), _ func(error)) { forks = append(forks, spec) }
+	launchCloudFork = func(_ *pane, spec cloudSessionSpec, _ func(), _ func(error), _ func()) { forks = append(forks, spec) }
 	t.Cleanup(func() { launchCloudFork = real })
 
 	v, calls := testCloudViewer(t)
@@ -1426,5 +1426,55 @@ func TestCloudSessionOpenFailsThenRecovers(t *testing.T) {
 	v.begin(cloudState{}, false, errors.New("no socket"))
 	if v.active() || v.openSent {
 		t.Fatalf("after a failed subscribe: active %v, openSent %v", v.active(), v.openSent)
+	}
+}
+
+// The arrow and page keys move a one-entry selection over the list; an open detail panel
+// follows it and the keys stay with the list.
+func TestCloudSessionArrowKeysSelect(t *testing.T) {
+	v, _ := testCloudViewer(t)
+	setTermSize(t, 30, 100)
+	v.frame(30, 100)
+	feedEntries(v, 1, 100)
+	v.frame(30, 100)
+	up, down, pageUp := []byte("\x1b[A"), []byte("\x1b[B"), []byte("\x1b[5~")
+
+	v.handleKey(up)
+	if !v.sel.on || v.sel.cursor != 100 || v.sel.anchor != 100 || v.follow {
+		t.Fatalf("the first Up selected %+v, follow %v", v.sel, v.follow)
+	}
+	v.handleKey(up)
+	v.handleKey(up)
+	if v.sel.cursor != 98 || v.sel.anchor != 98 {
+		t.Fatalf("two more Ups: %+v", v.sel)
+	}
+	v.openDetail(98)
+	v.focus = cloudList
+	v.handleKey(pageUp)
+	want := uint64(98 - v.room())
+	if v.sel.cursor != want || v.detail.Seq != want || v.focus != cloudList {
+		t.Fatalf("PgUp: cursor %d, detail %d, focus %v; want entry %d and the list", v.sel.cursor, v.detail.Seq, v.focus, want)
+	}
+	v.frame(30, 100)
+	shown := false
+	for _, seq := range v.rowSeq {
+		shown = shown || seq == want
+	}
+	if !shown {
+		t.Errorf("entry %d is selected and not on screen: %v", want, v.rowSeq)
+	}
+	// Down from the newest entry lets go and follows the tail again.
+	for i := 0; i < 200 && v.sel.on; i++ {
+		v.handleKey(down)
+	}
+	if v.sel.on || !v.follow || v.offset != 0 {
+		t.Errorf("past the newest entry: selection %+v, follow %v, offset %d", v.sel, v.follow, v.offset)
+	}
+	// At the oldest entry Up stays.
+	for i := 0; i < 200; i++ {
+		v.handleKey(up)
+	}
+	if v.sel.cursor != 1 {
+		t.Errorf("Up past the oldest entry: %+v", v.sel)
 	}
 }

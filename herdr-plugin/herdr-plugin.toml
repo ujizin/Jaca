@@ -56,11 +56,12 @@ title = "Network"
 placement = "tab"
 command = ["bin/jaca-herdr", "pane", "network"]
 
-# Cloud Logging: the home (projects, sign-in) and, in tabs it opens, the log sessions.
+# Cloud Logging: the home (projects, sign-in) in a popup and, in tabs it opens, the log sessions
+# (the same entrypoint, opened in a tab with the session in JACA_HERDR_CLOUD_SESSION).
 [[panes]]
 id = "cloud"
 title = "Cloud Logging"
-placement = "tab"
+placement = "popup"
 command = ["bin/jaca-herdr", "pane", "cloud"]
 
 [[panes]]

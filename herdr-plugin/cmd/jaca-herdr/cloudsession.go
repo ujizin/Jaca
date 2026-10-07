@@ -910,6 +910,57 @@ func (v *cloudViewer) reveal(idx int) {
 	v.offset = max(0, v.offset)
 }
 
+// moveCursor is the arrow keys and the page keys on the list: the selection becomes the entry
+// by entries away (older for less than 0), stopping at the ends, and the list scrolls to show
+// it. With nothing selected, up starts on the newest entry on screen and down scrolls as
+// before; down from the newest entry lets go of the selection and follows the tail again. An
+// open detail panel follows, and the keys stay with the list. Near the top it asks for older
+// logs.
+func (v *cloudViewer) moveCursor(by int) {
+	list := v.listed()
+	i, found := v.indexOf(v.sel.cursor)
+	seq := v.sel.cursor
+	if !v.sel.on || v.sel.all || !found {
+		if by > 0 {
+			v.scroll(-by)
+			return
+		}
+		newest, ok := v.newestShown()
+		if !ok {
+			return
+		}
+		seq = newest
+		i, _ = v.indexOf(seq)
+	} else {
+		from := i
+		step := 1
+		if by < 0 {
+			step = -1
+		}
+		for left, j := by*step, i+step; left > 0 && j >= 0 && j < len(list); j += step {
+			if !v.sqlMarker(list[j].Seq) { // dividers are not entries
+				i, seq = j, list[j].Seq
+				left--
+			}
+		}
+		if by > 0 && i == from {
+			v.clearSelection()
+			v.followTail()
+			return
+		}
+	}
+	v.selectEntries(selection{on: true, anchor: seq, cursor: seq})
+	v.reveal(i)
+	if v.detailOn {
+		focus := v.focus
+		v.openDetail(seq)
+		v.focus = focus
+	}
+	if by < 0 && v.topRow() <= cloudOlderZone {
+		v.loadOlder()
+	}
+}
+
 // extend moves the selection's end one entry, older for -1 and newer for +1, starting on the
 // newest entry on screen when nothing is selected.
 func (v *cloudViewer) extend(by int) {
@@ -1139,7 +1190,7 @@ func (v *cloudViewer) openFork(fork cloudFork) {
 		// With no Herdr to open a tab the new session takes this pane, so this one closes.
 		v.leave(false)
 	}
-	launchCloudFork(v.p, spec, v.back, v.fail)
+	launchCloudFork(v.p, spec, v.back, v.fail, nil)
 }
 
 // toggleFavorite pins or unpins a label key for the project's selected log name.
@@ -1165,7 +1216,8 @@ func (v *cloudViewer) helpKeys() [][2]string {
 		{"1-6", "Minimum severity"},
 		{"F", "Filters"},
 		{"/", "filter loaded logs…"},
-		{"j  k  PgUp  PgDn", "Scroll"},
+		{"j  k", "Scroll"},
+		{"↑  ↓  PgUp  PgDn", "Select entries"},
 		{"Shift+↑  Shift+↓", "Select entries"},
 		{"C", "Copy Entry"},
 		{"y", "Copy format"},
@@ -1246,7 +1298,8 @@ func (v *cloudViewer) handleKey(k []byte) bool {
 	}
 	nav, isNav := decodeNav(k)
 	extends := isNav && nav.shift && (nav.dir == "up" || nav.dir == "down")
-	if v.focus == cloudList && v.sel.on && !extends && !isEnter(k) && !isEsc(k) && !(len(k) == 1 && k[0] == 'C') {
+	moves := len(k) != 1 && (isUp(k) || isDown(k) || isPageUp(k) || isPageDown(k))
+	if v.focus == cloudList && v.sel.on && !extends && !moves && !isEnter(k) && !isEsc(k) && !(len(k) == 1 && k[0] == 'C') {
 		v.clearSelection() // any other key drops the highlight
 	}
 	if len(k) != 1 {
@@ -1255,16 +1308,16 @@ func (v *cloudViewer) handleKey(k []byte) bool {
 			v.extend(-1)
 		case extends:
 			v.extend(1)
-		case isUp(k):
-			v.scroll(1)
-		case isDown(k):
-			v.scroll(-1)
 		case isShiftPageDown(k):
 			v.followTail()
+		case isUp(k):
+			v.moveCursor(-1)
+		case isDown(k):
+			v.moveCursor(1)
 		case isPageUp(k):
-			v.scroll(v.room())
+			v.moveCursor(-v.room())
 		case isPageDown(k):
-			v.scroll(-v.room())
+			v.moveCursor(v.room())
 		}
 		return false
 	}

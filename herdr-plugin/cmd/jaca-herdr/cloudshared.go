@@ -23,8 +23,9 @@ func underHerdr() bool {
 }
 
 // launchCloudSession opens a session: in a new Herdr tab named after it, or, with no Herdr to
-// open one, in this pane (back returns from it). fail gets why a tab didn't open.
-func launchCloudSession(p *pane, spec cloudSessionSpec, back func(), fail func(error)) {
+// open one, in this pane (back returns from it). fail gets why a tab didn't open, and opened
+// (when not nil) runs once one did.
+func launchCloudSession(p *pane, spec cloudSessionSpec, back func(), fail func(error), opened func()) {
 	if !underHerdr() {
 		p.screen = newCloudSession(p, spec, back)
 		return
@@ -40,8 +41,13 @@ func launchCloudSession(p *pane, spec cloudSessionSpec, back func(), fail func(e
 	}
 	name = sanitize(name) // a fork is named after a label value, which is the log's text
 	go func() {
-		if err := openTab("cloud", "Jaca cloud - "+name, cloudSessionEnv+"="+string(raw)); err != nil {
-			p.post(func() { fail(err) })
-		}
+		err := openTab("cloud", "Jaca cloud - "+name, cloudSessionEnv+"="+string(raw))
+		p.post(func() {
+			if err != nil {
+				fail(err)
+			} else if opened != nil {
+				opened()
+			}
+		})
 	}()
 }
