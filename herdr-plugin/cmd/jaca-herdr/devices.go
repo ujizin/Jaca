@@ -336,16 +336,25 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
-// openDeviceTab opens an option's pane for d in a new Herdr tab named after the device, in the
-// workspace the picker was opened from, and has the tab focused once the picker has exited.
+// openDeviceTab opens an option's pane for d in a new Herdr tab named after the device.
 func openDeviceTab(d device, option deviceOption) error {
 	raw, err := json.Marshal(d)
 	if err != nil {
 		return err
 	}
+	return openTab(option.entrypoint, option.tab+d.displayModel(), deviceEnv+"="+string(raw))
+}
+
+// openTab opens one of the plugin's panes in a new Herdr tab called name, in the workspace the
+// picker was opened from, and has the tab focused once the picker has exited. env are the
+// NAME=value pairs the pane is started with.
+func openTab(entrypoint, name string, env ...string) error {
 	herdr := envOr("HERDR_BIN_PATH", "herdr")
 	args := []string{"plugin", "pane", "open", "--plugin", envOr("HERDR_PLUGIN_ID", "dev.srsouza.jaca"),
-		"--entrypoint", option.entrypoint, "--placement", "tab", "--focus", "--env", deviceEnv + "=" + string(raw)}
+		"--entrypoint", entrypoint, "--placement", "tab", "--focus"}
+	for _, pair := range env {
+		args = append(args, "--env", pair)
+	}
 	// A plugin pane gets the context JSON; a popup opened by a custom keybinding gets the id alone.
 	if ws := envOr("HERDR_ACTIVE_WORKSPACE_ID", readHerdrContext().WorkspaceID); ws != "" {
 		args = append(args, "--workspace", ws)
@@ -374,8 +383,8 @@ func openDeviceTab(d device, option deviceOption) error {
 		return err
 	}
 	if tab := reply.Result.PluginPane.Pane.TabID; tab != "" {
-		// The tab is open either way; the name tells it apart from the device's other tabs.
-		_ = exec.Command(herdr, "tab", "rename", tab, option.tab+d.displayModel()).Run()
+		// The tab is open either way; the name tells it apart from the other tabs.
+		_ = exec.Command(herdr, "tab", "rename", tab, name).Run()
 		focusTabAfterExit(tab)
 	}
 	return nil

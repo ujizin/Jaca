@@ -4,7 +4,7 @@ id = "dev.srsouza.jaca"
 name = "Jaca"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
-description = "Jaca areas (devices and logs, Gradle daemons, projects) as Herdr panes, served by jacad"
+description = "Jaca areas (devices and logs, Gradle daemons, Xcode DerivedData, projects) as Herdr panes, served by jacad"
 platforms = ["macos"]
 
 [[build]]
@@ -14,11 +14,24 @@ command = ["go", "build", "-o", "bin/jaca-herdr", "./cmd/jaca-herdr"]
 [[startup]]
 command = ["bin/jaca-herdr", "ensure"]
 
+# The picker for the Gradle and Xcode panes. Choosing one opens it in a new tab.
+[[panes]]
+id = "tools"
+title = "Jaca"
+placement = "popup"
+command = ["bin/jaca-herdr", "pane", "tools"]
+
 [[panes]]
 id = "gradle"
 title = "Gradle"
 placement = "tab"
 command = ["bin/jaca-herdr", "pane", "gradle"]
+
+[[panes]]
+id = "xcode"
+title = "Xcode"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "xcode"]
 
 # The device picker. Choosing a device and an option opens that option's pane in a new tab.
 [[panes]]

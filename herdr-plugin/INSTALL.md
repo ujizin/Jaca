@@ -106,7 +106,9 @@ Open a pane:
 
 ```bash
 herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint devices    # device picker popup; opens logs in a new tab
-herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint gradle     # Gradle daemons
+herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint tools      # Gradle / Xcode picker popup; opens the choice in a new tab
+herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint gradle     # Gradle cache and daemons
+herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint xcode      # Xcode DerivedData
 herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint projects   # projects + cache cleanup
 ```
 
