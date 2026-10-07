@@ -123,13 +123,19 @@ const projectsTabName = "Projects - Jaca"
 // and wants the tab named after it. A pane opened beside others leaves their tab's name alone.
 const ownTabEnv = "JACA_HERDR_OWN_TAB"
 
-// nameOwnTab renames the tab the pane runs in, when it was opened in one of its own.
+// nameOwnTab renames the tab the pane runs in and switches to it, when it was opened in one of
+// its own.
 func nameOwnTab(name string) {
 	tab := os.Getenv("HERDR_TAB_ID")
 	if os.Getenv(ownTabEnv) == "" || tab == "" {
 		return
 	}
-	_ = exec.Command(envOr("HERDR_BIN_PATH", "herdr"), "tab", "rename", tab, name).Run()
+	herdr := envOr("HERDR_BIN_PATH", "herdr")
+	_ = exec.Command(herdr, "tab", "rename", tab, name).Run()
+	// The --focus of a key binding's command does not last: Herdr puts the focus back where the
+	// key was pressed once the command returns. Asked for again a moment later, it holds.
+	time.Sleep(150 * time.Millisecond)
+	_ = exec.Command(herdr, "tab", "focus", tab).Run()
 }
 
 func newProjectsViewer(p *pane) *projectsViewer {
