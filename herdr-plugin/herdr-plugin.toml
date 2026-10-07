@@ -56,6 +56,13 @@ title = "Network"
 placement = "tab"
 command = ["bin/jaca-herdr", "pane", "network"]
 
+# Cloud Logging: the home (projects, sign-in) and, in tabs it opens, the log sessions.
+[[panes]]
+id = "cloud"
+title = "Cloud Logging"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "cloud"]
+
 [[panes]]
 id = "projects"
 title = "Projects"
