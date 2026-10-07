@@ -73,6 +73,26 @@ final class DevicesEngine {
         return found
     }
 
+    /// Every device. When discovery isn't running (nobody watches `devices.list`), it runs until
+    /// every provider has reported once or `timeout` passes, then stops again.
+    func snapshot(timeout: Duration = .seconds(10)) async -> [Device] {
+        if isRunning, lookups == 0 { return devices }
+        if !isRunning {
+            byPlatform.removeAll()
+            devices = []
+        }
+        lookups += 1
+        startTasks()
+        let deadline = ContinuousClock.now + timeout
+        while isRunning, byPlatform.count < providers.count, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        let found = devices
+        lookups -= 1
+        if !wanted, lookups == 0 { stopTasks() }
+        return found
+    }
+
     private func startTasks() {
         guard tasks.isEmpty else { return }
         for provider in providers {

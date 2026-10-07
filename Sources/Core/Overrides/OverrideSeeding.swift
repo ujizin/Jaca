@@ -20,6 +20,24 @@ enum OverrideSeeding {
         return "\(txn.method) \(last)"
     }
 
+    /// A rule that answers the request with the response it was captured with. `responseBody` is
+    /// the transaction's body, passed in because an older transaction's body is spilled to disk.
+    /// The rule takes its **own copy**: `NetworkBodyCache` clears on launch, so a reference would
+    /// lose its payload.
+    static func rule(for txn: NetworkTransaction, responseBody: Data) -> OverrideRule {
+        var rule = OverrideRule()
+        rule.name = name(for: txn)
+        rule.matcher = OverrideMatcher(pattern: pattern(for: txn), kind: .glob, methods: [txn.method.uppercased()])
+        rule.routedHosts = OverrideCompiler.derivedRoutedHosts(for: rule.matcher)
+        let pretty = prettyPrinted(responseBody, contentType: txn.responseContentType)
+        rule.action = .respond(OverrideResponseSpec(
+            statusCode: txn.statusCode ?? 200,
+            headers: headers(txn.responseHeaders),
+            body: OverrideRuleStore.makeBodyRef(pretty)
+        ))
+        return rule
+    }
+
     /// Response headers worth copying: everything except the framing headers Jaca recomputes and
     /// its own internal markers.
     static func headers(_ headers: [HeaderPair]) -> [HeaderPair] {

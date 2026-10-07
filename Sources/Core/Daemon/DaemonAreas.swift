@@ -12,8 +12,10 @@ enum DaemonAreas {
         LogsArea.install(on: server)
         CloudArea.install(on: server)
         DatabaseArea.install(on: server)
-        let overrides = OverridesArea.install(on: server)
-        NetworkArea.install(on: server, interceptServices: {
+        // The override engine arms the captures, and seeds rules from what they captured.
+        let captures = NetworkArea.Captures(bus: server.bus, orphanTimeout: DaemonDefaults.orphanTimeout)
+        let overrides = OverridesArea.install(on: server, captures: captures)
+        NetworkArea.install(on: server, captures: captures, interceptServices: {
             FeatureFlags.responseOverridesEnabled ? overrides.services() : nil
         })
         server.router.register("daemon.diagnostics", "What this daemon can reach: the app bundle, bundled agents, private frameworks.") { (_: RPCEmpty, _) in

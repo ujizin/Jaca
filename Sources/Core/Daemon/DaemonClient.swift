@@ -293,9 +293,10 @@ enum DaemonLauncher {
     }
 
     /// The `jacad` binary shipped next to the current executable: `Jaca.app/Contents/MacOS/jacad`
-    /// for the app (and the tests it hosts), and `jacad` itself inside `jacad`.
+    /// for the app (and the tests it hosts), and `jacad` itself inside `jacad`. Symlinks are
+    /// resolved first: the `jaca` command is a link to `jacad` from a directory on `PATH`.
     static var bundledExecutable: URL? {
-        Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("jacad")
+        Bundle.main.executableURL?.resolvingSymlinksInPath().deletingLastPathComponent().appendingPathComponent("jacad")
     }
 
     /// Connects, spawning `executable serve` if the socket isn't answering. Waits up to
