@@ -21,8 +21,9 @@ end to end through the daemon. Last updated: 2026-10-07.
 | 6. Cloud logging | Done. Tested with a scripted poller, not against GCP. |
 | 7. Network capture | Done for the in-process agent. Companion capture stays in the app (see below). |
 | 7b. Response overrides | Done on branch `exp/daemon-overrides` (see below). |
-| 7c. Database browsing | Daemon side written (`DatabaseArea`, see the last section). Not built or run yet; the app still browses in-process. |
+| 7c. Database browsing | Daemon side written (`DatabaseArea`, see "Database browsing in the daemon"). Not built or run yet; the app still browses in-process. |
 | 8. Herdr plugin, full | Partly done: `devices` (a picker popup), `logs` (the log tab's filters, package picker and status bar), `network` (agent capture with response overrides), `gradle` and `projects` panes, `tools` (a picker for Gradle and Xcode), `xcode` and `cloud` (the home and the log sessions) panes, two actions. |
+| 9. `jaca` command line | Done (see "The `jaca` command line"). Run against an in-process daemon and, read-only, against a live one; not against a device capture. |
 
 ### Trying it
 
@@ -34,8 +35,10 @@ defaults write dev.srsouza.Jaca daemonAreas -array gradle xcode projects devices
 JACA_DAEMON_AREAS=all ./path/to/Jaca.app/Contents/MacOS/Jaca
 ```
 
-`JACA_DAEMON_DIR` moves the socket, lock and log (default `~/.jaca`), which keeps a development
-build away from the real daemon. `Jaca.app/Contents/MacOS/jacad` is also the CLI:
+`JACA_DAEMON_DIR` moves the socket, lock and log (default `~/.jaca`). It does not isolate a second
+`jacad serve`: that daemon still uses the real history database, caches and settings, and it
+empties `~/Library/Caches/Jaca/net-bodies-jacad` (the running daemon's spilled bodies) when it
+creates its captures. `Jaca.app/Contents/MacOS/jacad` is also the CLI:
 `jacad describe`, `jacad call gradle.list`, `jacad watch projects.state`, `jacad status`, `jacad stop`.
 
 ### Changes from the first draft
@@ -570,3 +573,76 @@ A session belongs to one device. The client lists an app's databases, pulls one 
   app's tab too).
 - **Limit.** Areas have no shutdown hook, so a copy still held when the daemon stops stays in the
   temp dir until the system clears it.
+
+## The `jaca` command line
+
+`jacad` run under the name `jaca` is a client with subcommands. The app's own executable is
+`Contents/MacOS/Jaca` and the filesystem is case-insensitive, so `jaca` is a symlink on `PATH` to
+the bundled `jacad` (`scripts/install-cli.sh`, run by `all.sh --install`), and `main.swift` reads
+`argv[0]`. `DaemonLauncher.bundledExecutable` resolves the link before it looks for `jacad`.
+
+```
+jaca devices
+jaca logs list
+jaca logs tail [SESSION] [-n COUNT] [--grep PATTERN] [--level LEVEL] [--since TIME] [--follow]
+jaca net list
+jaca net requests [SESSION] [-n COUNT] [--host HOST] [--status STATUS] [--method METHOD] [--failed]
+jaca net show REQUEST
+jaca overrides list
+jaca overrides add --from REQUEST [--name NAME] [--status CODE] [--body-file PATH] [--disabled]
+jaca overrides enable | disable | rm RULE
+jaca call | watch | status | stop | describe          (as jacad)
+jaca ... [--json] [--raw] [--no-spawn] [--help]
+```
+
+Code: `Sources/Core/CLI/` (`CLIParser`, `CLIResolver`, `CLIRedaction`, `CLITable`, `CLIRunner`),
+all in Core so the tests reach it. The agent-facing workflow is `.claude/skills/jaca-cli/`.
+
+**Methods added for it.**
+
+| Method | Params | Result |
+|---|---|---|
+| `network.list` | none | `[{id, name, device, state, transactionCount}]`, one per open capture. `name` is the device model. |
+| `network.search` | `{id?, host?, method?, status?, failed?, idPrefix?, limit?}` | Compact rows `{id, session, method, url, host, statusCode?, error?, startedAt, durationMs?, requestBytes, responseBytes, overriddenByRuleID?}`: the newest matches, oldest first. Without `id` it searches every capture. `status` is `[{min, max}]`; `failed` is a transport error or a status of 400 or more. `limit` is clamped to 1...1000 (100 when absent). |
+| `network.transaction` | `{id, transaction}` | The transaction with headers and bodies (spilled ones read back), or null when either id is unknown. |
+| `logs.search` | `{id, grep?, minLevel?, since?, limit?}` | `[LogLine]`: the newest matching replay lines, oldest first. `grep` is a case-insensitive regular expression over tag and message (matched as text when it does not compile). A crash marker passes `minLevel`. `limit` is clamped to 1...5000 (200 when absent). |
+| `overrides.createFromTransaction` | `{id, transaction, name?, statusCode?, body?, enabled?}` | `{rule, warning?}`, or null when the transaction is unknown. Seeds with `OverrideSeeding.rule` (what the app's "create override" does) and saves. `body` is base64. |
+
+`devices.list` changed: with nobody subscribed to the topic it now runs discovery once (up to 10 s)
+instead of returning an empty list, and is a concurrent method.
+
+`logs.search` filters in the daemon, unlike the viewers ("Log filtering stays in the client"
+above): a one-shot search would otherwise pull the whole replay (100k lines) across the socket,
+past `maxLineBytes` for a chatty session.
+
+**Schemas.** `api.describe` methods carry optional `params` and `result` (`DaemonSchema`, a JSON
+Schema subset; `required` is what a request must send). Declared for the devices, logs, network
+and overrides areas (`DaemonSchemas.swift`); gradle, xcode, projects, cloud, database and the
+built-ins have none yet. They are written by hand: `DaemonSchemaTests` encodes a value of each
+type and fails on a key its schema lacks. `jaca <command> --help` prints the schemas of the
+methods behind the command.
+
+**Output.** A table whose column names are the JSON field names, or `--json`. Nothing else is
+printed: an empty result is the header alone. A SESSION, REQUEST or RULE is an id, a unique id
+prefix, or a name (sessions: name, device id, package; rules: the rule name). When several fit,
+they are listed on stderr and the exit status is 1. `net show` removes the values of
+`Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` (`redacted: true` in JSON)
+unless `--raw`. Exit status 2 with the usage on stderr for arguments that do not parse.
+
+**Copy not specified yet.** The five new methods have an empty summary, a redacted header value
+is shown empty (`CLIRedaction.placeholder`), and a request or rule that nothing fits prints the
+empty table rather than a sentence. Unknown sessions reuse `No log session <x>.` and
+`No network capture <x>.`.
+
+**Limits.**
+- Sessions exist in the daemon only for areas the app runs there, so `logs list` and `net list`
+  are empty with `daemonAreas` off, and `net list` with "HTTPS debugging" chosen.
+- With "HTTPS debugging" the app's in-process override engine owns the library: a rule saved by
+  `jaca` reaches `rules.json`, and the app lists it only after its next edit or relaunch.
+- A rule body given with `--body-file` is not checked against `OverrideSeeding.warning`.
+- No command opens, starts or closes a session, or flips the master switch.
+
+**Running the tests next to a live daemon.** The unit tests are hosted by the app. With
+`daemonAreas` set in defaults the host connects to `~/.jaca/jacad.sock`, and a host built later
+than the running daemon replaces it with its own `jacad`. Pass
+`TEST_RUNNER_JACA_DAEMON_AREAS=none` to `xcodebuild test` to keep the host away from it.
