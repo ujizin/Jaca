@@ -76,6 +76,8 @@ if [ "$DO_INSTALL" = 1 ]; then
   cp -R "$APP" /Applications/Jaca.app
   APP=/Applications/Jaca.app
   echo "✓ installed: $APP"
+  # The `jaca` command: a link to the app's jacad. A build without jacad has no CLI to link.
+  ./scripts/install-cli.sh "$APP" || true
 fi
 
 # --- 4. Launch (optional) --------------------------------------------------
