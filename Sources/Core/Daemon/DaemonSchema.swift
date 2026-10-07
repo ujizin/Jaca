@@ -137,7 +137,9 @@ extension DaemonSchema {
         if let additionalProperties { return additionalProperties.rendered(indent: indent) }
         guard let properties else { return [] }
         let needed = Set(required ?? [])
-        return properties.keys.sorted().flatMap { key -> [String] in
+        // What a request must carry first (an id, a variant's `kind`), then the rest by name.
+        let keys = properties.keys.sorted { (needed.contains($0) ? 0 : 1, $0) < (needed.contains($1) ? 0 : 1, $1) }
+        return keys.flatMap { key -> [String] in
             let property = properties[key] ?? .any
             let name = (needed.contains(key) ? key : key + "?") + (property.title.map { " (\($0))" } ?? "")
             return ["\(pad)\(name): \(property.summary)"] + property.rendered(indent: indent + 1)

@@ -17,6 +17,7 @@ The Xcode project is **not committed** — it's generated from `project.yml` by 
 ./scripts/dev-signing.sh    # one-time: stable code-signing so the Keychain CA prompt stops
 ./scripts/build-mobile.sh   # build the companion APK + bundle it into Resources/
 ./scripts/proto-gen.sh      # regenerate gRPC stubs from proto/companion.proto
+./scripts/install-cli.sh    # link `jaca` (the daemon CLI) onto PATH; `all.sh --install` runs it
 ```
 
 The scripts set `DEVELOPER_DIR` to Xcode (needed when `xcode-select` points at the CLT). To run **one test** (scripts don't expose this), invoke xcodebuild directly:
@@ -27,6 +28,11 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
   -only-testing:JacaTests/ClaudeProjectGroupingTests/test_group_nestsWorktreesUnderTheirParentRepo test
 ```
+
+If `defaults read dev.srsouza.Jaca daemonAreas` is set on the machine, add
+`TEST_RUNNER_JACA_DAEMON_AREAS=none` in front of `xcodebuild … test`: the tests are hosted by the
+app, which otherwise connects to the real `~/.jaca/jacad.sock` and replaces a running daemon that
+is older than the build under test.
 
 `JacaTests` includes **live** tests (`LiveAndroidTests`, `LiveSimulatorTests`, `LiveAgentCaptureTests`) that need a real device/emulator/agent and **fail** when absent — skip them with `-skip-testing:JacaTests/LiveAgentCaptureTests` etc. when verifying logic locally.
 
@@ -69,6 +75,11 @@ works in-process exactly as before. Domain logic lives in Core engines (`Project
 that the app runs in-process or mirrors from the daemon (`Model/Daemon/`). Because `jacad` builds
 Core without Model/Features, Core must never reference them. Plan, decisions and status:
 **`docs/daemon-plan.md`**. The Herdr plugin client is `herdr-plugin/`.
+
+`jacad` is also the **`jaca`** command line (`Sources/Core/CLI/`): run through a symlink named
+`jaca` it takes subcommands (`jaca net requests --failed`, `jaca overrides add --from …`) over the
+same socket. Its table columns are the JSON field names; any other text it prints needs copy from
+a ticket. The agent workflow is `.claude/skills/jaca-cli/`.
 
 ### The top-level "area" pattern
 
