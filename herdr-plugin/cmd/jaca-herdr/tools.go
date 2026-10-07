@@ -666,6 +666,7 @@ func (t *toolsPicker) frame(rows, cols int) []string {
 	} else {
 		frame = append(frame, "")
 	}
+	frame = append(frame, "") // a row between the button and the selected row's highlight
 	if t.err != "" {
 		frame = append(frame, sgrRed+clip(sanitize(t.err), cols)+sgrReset)
 	}
