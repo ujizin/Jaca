@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -83,11 +84,16 @@ func daemonDir() string {
 
 func socketPath() string { return filepath.Join(daemonDir(), "jacad.sock") }
 
-// jacadPath finds the jacad binary: $JACAD_PATH, then the installed Jaca.app.
+// jacadPath finds the jacad binary: $JACAD_PATH, then the installed Jaca.app, then the newest
+// build Xcode left in DerivedData (what scripts/run.sh launches), so a checkout that was only
+// ever run from source still has a daemon to start.
 func jacadPath() (string, error) {
 	candidates := []string{os.Getenv("JACAD_PATH"), "/Applications/Jaca.app/Contents/MacOS/jacad"}
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates, filepath.Join(home, "Applications/Jaca.app/Contents/MacOS/jacad"))
+		built, _ := filepath.Glob(filepath.Join(home, "Library/Developer/Xcode/DerivedData/Jaca-*/Build/Products/*/Jaca.app/Contents/MacOS/jacad"))
+		sort.Slice(built, func(i, j int) bool { return modTime(built[i]).After(modTime(built[j])) })
+		candidates = append(candidates, built...)
 	}
 	for _, c := range candidates {
 		if c == "" {
@@ -98,6 +104,14 @@ func jacadPath() (string, error) {
 		}
 	}
 	return "", errors.New("jacad not found: install Jaca.app in /Applications or set JACAD_PATH")
+}
+
+// modTime is a file's modification time, the zero time when it can't be read.
+func modTime(path string) time.Time {
+	if st, err := os.Stat(path); err == nil {
+		return st.ModTime()
+	}
+	return time.Time{}
 }
 
 // ensureDaemon starts jacad if its socket isn't answering. `jacad call ping` spawns it.

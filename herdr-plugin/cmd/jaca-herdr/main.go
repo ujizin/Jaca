@@ -10,7 +10,7 @@ import (
 )
 
 const usage = `usage: jaca-herdr ensure
-       jaca-herdr pane gradle|devices|logs|network|projects
+       jaca-herdr pane tools|gradle|xcode|devices|logs|network|projects
        jaca-herdr action gradle-kill-all
        jaca-herdr action projects-clear-cache`
 
@@ -27,7 +27,7 @@ func main() {
 			os.Exit(1)
 		}
 	case len(args) == 3 && args[0] == "focus-tab":
-		// Internal: started by the device picker, see focusTabAfterExit.
+		// Internal: started by a picker, see focusTabAfterExit.
 		pid, err := strconv.Atoi(args[2])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, usage)
@@ -36,6 +36,10 @@ func main() {
 		os.Exit(focusTabWhenGone(args[1], pid))
 	case len(args) == 2 && args[0] == "pane" && args[1] == "gradle":
 		os.Exit(runGradlePane())
+	case len(args) == 2 && args[0] == "pane" && args[1] == "xcode":
+		os.Exit(runXcodePane())
+	case len(args) == 2 && args[0] == "pane" && args[1] == "tools":
+		os.Exit(runToolsPane())
 	case len(args) == 2 && args[0] == "pane" && args[1] == "devices":
 		os.Exit(runDevicesPane())
 	case len(args) == 2 && args[0] == "pane" && args[1] == "logs":
