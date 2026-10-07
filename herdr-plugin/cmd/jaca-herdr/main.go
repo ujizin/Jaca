@@ -10,7 +10,7 @@ import (
 )
 
 const usage = `usage: jaca-herdr ensure
-       jaca-herdr pane gradle|devices|logs|projects
+       jaca-herdr pane gradle|devices|logs|network|projects
        jaca-herdr action gradle-kill-all
        jaca-herdr action projects-clear-cache`
 
@@ -40,6 +40,8 @@ func main() {
 		os.Exit(runDevicesPane())
 	case len(args) == 2 && args[0] == "pane" && args[1] == "logs":
 		os.Exit(runLogsPane())
+	case len(args) == 2 && args[0] == "pane" && args[1] == "network":
+		os.Exit(runNetworkPane())
 	case len(args) == 2 && args[0] == "pane" && args[1] == "projects":
 		os.Exit(runProjectsPane())
 	case len(args) == 2 && args[0] == "action" && args[1] == "gradle-kill-all":

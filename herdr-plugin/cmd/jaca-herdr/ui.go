@@ -30,9 +30,11 @@ type pane struct {
 	work   chan func()   // results of off-loop calls, run on the loop
 	done   chan struct{} // closed when the pane exits
 
-	// The open log session's id for the signal path, which runs off the loop.
-	liveMu sync.Mutex
-	liveID string
+	// The open session's id and the method that closes it, for the signal path, which runs off
+	// the loop.
+	liveMu    sync.Mutex
+	liveID    string
+	liveClose string
 }
 
 // post runs f on the pane's loop. False when the pane has quit, so f never runs.
@@ -45,9 +47,11 @@ func (p *pane) post(f func()) bool {
 	}
 }
 
-func (p *pane) setLive(id string) {
+// setLive records the session jacad holds for this pane ("" for none) and the method that
+// closes it (logs.close, network.close).
+func (p *pane) setLive(closeMethod, id string) {
 	p.liveMu.Lock()
-	p.liveID = id
+	p.liveClose, p.liveID = closeMethod, id
 	p.liveMu.Unlock()
 }
 
@@ -69,10 +73,10 @@ func runPane(c *client, first func(p *pane) screen) int {
 	// yet; that session is left to the reaper.
 	onSignalExit(func() {
 		p.liveMu.Lock()
-		id := p.liveID
+		method, id := p.liveClose, p.liveID
 		p.liveMu.Unlock()
 		if id != "" {
-			_ = c.CallTimeout("logs.close", map[string]any{"id": id}, nil, teardownTimeout)
+			_ = c.CallTimeout(method, map[string]any{"id": id}, nil, teardownTimeout)
 		}
 	})
 
@@ -179,34 +183,90 @@ func isPageDown(k []byte) bool {
 	return len(k) >= 4 && k[0] == 0x1b && k[1] == '[' && k[2] == '6' && k[3] == '~'
 }
 
-// textInput is a one-line text field edited at its end.
+// textInput is a one-line text field with a cursor.
 type textInput struct {
 	text []rune
+	pos  int // the cursor, 0..len(text)
 }
 
 func (t *textInput) String() string { return string(t.text) }
-func (t *textInput) set(s string)   { t.text = []rune(s) }
 
-// handle applies an editing key: printable text appends, Backspace removes the last rune,
-// Ctrl-U clears. It reports whether the text changed. Escape sequences (arrows) are ignored.
+// set replaces the text and puts the cursor at its end.
+func (t *textInput) set(s string) { t.text = []rune(s); t.pos = len(t.text) }
+
+// handle applies an editing key and reports whether the text changed. Text inserts at the
+// cursor. Left, Right, Home and End move it (by word with Alt or Ctrl); Ctrl-A and Ctrl-E are
+// Home and End. Backspace and Delete remove a character, Alt+Backspace or Ctrl-W the word
+// before the cursor, Ctrl-U everything. Other escape sequences are ignored.
 func (t *textInput) handle(k []byte) bool {
-	if len(k) == 0 || k[0] == 0x1b {
+	if len(k) == 0 {
 		return false
+	}
+	t.pos = max(0, min(t.pos, len(t.text)))
+	wordStart := func() int {
+		c := t.pos
+		for c > 0 && !isWordRune(t.text[c-1]) {
+			c--
+		}
+		for c > 0 && isWordRune(t.text[c-1]) {
+			c--
+		}
+		return c
+	}
+	cut := func(from, to int) bool {
+		if from < 0 || from >= to {
+			return false
+		}
+		t.text = append(t.text[:from:from], t.text[to:]...)
+		t.pos = from
+		return true
+	}
+	if key, ok := decodeNav(k); ok {
+		switch key.dir {
+		case "left":
+			if key.word {
+				t.pos = wordStart()
+			} else {
+				t.pos = max(0, t.pos-1)
+			}
+		case "right":
+			if key.word {
+				for t.pos < len(t.text) && !isWordRune(t.text[t.pos]) {
+					t.pos++
+				}
+				for t.pos < len(t.text) && isWordRune(t.text[t.pos]) {
+					t.pos++
+				}
+			} else {
+				t.pos = min(len(t.text), t.pos+1)
+			}
+		case "home":
+			t.pos = 0
+		case "end":
+			t.pos = len(t.text)
+		case "delete":
+			return cut(t.pos, min(len(t.text), t.pos+1))
+		}
+		return false
+	}
+	if k[0] == 0x1b {
+		return string(k) == "\x1b\x7f" && cut(wordStart(), t.pos) // Alt+Backspace
 	}
 	if len(k) == 1 {
 		switch k[0] {
 		case 0x7f, 0x08:
-			if len(t.text) == 0 {
-				return false
-			}
-			t.text = t.text[:len(t.text)-1]
-			return true
+			return cut(t.pos-1, t.pos)
+		case 0x17:
+			return cut(wordStart(), t.pos)
 		case 0x15:
-			if len(t.text) == 0 {
-				return false
-			}
-			t.text = nil
-			return true
+			t.pos = len(t.text)
+			return cut(0, t.pos)
+		case 0x01:
+			t.pos = 0
+			return false
+		case 0x05:
+			t.pos = len(t.text)
+			return false
 		}
 	}
 	changed := false
@@ -216,7 +276,8 @@ func (t *textInput) handle(k []byte) bool {
 		if r == utf8.RuneError || r < 0x20 || r == 0x7f {
 			continue
 		}
-		t.text = append(t.text, r)
+		t.text = append(t.text[:t.pos:t.pos], append([]rune{r}, t.text[t.pos:]...)...)
+		t.pos++
 		changed = true
 	}
 	return changed
@@ -224,9 +285,9 @@ func (t *textInput) handle(k []byte) bool {
 
 const sgrUnder = "\x1b[4m"
 
-// renderField draws a text field w cells wide: the placeholder while empty, and when focused a
-// cursor cell after the end of the text. style underlines the field (sgrUnder), or is empty for
-// a field that sits inside a box.
+// renderField draws a text field w cells wide: the placeholder while empty, and when focused the
+// cursor as a reversed cell, with the text scrolled to keep it in view. style underlines the
+// field (sgrUnder), or is empty for a field that sits inside a box.
 func renderField(t *textInput, placeholder string, focused bool, w int, style string) string {
 	if w <= 0 {
 		return ""
@@ -239,9 +300,35 @@ func renderField(t *textInput, placeholder string, focused bool, w int, style st
 	case len(t.text) == 0:
 		return sgrRev + " " + sgrReset + style + sgrDim + fit(placeholder, w-1) + sgrReset
 	}
-	shown := tailCells(sanitize(t.String()), w-1)
-	pad := strings.Repeat(" ", w-1-cellWidth(shown))
-	return style + shown + sgrReset + sgrRev + " " + sgrReset + style + pad + sgrReset
+	pos := max(0, min(t.pos, len(t.text)))
+	start := 0
+	for cellWidth(string(t.text[start:pos])) > w-1 { // scroll until the cursor's cell fits
+		start++
+	}
+	var b strings.Builder
+	b.WriteString(style)
+	used := 0
+	for i := start; i < len(t.text); i++ {
+		r := t.text[i]
+		if r < 0x20 || r == 0x7f {
+			r = ' '
+		}
+		rw := runeWidth(r)
+		if used+rw > w {
+			break
+		}
+		if i == pos {
+			b.WriteString(sgrReset + sgrRev + string(r) + sgrReset + style)
+		} else {
+			b.WriteRune(r)
+		}
+		used += rw
+	}
+	if pos == len(t.text) && used < w {
+		b.WriteString(sgrReset + sgrRev + " " + sgrReset + style)
+		used++
+	}
+	return b.String() + strings.Repeat(" ", max(0, w-used)) + sgrReset
 }
 
 // tailCells is the longest suffix of s (plain text) that fits in w display cells.

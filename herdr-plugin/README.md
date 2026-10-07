@@ -11,7 +11,8 @@ Experimental. Standard library Go only.
 | Kind | Id | What it does |
 |---|---|---|
 | pane | `devices` | A popup with the device list. `Enter` on a ready device shows its options (logs only for now); `Enter` on an option opens it in a new tab named `Jaca log - <device>` and closes the popup. `j`/`k` or arrows move, `Esc` goes back a step and closes the popup from the device list, `q` quits. |
-| pane | `logs` | The log viewer for the device chosen in `devices`, with the app log tab's tools. `1`–`6` set the minimum level (V…F), `/` edits the filter text, `r` toggles regex, `s` toggles system logs (not on Android), `P` edits the package id, `a` lists the installed apps to pick one, `c` clears the view, `C` clears the device buffer (Android), `p` or `space` pauses/resumes the stream, `j`/`k` and `PgUp`/`PgDn` scroll, `Shift+PgDn` (or `G`) follows the tail again, and scrolling up leaves it, `e` exports the lines the filter keeps to the file chosen in the macOS save dialog (named after the device, starting in Downloads), `y` opens the app's Copy format sheet as a popup (presets with an example each, the template and date format to edit, a live example; arrows or `Tab` move, `Enter` chooses, `Esc` cancels, nothing is saved before Save), `?` shows the keys (any of `Esc`, `Enter`, `q`, `?` or a click closes it), `q` quits. The level chips, `.*`, `System logs`, `Export` and both fields are clickable, as are the arrow at the end of the package field (the installed apps) and `Help` and `Copy format` at the right of the status bar, the apps list too, and the wheel scrolls. A click on a log line selects it, and dragging extends the selection line by line; past the top or bottom of the lines the view scrolls that way. Letting go copies the selected lines whole, in the app's copy format (with `pbcopy`). The view holds still under a selection, and `Esc`, any key or a click outside the lines drops it. A right click opens the app's row menu on the selected lines (`Copy Line`, `Copy Message only`, `Copy Format…`, `Select All`); `Copy Format…` opens the Copy format popup, which saves to `~/.jaca/log-copy-format.json`, the file the app reads. For that menu the pane asks Herdr to send it right clicks (`herdr pane input --right-click pane`), so Herdr's own pane menu doesn't open on a right click in this pane. The pane draws this selection itself because it has the mouse for the toolbar, so the terminal can't select in it. In a field, `Enter` or `Esc` leaves it and `Ctrl-U` empties it; the package id applies on `Enter`. Opened without a device, it shows the picker first and streams in the same pane (`Esc` goes back). |
+| pane | `logs` | The log viewer for the device chosen in `devices`, with the app log tab's tools. `1`–`6` set the minimum level (V…F), `/` edits the filter text, `r` toggles regex, `s` toggles system logs (not on Android), `P` edits the package id, `a` lists the installed apps to pick one, `c` clears the view, `C` clears the device buffer (Android), `p` or `space` pauses/resumes the stream, `j`/`k` and `PgUp`/`PgDn` scroll, `Shift+PgDn` (or `G`) follows the tail again, and scrolling up leaves it, `S` exports the lines the filter keeps to the file chosen in the macOS save dialog (named after the device, starting in Downloads), `y` opens the app's Copy format sheet as a popup (presets with an example each, the template and date format to edit, a live example; arrows or `Tab` move, `Enter` chooses, `Ctrl+S` or `⌘S` saves, `Esc` cancels, nothing is saved before Save), `?` shows the keys (any of `Esc`, `Enter`, `q`, `?` or a click closes it), `q` quits. The level chips, `.*`, `System logs`, `Export` and both fields are clickable, as are the arrow at the end of the package field (the installed apps) and `Help` and `Copy format` at the right of the status bar, the apps list too, and the wheel scrolls. A click on a log line selects it, and dragging extends the selection line by line; past the top or bottom of the lines the view scrolls that way. Letting go copies the selected lines whole, in the app's copy format (with `pbcopy`). The view holds still under a selection, and `Esc`, any key or a click outside the lines drops it. A right click opens the app's row menu on the selected lines (`Copy Line`, `Copy Message only`, `Copy Format…`, `Select All`); `Copy Format…` opens the Copy format popup, which saves to `~/.jaca/log-copy-format.json`, the file the app reads. For that menu the pane asks Herdr to send it right clicks (`herdr pane input --right-click pane`), so Herdr's own pane menu doesn't open on a right click in this pane. The pane draws this selection itself because it has the mouse for the toolbar, so the terminal can't select in it. In a field, `Enter` or `Esc` leaves it and `Ctrl-U` empties it; the package id applies on `Enter`. Opened without a device, it shows the picker first and streams in the same pane (`Esc` goes back). |
+| pane | `network` | The app's network tab for the in-process agent ("Inspect Network (Agent HTTP)" in the device picker, Android and iOS Simulator), with response overrides. See [Network and overrides](#network-and-overrides). |
 | pane | `gradle` | Live Gradle daemons from the daemon's `gradle.daemons` topic. `j`/`k` or arrows move, `x` twice kills, `r` refreshes, `q` quits. |
 | pane | `projects` | Projects and their checkouts with cached sizes. `c` cleans the selected checkout's build caches, `r` rescans, `q` quits. |
 | action | `gradle-kill-all` | Kills every running Gradle daemon. |
@@ -52,6 +53,68 @@ bin/jaca-herdr pane gradle
 
 Remove it with `herdr plugin unlink dev.srsouza.jaca`.
 
+## Network and overrides
+
+The `network` pane captures one app's requests with the in-process agent and applies response
+overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network.*` and
+`overrides.*` methods; nothing was added to the daemon for it.
+
+- **Start**: `a` (or the app button) lists the installed apps; choosing one starts the capture.
+  `p` or `space` stops and starts it. On the iOS Simulator starting relaunches the app.
+- **List**: `j`/`k` select, `Shift` with `↑`, `↓`, `PgUp` or `PgDn` selects a run of requests,
+  `Backspace` deletes the selected ones from the list (here only; jacad keeps them, so they
+  are still in an exported HAR), `/` filters by URL, host or method, `c` clears, `S` exports a
+  HAR through the macOS save dialog, `C` copies the selected request's response body, `G` goes
+  back to following new requests.
+- **Timeline**: the strip above the list draws each request from its start to its end.
+  Dragging across it shows only the requests in that time range; a click on it, the `×` at
+  its right or `Esc` clears the range. It shows in panes of 24 rows or more.
+- **Detail**: `Enter` or a click opens the request beside the list, with the app's tabs
+  (Overview, Headers, Request, Response, Timing). `Tab` or `1`–`5` switch tabs, `PgUp`/`PgDn`
+  scroll, `Esc` closes it. In the Request tab `C` copies the request body.
+- **Request menu**: a right click (or `m`) shows the app's menu: `Override response…` (or
+  `Edit override “…”` and `Add another override…` when a rule already answers it), `Copy URL`,
+  `Copy response body`, `Filter by this host`.
+- **Overrides**: `o` (or the Overrides button) opens the rules: `Enter` edits, `n` is New
+  override, `space` enables or disables, `d` duplicates, `x` or `Backspace` deletes, `K`/`J` move a rule up
+  or down (the first enabled match wins), `m` pauses or resumes all of them.
+- **Override a request**: `O` on a selected request opens the editor filled from it (its URL as
+  the pattern, its method, and the response it got), or on the rule that already answers it.
+- **Editor**: `Tab`/`Shift+Tab` move between fields, the arrows move inside a group of chips and
+  `space` picks, `Ctrl+S` (or `⌘S`) saves, `Esc` closes without saving. In the body `Tab` indents two
+  spaces (every selected line, when several are) and `Shift+Tab` takes a level off, so `Esc`
+  first hands the keys back to moving between fields (then `Tab` and `Shift+Tab` move again),
+  and a second `Esc` closes. The body is a multi-line editor:
+  `Shift` with the arrows, `Home`, `End`, `PgUp` or `PgDn` selects, as does dragging with the
+  mouse; typing or `Backspace` replaces the selection; `Alt` or `Ctrl` with `←`/`→` moves by
+  word and `Alt+Backspace` deletes one; `Ctrl+A` selects everything, `Ctrl+C` copies and
+  `Ctrl+X` cuts the selection; `Ctrl+Z` undoes and `Ctrl+Y` redoes. `⌘A`, `⌘C`, `⌘X`, `⌘Z` and `⇧⌘Z` do the
+  same where the terminal passes them on (see below). One-line fields edit at a cursor the arrows move. In a
+  pane of 120 columns and 30 rows or more the editor is the app's two-column sheet.
+
+**⌘ keys.** A terminal keeps `⌘A`, `⌘C` and `⌘Z` for itself by default, so they never reach
+the pane. Herdr forwards a `⌘` key it receives to the focused pane, and the editor reads it, so
+the terminal only has to let them through. In Ghostty (`~/.config/ghostty/config`):
+
+```
+keybind = super+a=unbind
+keybind = super+z=unbind
+keybind = super+shift+z=unbind
+keybind = performable:super+c=copy_to_clipboard
+```
+
+This changes Ghostty everywhere: `⌘A` no longer selects the whole screen and `⌘Z` no longer
+undoes a closed tab; `⌘C` still copies a Ghostty selection when there is one.
+
+Not carried over from the app: the JSON tree view (bodies show as
+pretty-printed text), the match preview's example rows and shadow count, find in the body
+editor, the device proxy section, and companion or proxy capture. Regex patterns use Go's
+engine, not the app's: lookaround and backreferences don't compile here though they run in the
+app and in jacad.
+
+Rule bodies over 4 KB are written to `~/.jaca/network-overrides/bodies/` by the pane, as the
+app does; jacad has no method to upload one.
+
 ## Colors
 
 Herdr doesn't pass its theme to plugins, so the panes work it out the way Herdr does: the
@@ -76,7 +139,7 @@ Newline-delimited JSON-RPC 2.0 on the socket. `jacad describe` lists every metho
 ## Copy
 
 Every string a pane shows is taken from the app (the Gradle, device list, device menu, log and
-Projects views, `DeviceState.label`, `LogLevel.short`, the Projects toasts). The log toolbar's field placeholders are the app's with a capital first letter. The `?` popup's labels are the app's where it has one; `Minimum level`, `Filter text`, `Regex`, `Package id`, `Pause / unpause`, `Scroll`, `Help` (also the popup's title and the status bar button) and `Quit` are placeholders that need specified copy. Two things have no app copy
+Projects views, `DeviceState.label`, `LogLevel.short`, the Projects toasts). The log toolbar's field placeholders are the app's with a capital first letter. In the network pane's `?` popup, `Delete request`, `Select requests`, `Select request`, `Inspect request`, `Switch tab`, `Request menu` and `Follow new requests` are placeholders too, as is the `network` pane title. The `?` popup's labels are the app's where it has one; `Minimum level`, `Filter text`, `Regex`, `Package id`, `Pause / unpause`, `Scroll`, `Help` (also the popup's title and the status bar button) and `Quit` are placeholders that need specified copy. Two things have no app copy
 yet and are left out until it's specified: a key legend for the other panes, and the size-scan
 approval prompt (so the projects pane shows only sizes already computed). The two action titles
 and the `logs` pane title in `herdr-plugin.toml` are placeholders written for this prototype and

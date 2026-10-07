@@ -35,6 +35,14 @@ title = "Logs"
 placement = "tab"
 command = ["bin/jaca-herdr", "pane", "logs"]
 
+# Network inspection with the in-process agent and response overrides. Opened by the device
+# picker like logs.
+[[panes]]
+id = "network"
+title = "Network"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "network"]
+
 [[panes]]
 id = "projects"
 title = "Projects"

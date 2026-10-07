@@ -279,7 +279,7 @@ func (v *logViewer) finishOpen(id string, err error) {
 		return
 	}
 	v.session = id
-	v.p.setLive(id)
+	v.p.setLive("logs.close", id)
 	_ = v.p.c.CallTimeout("events.subscribe", map[string]any{"topics": v.topics(id)}, nil, syncTimeout)
 	// Lines published between logs.open and the subscribe never reach this connection; the
 	// daemon's replay has them.
@@ -293,7 +293,7 @@ func (v *logViewer) leave(wait bool) {
 	}
 	id := v.session
 	v.session = ""
-	v.p.setLive("")
+	v.p.setLive("", "")
 	teardown := func() {
 		_ = v.p.c.CallTimeout("events.unsubscribe", map[string]any{"topics": v.topics(id)}, nil, teardownTimeout)
 		v.closeRemote(id)
@@ -567,7 +567,7 @@ func (v *logViewer) handleKey(k []byte) bool {
 		v.scroll(-1)
 	case k[0] == 'G':
 		v.follow, v.offset = true, 0
-	case k[0] == 'e':
+	case k[0] == 'S' || k[0] == 'e':
 		v.export()
 	case k[0] == 'y':
 		v.openFormatEditor()
@@ -1188,15 +1188,17 @@ func (v *logViewer) helpKeys() [][2]string {
 	return append(keys,
 		[2]string{"j  k  PgUp  PgDn", "Scroll"},
 		[2]string{"Shift+PgDn  G", "Follow tail"},
-		[2]string{"e", "Export"},
+		[2]string{"S", "Export"},
 		[2]string{"y", "Copy format"},
 		[2]string{"?", "Help"},
 		[2]string{"q", "Quit"})
 }
 
-// helpBox is the keys popup: a bordered box sized to its text, cut down to fit a small pane.
-func (v *logViewer) helpBox(rows, cols int) []string {
-	keys := v.helpKeys()
+// helpBox is the viewer's keys popup.
+func (v *logViewer) helpBox(rows, cols int) []string { return keysBox(v.helpKeys(), rows, cols) }
+
+// keysBox is a keys popup: a bordered box sized to its text, cut down to fit a small pane.
+func keysBox(keys [][2]string, rows, cols int) []string {
 	keyW, textW := 0, 0
 	for _, k := range keys {
 		keyW, textW = max(keyW, cellWidth(k[0])), max(textW, cellWidth(k[1]))
