@@ -1546,6 +1546,7 @@ func (v *cloudViewer) popup(rows, cols int) (box []string, top, left int) {
 	case v.help:
 		box = keysBox(v.helpKeys(), rows, cols)
 		if len(box) == 0 {
+			v.help = false // no room to draw it: it is closed, not left holding the keys unseen
 			return nil, 0, 0
 		}
 		return box, max(0, (rows-len(box))/2), max(0, (cols-cellWidth(stripSGR(box[0])))/2)

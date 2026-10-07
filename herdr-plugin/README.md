@@ -173,7 +173,8 @@ command = "herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint cloud"
 **Home.** The header shows what jacad found: `Signed in as …`, `Not signed in` or
 `gcloud CLI not found`. Signed out, `Open Terminal` opens a Herdr tab running
 `gcloud auth login` (jacad never runs it: it has no terminal to prompt in), and the home asks
-jacad to re-read the account every 3 seconds until the login lands. `j`/`k` move between
+jacad to re-read the account every 3 seconds until the login lands (for 10 minutes after the
+last key or click; `r` asks at any time). `j`/`k` move between
 projects, `←`/`→` or `Tab` choose a row's action and `Enter` presses it; `n` is New session,
 `l` Log names, `e` Rename, `x` or `Backspace` Remove (two presses), `a` Add project, `u` From
 URL…, `r` Re-check.
@@ -195,8 +196,7 @@ runs over the entries loaded in the session (jacad's `cloud.sessions.query`), wi
 or `⌘↩` where the terminal passes it on; once it has run it runs again every 2 seconds, as in
 the app.
 The bar has the app's Schema popup, the Labels menu (inserts a filter on a label), the
-Templates menu (saved templates, starters, From current filter), `Save…` and the label
-examples sheet. In the
+Templates menu (saved templates, starters, From current filter) and `Save…`. In the
 editor `Tab` indents, `Esc` leaves it, and `Ctrl+C` copies the selection. A pane with fewer
 than three rows to spare shows no SQL bar.
 
@@ -212,7 +212,8 @@ when that repeat came more than 40 ms early or 60 ms late.
 This applies to every two-press button (Remove here; Kill, Delete and Clean in the Gradle and
 Xcode panes). A click on a row that an update moved before it was drawn is dropped.
 
-Not carried over from the app: the Ask Claude buttons (SQL and regex), the gcloud debug
+Not carried over from the app: the Ask Claude buttons (SQL and regex) and the label examples
+sheet that sets what they send, the gcloud debug
 console (it reads a log kept inside the app, which jacad has no method for), resizing the
 detail panel, horizontal scrolling of long lines, syntax highlighting and autocomplete in the
 SQL editor, the tab subtitle (`project · log · range`), selecting part of a value in the
@@ -250,10 +251,8 @@ Projects views, the sidebar titles, `DeviceState.label`, `LogLevel.short`, the P
 `Switch between list and details`, `Close / back`, `Logs / SQL`, `SQL filter`,
 `Copy Logs Explorer URL / Open in browser` (and `Scroll`, `Help`, `Quit` as in the
 other panes); the `Help` button in the status bar; the tab name `Jaca cloud - <project>`; the
-glyphs that stand in for the app's icon buttons (`▶ ■ ⌫ ⤓ ↗ ⟳ ⊕ ⊖ ▾ ▼ ▸ ★ ☆ ✓ ● ○ − +`), the `│` gutter of the SQL editor and the `↓ <path>` note
-after an export (the app shows nothing there); the SQL bar's `Label examples for Claude`
-control, which is the title of the sheet it opens (in the app the control is an icon beside
-Ask Claude, which this pane does not have); and the error
+glyphs that stand in for the app's icon buttons (`▶ ■ ⌫ ⤓ ↗ ⟳ ⊕ ⊖ ▾ ▼ ▸ ★ ☆ ✓ ● ○`), the `│` gutter of the SQL editor and the `↓ <path>` note
+after an export (the app shows nothing there); and the error
 lines the client itself produces when Herdr or jacad returns something it can't read
 (`herdr tab create: no pane_id`, and the decode errors in `cloudwire.go`). The row
 `… <n> more lines — ⌘C copies all` is the app's string, though the key here is `C`; so is the

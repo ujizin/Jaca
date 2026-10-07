@@ -1063,3 +1063,24 @@ func TestNewTabPane(t *testing.T) {
 		t.Error("a reply without a pane is not an error")
 	}
 }
+
+// The sign-in checks stop a while after the last key, and a key starts them again.
+func TestCloudHomeAuthPollingStopsWhenIdle(t *testing.T) {
+	f := testCloudHome(t)
+	checks := func() int { return len(f.fake.calls("cloud.refreshAuth")) }
+	f.h.apply(withAuth(f.h.state, cloudAuthNotAuthenticated, ""))
+	f.clock.advance(authPollFor + time.Minute)
+	idle := checks()
+	if idle == 0 {
+		t.Fatal("no checks while signed out")
+	}
+	f.clock.advance(time.Hour)
+	if checks() != idle {
+		t.Fatalf("%d checks went on after the home was left idle", checks()-idle)
+	}
+	f.h.handleKey([]byte("j"))
+	f.clock.advance(authPollEvery)
+	if checks() != idle+1 {
+		t.Fatalf("a key did not start the checks again: %d", checks()-idle)
+	}
+}

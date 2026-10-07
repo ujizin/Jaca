@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"math"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -20,12 +18,8 @@ const cloudSQLRefreshEvery = 2 * time.Second
 // cloudSQLEditorRows is the editor's height where the pane has the room (the app's 132 points).
 const cloudSQLEditorRows = 6
 
-// The bar's hint line, and the title of the label examples sheet, which also labels the
-// control that opens it (the app's is an icon without a label).
-const (
-	cloudSQLHint            = "⌘↩ to run · keep an `insert_id` column · labels: json_extract(labels_json,'$.key')"
-	cloudLabelExamplesTitle = "Label examples for Claude"
-)
+// cloudSQLHint is the bar's hint line.
+const cloudSQLHint = "⌘↩ to run · keep an `insert_id` column · labels: json_extract(labels_json,'$.key')"
 
 // cloudSQLColumn is one column of the session's log_entry table (CloudSqlSchema.Column).
 type cloudSQLColumn struct{ name, kind, note string }
@@ -56,21 +50,8 @@ func cloudSQLLabelFilter(key string) string {
 	return "json_extract(labels_json, '$." + key + "') = ''"
 }
 
-// cloudLabelCardinalitySQL is CloudSqlAssistant.labelCardinalitySQL: the distinct value count
-// of each label key, for the label examples sheet.
-const cloudLabelCardinalitySQL = "SELECT scope, k, COUNT(*) AS distinct_values FROM (\n" +
-	"  SELECT DISTINCT 'labels' AS scope, je.key AS k, je.value AS v\n" +
-	"  FROM log_entry, json_each(log_entry.labels_json) je WHERE json_valid(log_entry.labels_json)\n" +
-	"  UNION\n" +
-	"  SELECT DISTINCT 'resource', je.key, je.value\n" +
-	"  FROM log_entry, json_each(log_entry.resource_labels_json) je WHERE json_valid(log_entry.resource_labels_json)\n" +
-	")\n" +
-	"GROUP BY scope, k\n" +
-	"ORDER BY scope, k;"
-
 // The focus stops of the SQL bar, in drawing order.
 const (
-	sqlStopExamples  = "examples"
 	sqlStopLabels    = "labels"
 	sqlStopSchema    = "schema"
 	sqlStopTemplates = "templates"
@@ -79,7 +60,7 @@ const (
 	sqlStopEditor    = "editor"
 )
 
-var sqlStops = []string{sqlStopExamples, sqlStopLabels, sqlStopSchema, sqlStopTemplates, sqlStopSave, sqlStopRun, sqlStopEditor}
+var sqlStops = []string{sqlStopLabels, sqlStopSchema, sqlStopTemplates, sqlStopSave, sqlStopRun, sqlStopEditor}
 
 // cloudSQL is the viewer's SQL mode state.
 type cloudSQL struct {
@@ -476,8 +457,6 @@ func (v *cloudViewer) focusSQLBar() {
 // sqlActivate is Enter or a click on the focused stop.
 func (v *cloudViewer) sqlActivate() {
 	switch v.sql.stop {
-	case sqlStopExamples:
-		v.openLabelExamples()
 	case sqlStopLabels:
 		v.openSQLLabelsMenu(v.anchor("sqlLabels"))
 	case sqlStopSchema:
@@ -611,7 +590,6 @@ func (v *cloudViewer) sqlBarLines(w, budget, top int) []string {
 		run = "Running…"
 	}
 	controls := []control{
-		{sqlStopExamples, cloudLabelExamplesTitle, plain, focused},
 		{sqlStopLabels, "Labels " + cloudGlyphChevron, plain, focused},
 		{sqlStopSchema, "Schema", plain, focused},
 		{sqlStopTemplates, "Templates " + cloudGlyphChevron, plain, focused},
@@ -903,294 +881,6 @@ func (p *cloudSQLSchema) box(rows, cols int) (box []string, top, left int) {
 		}
 	}
 	p.width, p.height = w, len(box)
-	p.top, p.left = max(0, (rows-len(box))/2), max(0, (cols-w)/2)
-	return box, p.top, p.left
-}
-
-// MARK: the label examples sheet
-
-// labelCardinality is CloudLabelCardinality: how many distinct values a label key has in the
-// captured entries, and the scope it was found in (labels or resource).
-type labelCardinality struct {
-	scope, key string
-	distinct   int
-}
-
-// mergeLabelCardinalities is CloudSqlAssistant.cardinalities followed by the sheet's merge: the
-// rows of cloudLabelCardinalitySQL as one row per bare key, sorted by key. A key in both scopes
-// shares one rule, so it shows once, with the larger count.
-func mergeLabelCardinalities(rows [][]*string) []labelCardinality {
-	byKey := map[string]labelCardinality{}
-	for _, row := range rows {
-		scope, okScope := sqlCell(row, 0)
-		key, okKey := sqlCell(row, 1)
-		count, okCount := sqlCell(row, 2)
-		n, err := strconv.Atoi(count)
-		if !okScope || !okKey || !okCount || err != nil {
-			continue
-		}
-		if have, ok := byKey[key]; ok && have.distinct >= n {
-			continue
-		}
-		byKey[key] = labelCardinality{scope: scope, key: key, distinct: n}
-	}
-	out := make([]labelCardinality, 0, len(byKey))
-	for _, row := range byKey {
-		out = append(out, row)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key })
-	return out
-}
-
-// cloudLabelExamples is the app's CloudSqlLabelExamplesSheet: how many example values of each
-// label key the app's SQL assistant is sent, kept per log name. Each key has an All toggle and
-// a count from 1 to its distinct values.
-type cloudLabelExamples struct {
-	v       *cloudViewer
-	loading bool
-	rows    []labelCardinality
-	rules   map[string]labelExampleRule
-	focus   int // a row, then Cancel and Save
-
-	// As last drawn (0-based).
-	top, left int
-	hits      []boxHit
-}
-
-// openLabelExamples shows the sheet with the saved rules and asks jacad for the label keys.
-// As in the app, a session with nothing captured has none.
-func (v *cloudViewer) openLabelExamples() {
-	sheet := &cloudLabelExamples{v: v, rules: map[string]labelExampleRule{}}
-	for key, rule := range v.project.LabelExampleRulesByLogName[v.cfg.LogName] {
-		sheet.rules[key] = rule
-	}
-	v.sheet = sheet
-	if !v.stream.HasData || v.query == nil {
-		return
-	}
-	sheet.loading = true
-	v.query(cloudLabelCardinalitySQL, func(result dbResultSet, err error) {
-		if err != nil {
-			result = dbResultSet{}
-		}
-		sheet.rows, sheet.loading = mergeLabelCardinalities(result.Rows), false
-	})
-}
-
-// rule is a key's rule, the default (one value) when it has none.
-func (p *cloudLabelExamples) rule(key string) labelExampleRule {
-	r := p.rules[key]
-	r.Count = max(1, r.Count)
-	return r
-}
-
-func (p *cloudLabelExamples) toggleAll(i int) {
-	if i < 0 || i >= len(p.rows) {
-		return
-	}
-	r := p.rule(p.rows[i].key)
-	r.All = !r.All
-	p.rules[p.rows[i].key] = r
-}
-
-// step changes a key's count, within 1 and its distinct values. The app's stepper is disabled
-// for a key set to All and for one with a single value.
-func (p *cloudLabelExamples) step(i, by int) {
-	if i < 0 || i >= len(p.rows) {
-		return
-	}
-	row := p.rows[i]
-	r := p.rule(row.key)
-	if r.All || row.distinct <= 1 {
-		return
-	}
-	r.Count = min(max(1, r.Count+by), max(1, row.distinct))
-	p.rules[row.key] = r
-}
-
-// pruned is the rules worth saving: the ones that differ from the default.
-func (p *cloudLabelExamples) pruned() map[string]labelExampleRule {
-	out := map[string]labelExampleRule{}
-	for key := range p.rules {
-		if r := p.rule(key); r.All || r.Count != 1 {
-			out[key] = r
-		}
-	}
-	return out
-}
-
-func (p *cloudLabelExamples) save() {
-	if p.loading {
-		return
-	}
-	p.v.call("cloud.setLabelExampleRules", map[string]any{
-		"project": p.v.cfg.ProjectID, "logName": p.v.cfg.LogName, "rules": p.pruned(),
-	})
-	p.v.closeSheet()
-}
-
-// key: the arrows, Tab and Shift-Tab move over the rows and the two buttons. On a row space or
-// Enter toggles All and left and right (or - and +) change the count. Esc cancels.
-func (p *cloudLabelExamples) key(k []byte) {
-	n := len(p.rows) + 2
-	p.focus = clampIndex(p.focus, n)
-	nav, isNav := decodeNav(k)
-	left := isNav && nav.dir == "left"
-	right := isNav && nav.dir == "right"
-	press := isEnter(k) || (len(k) == 1 && k[0] == ' ')
-	switch {
-	case isEsc(k):
-		p.v.closeSheet()
-	case string(k) == "\x1b[Z", isArrowUp(k):
-		p.focus = (p.focus - 1 + n) % n
-	case len(k) == 1 && k[0] == '\t', isArrowDown(k):
-		p.focus = (p.focus + 1) % n
-	case p.focus < len(p.rows):
-		switch {
-		case press:
-			p.toggleAll(p.focus)
-		case left, len(k) == 1 && k[0] == '-':
-			p.step(p.focus, -1)
-		case right, len(k) == 1 && (k[0] == '+' || k[0] == '='):
-			p.step(p.focus, 1)
-		}
-	case left || right:
-		p.focus = len(p.rows) + 1 - (p.focus - len(p.rows))
-	case press && p.focus == len(p.rows):
-		p.v.closeSheet()
-	case press:
-		p.save()
-	}
-}
-
-func (p *cloudLabelExamples) mouse(m mouseEvent) {
-	const wheelUp, wheelDown = 64, 65
-	if !m.press {
-		return
-	}
-	switch m.button {
-	case wheelUp:
-		p.focus = clampIndex(p.focus-1, len(p.rows)+2)
-	case wheelDown:
-		p.focus = clampIndex(p.focus+1, len(p.rows)+2)
-	case 0:
-		row, col := m.y-1-p.top, m.x-1-p.left
-		for i := len(p.hits) - 1; i >= 0; i-- {
-			if h := p.hits[i]; h.row == row && col >= h.x0 && col <= h.x1 {
-				h.act(col)
-				return
-			}
-		}
-	}
-}
-
-// box draws the sheet centered in a pane rows by cols: the app's text, then two lines a key
-// (its controls beside it, its scope and distinct values under it), then the buttons. A pane
-// too small for it shows nothing, and Esc still closes it.
-func (p *cloudLabelExamples) box(rows, cols int) (box []string, top, left int) {
-	p.hits = nil
-	w := min(cols, 64)
-	if w < 32 || rows < 8 {
-		return nil, 0, 0
-	}
-	b := newPopupBox(cloudLabelExamplesTitle, w)
-	const body = "How many example values of each label to send to Claude, so it learns the " +
-		"format. Default is 1. Set a low-cardinality label (e.g. tag) to All; keep a " +
-		"high-cardinality one (e.g. user_id) at 1."
-	text := wrapWords(body, b.inner)
-	// The rows left for the keys, two lines each, once the text, the buttons, the blank rows
-	// around the list and the borders have theirs. A short pane keeps the text's first line.
-	if over := len(text) + 7 - rows; over > 0 {
-		text = text[:max(1, len(text)-over)]
-	}
-	for _, part := range text {
-		b.add(sgrDim + part + sgrReset)
-	}
-	b.add("")
-	n := len(p.rows) + 2
-	p.focus = clampIndex(p.focus, n)
-	switch {
-	case p.loading:
-		row, _, _ := centeredSpan(cloudGlyphLoading, sgrDim, b.inner)
-		b.add(row)
-	case len(p.rows) == 0:
-		for _, part := range wrapWords("No labels detected yet — capture some logs first.", b.inner) {
-			b.add(sgrDim + part + sgrReset)
-		}
-	default:
-		// The count's cells: the widest it can show, "all" at least.
-		valW := 3
-		for _, row := range p.rows {
-			valW = max(valW, len(strconv.Itoa(max(1, row.distinct))))
-		}
-		valW = min(valW, 7)
-		const toggleW = 5 // "● All"
-		keyW := max(1, b.inner-1-toggleW-2-valW-4)
-		room := max(1, min(8, (rows-len(text)-6)/2))
-		start := listWindow(min(p.focus, len(p.rows)-1), room)
-		for i := start; i < len(p.rows) && i < start+room; i++ {
-			row := p.rows[i]
-			r := p.rule(row.key)
-			name := fit(sanitize(row.key), keyW)
-			if i == p.focus {
-				name = sgrRev + sgrBold + name + sgrReset
-			}
-			toggle, toggleStyle := "○ All", sgrDim
-			if r.All {
-				toggle, toggleStyle = "● All", sgrGreen
-			}
-			value, stepStyle := strconv.Itoa(r.Count), ""
-			if r.All {
-				value = "all"
-			}
-			if r.All || row.distinct <= 1 {
-				stepStyle = sgrDim
-			}
-			value = clip(value, valW)
-			value = strings.Repeat(" ", valW-cellWidth(value)) + value
-			b.hit(0, keyW-1, func(int) { p.focus = i })
-			line := name + " "
-			b.button(&line, toggle, toggleStyle, func() { p.focus = i; p.toggleAll(i) })
-			line += "  "
-			b.button(&line, "−", stepStyle, func() { p.focus = i; p.step(i, -1) })
-			line += stepStyle + " " + value + " " + sgrReset
-			b.button(&line, "+", stepStyle, func() { p.focus = i; p.step(i, 1) })
-			b.add(line)
-			plural := "s"
-			if row.distinct == 1 {
-				plural = ""
-			}
-			caption := fmt.Sprintf("%s · %d value%s", sanitize(row.scope), row.distinct, plural)
-			b.add(sgrDim + clip(caption, b.inner) + sgrReset)
-		}
-	}
-	b.add("")
-	// The buttons at the right: the header's Cancel, then the footer's Save.
-	const cancel, save = " Cancel ", " Save "
-	line := strings.Repeat(" ", max(0, b.inner-len(cancel)-2-len(save)))
-	style := func(button int, plain string) string {
-		if p.focus == len(p.rows)+button {
-			return sgrBold + sgrRev
-		}
-		return plain
-	}
-	b.button(&line, cancel, style(0, sgrUnder), p.v.closeSheet)
-	line += "  "
-	saveStyle := sgrUnder
-	if p.loading {
-		saveStyle = sgrDim
-	}
-	b.button(&line, save, style(1, saveStyle), p.save)
-	b.add(line)
-	box = b.close()
-	if len(box) > rows { // keep the borders, drop the rows that don't fit
-		box = append(box[:rows-1], box[len(box)-1])
-	}
-	for _, h := range b.hits {
-		if h.row < len(box)-1 {
-			p.hits = append(p.hits, h)
-		}
-	}
 	p.top, p.left = max(0, (rows-len(box))/2), max(0, (cols-w)/2)
 	return box, p.top, p.left
 }

@@ -263,6 +263,8 @@ func (t *toolPane) draw() {
 	if t.help {
 		if box := keysBox(t.owner.helpKeys(), rows, cols); len(box) > 0 {
 			frame = overlay(frame, box, max(0, (rows-len(box))/2), max(0, (cols-cellWidth(stripSGR(box[0])))/2))
+		} else {
+			t.help = false // no room to draw it: it is closed, not left holding the keys unseen
 		}
 	}
 	paintRows(frame)
