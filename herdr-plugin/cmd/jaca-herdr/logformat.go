@@ -82,9 +82,12 @@ func (e *formatEditor) activate() editorAction {
 	return editorStay
 }
 
-// key: arrows and Tab move, Enter activates, Esc cancels; in a field, other keys edit it.
+// key: arrows and Tab move, Enter activates, Ctrl-S saves, Esc cancels; in a field, other keys
+// edit it.
 func (e *formatEditor) key(k []byte) editorAction {
 	switch {
+	case len(k) == 1 && k[0] == 0x13, string(k) == "\x1b[115;9u": // Ctrl-S, or ⌘S where the terminal passes it on
+		return editorSave
 	case isEsc(k):
 		return editorClose
 	case isArrowUp(k), len(k) == 3 && k[0] == 0x1b && k[1] == '[' && k[2] == 'Z': // Shift-Tab

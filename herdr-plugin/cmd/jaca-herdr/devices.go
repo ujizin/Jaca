@@ -70,9 +70,24 @@ const (
 	teardownTimeout = 2 * time.Second
 )
 
-// deviceOptions are what a ready device offers, titled as in the app's device menu
-// (DeviceSidebarView.inspectMenu). Network capture has no pane yet.
-var deviceOptions = []string{"Start Logcat"}
+// deviceOption is one thing a ready device offers: its title, as in the app's device menu
+// (DeviceSidebarView.inspectMenu), the pane that does it and the name of the tab it opens in.
+type deviceOption struct {
+	title      string
+	entrypoint string
+	tab        string
+}
+
+// optionsFor are the options of a device. Network inspection runs the in-process agent, which
+// exists for Android and the iOS Simulator only.
+func optionsFor(d device) []deviceOption {
+	options := []deviceOption{{"Start Logcat", "logs", "Jaca log - "}}
+	if d.Platform == "android" || d.Platform == "iosSimulator" {
+		// Named for how it captures: an inspector without the agent may sit beside it later.
+		options = append(options, deviceOption{"Inspect Network (Agent HTTP)", "network", "Jaca network - "})
+	}
+	return options
+}
 
 // devicePicker lists devices, then the options of the chosen one. Choosing an option opens it
 // in a new Herdr tab (launch), or in this pane when there is no Herdr to open one.
@@ -168,7 +183,7 @@ func (d *devicePicker) handleKey(k []byte) bool {
 
 func (d *devicePicker) move(by int) {
 	if d.chosen != nil {
-		d.option = clampIndex(d.option+by, len(deviceOptions))
+		d.option = clampIndex(d.option+by, len(optionsFor(*d.chosen)))
 		return
 	}
 	d.selected = clampIndex(d.selected+by, len(d.devices))
@@ -187,13 +202,19 @@ func (d *devicePicker) confirm() {
 		return
 	}
 	dev := *d.chosen
+	options := optionsFor(dev)
+	option := options[clampIndex(d.option, len(options))]
 	if !d.launch {
-		d.p.screen = newLogViewer(d.p, dev, d.back)
+		if option.entrypoint == "network" {
+			d.p.screen = newNetViewer(d.p, dev, d.back)
+		} else {
+			d.p.screen = newLogViewer(d.p, dev, d.back)
+		}
 		return
 	}
 	d.launching, d.err = true, ""
 	go func() {
-		err := openLogsTab(dev)
+		err := openDeviceTab(dev, option)
 		d.p.post(func() {
 			d.launching = false
 			if err != nil {
@@ -243,11 +264,11 @@ func (d *devicePicker) draw() {
 		if d.err != "" {
 			line(sgrRed + fit(sanitize(d.err), cols) + sgrReset)
 		}
-		for i, title := range deviceOptions {
+		for i, option := range optionsFor(*d.chosen) {
 			if i >= room {
 				break
 			}
-			line(listRow(clip(title, max(0, cols-2)), i == d.option, cols))
+			line(listRow(clip(option.title, max(0, cols-2)), i == d.option, cols))
 		}
 		paintRows(panelFrame(frame, rows, cols))
 		return
@@ -315,16 +336,16 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
-// openLogsTab opens the logs pane for d in a new Herdr tab named after the device, in the
+// openDeviceTab opens an option's pane for d in a new Herdr tab named after the device, in the
 // workspace the picker was opened from, and has the tab focused once the picker has exited.
-func openLogsTab(d device) error {
+func openDeviceTab(d device, option deviceOption) error {
 	raw, err := json.Marshal(d)
 	if err != nil {
 		return err
 	}
 	herdr := envOr("HERDR_BIN_PATH", "herdr")
 	args := []string{"plugin", "pane", "open", "--plugin", envOr("HERDR_PLUGIN_ID", "dev.srsouza.jaca"),
-		"--entrypoint", "logs", "--placement", "tab", "--focus", "--env", deviceEnv + "=" + string(raw)}
+		"--entrypoint", option.entrypoint, "--placement", "tab", "--focus", "--env", deviceEnv + "=" + string(raw)}
 	// A plugin pane gets the context JSON; a popup opened by a custom keybinding gets the id alone.
 	if ws := envOr("HERDR_ACTIVE_WORKSPACE_ID", readHerdrContext().WorkspaceID); ws != "" {
 		args = append(args, "--workspace", ws)
@@ -354,7 +375,7 @@ func openLogsTab(d device) error {
 	}
 	if tab := reply.Result.PluginPane.Pane.TabID; tab != "" {
 		// The tab is open either way; the name tells it apart from the device's other tabs.
-		_ = exec.Command(herdr, "tab", "rename", tab, "Jaca log - "+d.displayModel()).Run()
+		_ = exec.Command(herdr, "tab", "rename", tab, option.tab+d.displayModel()).Run()
 		focusTabAfterExit(tab)
 	}
 	return nil
