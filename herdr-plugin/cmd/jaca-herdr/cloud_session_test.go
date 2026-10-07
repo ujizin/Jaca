@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -375,11 +376,18 @@ func TestCloudSessionLoadOlder(t *testing.T) {
 	if older() != 1 {
 		t.Fatalf("asked again without progress: %d requests", older())
 	}
-	// Leaving the top and coming back asks once more.
+	// Leaving the top and coming back doesn't ask again; a while later scrolling does (the
+	// read may have failed, which publishes nothing).
 	v.scroll(-20)
 	v.scroll(20)
+	if older() != 1 {
+		t.Fatalf("coming back to the top asked again: %d requests", older())
+	}
+	at := v.now()
+	v.now = func() time.Time { return at.Add(cloudOlderRetry) }
+	v.scroll(1)
 	if older() != 2 {
-		t.Fatalf("after coming back to the top: %d requests, want 2", older())
+		t.Fatalf("after the retry time: %d requests, want 2", older())
 	}
 	// A page arrives: the view stays on the same entries, and the next page can be asked for.
 	room := v.room()
@@ -751,11 +759,18 @@ func TestCloudSessionSelectionCopies(t *testing.T) {
 			return ""
 		}
 	}
-	// The continuation row belongs to its entry.
+	// The continuation row belongs to its entry. A click selects it and opens its details
+	// without touching the clipboard, as in the app; C copies it.
 	v.mouse(mouseEvent{button: 0, x: 40, y: v.listTop + 2, press: true})
 	v.mouse(mouseEvent{button: 0, x: 40, y: v.listTop + 2, press: false})
+	select {
+	case text := <-copied:
+		t.Fatalf("a click copied %q", text)
+	default:
+	}
+	v.copySelection()
 	if got := next(); got != "12:00:03.250 ERROR auth  boom\n\tat main.go:12" {
-		t.Errorf("a click copied %q", got)
+		t.Errorf("the selected entry copied as %q", got)
 	}
 	if v.follow {
 		t.Error("the view kept following under a selection")
@@ -1084,7 +1099,7 @@ func TestCloudSessionToolbarAndShare(t *testing.T) {
 	v.frame(40, 200)
 	rows := v.toolbar(200, true)
 	top, second := stripSGR(rows[1]), stripSGR(rows[4])
-	for _, part := range []string{cloudGlyphStop, "Clear view", "Follow tail", "app ▼", "Last 15m ▼", cloudGlyphLoading + " Permission denied", " Logs  SQL "} {
+	for _, part := range []string{cloudGlyphStop, "Clear view", "Follow tail", "app ▼", "Last 15m ▼ " + cloudGlyphLoading, "Permission denied", " Logs  SQL "} {
 		if !strings.Contains(top, part) {
 			t.Errorf("toolbar row 1 has no %q: %q", part, top)
 		}
@@ -1124,8 +1139,12 @@ func TestCloudSessionToolbarAndShare(t *testing.T) {
 		t.Error("a click on Follow tail left it on")
 	}
 	click(top, "SQL", 2)
+	if v.mode != cloudModeSQL {
+		t.Error("a click on SQL left the list in Logs mode")
+	}
+	click(top, "Logs", 2)
 	if v.mode != cloudModeLogs {
-		t.Error("SQL mode was selectable")
+		t.Error("a click on Logs left the list in SQL mode")
 	}
 	click(second, "Filters", 5)
 	if !v.showBar || v.focus != cloudBar {
@@ -1342,5 +1361,70 @@ func TestCloudSessionFrameFits(t *testing.T) {
 	v.rawMode, v.focus, v.barStop = false, cloudBar, cloudStop{"query", 0}
 	if lines := v.barLines(100, 4); len(lines) != 4 || !strings.Contains(stripSGR(strings.Join(lines, "\n")), "Hide query") {
 		t.Errorf("a bar cut to 4 rows: %d rows, footer shown %v", len(lines), strings.Contains(stripSGR(strings.Join(lines, "\n")), "Hide query"))
+	}
+}
+
+// A first open whose reply failed is asked again by Start, and Stop still reaches a session
+// jacad made all the same.
+func TestCloudSessionOpenFailsThenRecovers(t *testing.T) {
+	fresh := func(autoStart bool) (*cloudViewer, *[]cloudCall) {
+		quit := &pane{work: make(chan func()), done: make(chan struct{})}
+		close(quit.done)
+		v := newCloudViewer(quit, cloudSessionSpec{Config: newCloudStreamConfig("proj-1"), AutoStart: autoStart}, nil)
+		calls := &[]cloudCall{}
+		v.call = func(method string, params map[string]any) { *calls = append(*calls, cloudCall{method, params}) }
+		v.now = time.Now
+		v.begin(testCloudState(), true, nil)
+		v.finishOpen(cloudSessionInfo{}, errors.New("cloud.sessions.open: no reply from jacad after 1m0s"))
+		*calls = nil
+		return v, calls
+	}
+
+	// Nothing was made: one press of Start opens it again, started.
+	v, calls := fresh(true)
+	if v.active() {
+		t.Fatal("a session that failed to open reads as running")
+	}
+	v.toggle()
+	if got := cloudMethods(*calls); len(got) != 2 || got[0] != "cloud.sessions.open" || got[1] != "cloud.sessions.start" || (*calls)[0].params["autoStart"] != true {
+		t.Fatalf("Start after a failed open asked for %v", *calls)
+	}
+	v.finishOpen(cloudSessionInfo{ID: v.id, State: cloudStreamState{IsRunning: true}}, nil)
+	if !v.active() || len(*calls) < 1 || cloudMethods(*calls)[0] != "cloud.sessions.open" {
+		t.Fatalf("after the second open: active %v, calls %v", v.active(), cloudMethods(*calls))
+	}
+
+	// jacad had made it, stopped: opening it again doesn't start it, so Start is sent.
+	v, calls = fresh(false)
+	v.toggle()
+	v.finishOpen(cloudSessionInfo{ID: v.id, Existed: true}, nil)
+	started := 0
+	for _, m := range cloudMethods(*calls) {
+		if m == "cloud.sessions.start" {
+			started++
+		}
+	}
+	if started != 1 || !v.active() {
+		t.Fatalf("an existing stopped session: %v, active %v", cloudMethods(*calls), v.active())
+	}
+
+	// jacad had made it and it runs: its state says so, and Stop reaches it.
+	v, calls = fresh(true)
+	v.setStream(cloudStreamState{IsRunning: true})
+	if !v.active() {
+		t.Fatal("a running session reads as stopped")
+	}
+	v.toggle()
+	if got := cloudMethods(*calls); len(got) != 1 || got[0] != "cloud.sessions.stop" {
+		t.Fatalf("Stop asked for %v", got)
+	}
+
+	// A subscribe that failed leaves nothing wanted.
+	quit := &pane{work: make(chan func()), done: make(chan struct{})}
+	close(quit.done)
+	v = newCloudViewer(quit, cloudSessionSpec{Config: newCloudStreamConfig("proj-1"), AutoStart: true}, nil)
+	v.begin(cloudState{}, false, errors.New("no socket"))
+	if v.active() || v.openSent {
+		t.Fatalf("after a failed subscribe: active %v, openSent %v", v.active(), v.openSent)
 	}
 }

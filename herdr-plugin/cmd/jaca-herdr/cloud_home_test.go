@@ -82,6 +82,7 @@ func testCloudHome(t *testing.T) *cloudHomeFixture {
 	f.h.launch = func(spec cloudSessionSpec) { f.launched = append(f.launched, spec) }
 	f.h.openTerminal = func() error { f.terminal++; return nil }
 	f.h.apply(cloudStateFrom(t, cloudStateJSON))
+	f.h.moved = false // as after the first draw
 	return f
 }
 
@@ -548,6 +549,7 @@ func typeText(s cloudSheet, text string) {
 func TestCloudAddProjectSheet(t *testing.T) {
 	f := testCloudHome(t)
 	open := func() *addProjectSheet {
+		f.clock.advance(hushTime) // past the quiet that follows a sheet closing on its result
 		f.h.handleKey([]byte("a"))
 		s, ok := f.h.sheet.(*addProjectSheet)
 		if !ok {
@@ -665,7 +667,7 @@ func TestCloudURLSheet(t *testing.T) {
 		t.Fatalf("a disabled button acted: err %q", s.err)
 	}
 	f.h.handleKey([]byte("\r"))
-	if s.err != "Couldn't find a project id in that URL." || len(f.launched) != 0 {
+	if s.err != "" || len(f.launched) != 0 { // Enter is as disabled as the button
 		t.Fatalf("Enter without a project: err %q", s.err)
 	}
 	checkSheet(t, "url error", s, [2]int{12, 40})
@@ -716,6 +718,7 @@ func TestCloudURLSheet(t *testing.T) {
 	}
 
 	// In flight the button reads Starting….
+	f.clock.advance(hushTime)
 	f.h.handleKey([]byte("u"))
 	s = f.h.sheet.(*urlSheet)
 	s.key([]byte("https://console.cloud.google.com/logs/query?project=slow-one"))

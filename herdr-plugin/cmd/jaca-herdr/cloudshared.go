@@ -38,6 +38,7 @@ func launchCloudSession(p *pane, spec cloudSessionSpec, back func(), fail func(e
 	if name == "" {
 		name = spec.Config.ProjectID
 	}
+	name = sanitize(name) // a fork is named after a label value, which is the log's text
 	go func() {
 		if err := openTab("cloud", "Jaca cloud - "+name, cloudSessionEnv+"="+string(raw)); err != nil {
 			p.post(func() { fail(err) })

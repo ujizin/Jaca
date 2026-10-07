@@ -231,7 +231,8 @@ func (v *cloudViewer) barKey(k []byte) {
 		move(1)
 	case kind == "tvalue" || kind == "lvalue":
 		if isEnter(k) {
-			move(1)
+			// Stays in the field: the next stop is the condition's remove control, and a second
+			// Enter would delete what was just typed.
 			return
 		}
 		if in, value := v.stopInput(); in != nil && in.handle(k) {

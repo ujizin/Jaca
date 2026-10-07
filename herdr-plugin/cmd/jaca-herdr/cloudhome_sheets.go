@@ -165,6 +165,9 @@ func (s *addProjectSheet) added(res cloudAddResult) {
 		s.err = res.Message
 		return
 	}
+	if s.h.sheet == s {
+		s.h.hush()
+	}
 	s.close()
 }
 
@@ -247,8 +250,7 @@ func (s *urlSheet) start() {
 	}
 	project, query := s.parsed()
 	if project == "" {
-		s.err = "Couldn't find a project id in that URL."
-		return
+		return // Start session is disabled until a project is parsed, as in the app
 	}
 	s.working, s.err = true, ""
 	if _, known := s.h.state.project(project); known {
@@ -256,10 +258,14 @@ func (s *urlSheet) start() {
 		return
 	}
 	s.h.addProject(project, "", func(res cloudAddResult) {
+		if s.h.sheet != s {
+			return // closed while the project was validated: nothing opens
+		}
 		if res.Result == cloudAddFailure {
 			s.working, s.err = false, res.Message
 			return
 		}
+		s.h.hush()
 		s.launch(project, query)
 	})
 }

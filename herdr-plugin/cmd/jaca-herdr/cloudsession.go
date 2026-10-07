@@ -41,6 +41,7 @@ const (
 	cloudSearch                   // the search field
 	cloudBar                      // the query builder bar
 	cloudDetail                   // the detail panel
+	cloudSQLBar                   // the SQL editor bar
 )
 
 const (
@@ -95,9 +96,9 @@ type cloudHit struct {
 	act            func()
 }
 
-// cloudViewer is one Cloud Logging session in Logs mode (the app's CloudLogSessionView): the
-// toolbar, the query builder bar, the log list with the detail panel beside it, and the status
-// bar. The stream runs in jacad; this is its view.
+// cloudViewer is one Cloud Logging session (the app's CloudLogSessionView): the toolbar, the
+// query builder bar, in SQL mode the SQL editor bar, the log list with the detail panel beside
+// it, and the status bar. The stream runs in jacad; this is its view.
 type cloudViewer struct {
 	p    *pane
 	back func() // returns to the home when the session runs in its pane; nil in a tab
@@ -122,6 +123,7 @@ type cloudViewer struct {
 	templates   []cloudQueryTemplate
 
 	connecting   bool // the first subscribe is in flight
+	openFailed   bool // the first open failed: Start asks for it again
 	openSent     bool // cloud.sessions.open was asked for: the session is this pane's to close
 	opened       bool
 	wantsRunning bool // what the user last asked for; the stream state follows it
@@ -145,6 +147,10 @@ type cloudViewer struct {
 	// would fetch the same page.
 	olderAsked    bool
 	olderAskedSeq uint64
+	olderAskedAt  time.Time
+
+	flashed      string // what the last call confirmed ("Saved SQL template")
+	noticeHidden bool   // as last drawn: the notice gave its row to the SQL bar
 
 	sel      selection
 	listTop  int      // the list as last drawn: the screen row of its first row,
@@ -198,6 +204,12 @@ type cloudViewer struct {
 	closeX1     int
 	copyX0      int
 	copyX1      int
+
+	// SQL mode (cloudsession_sql.go). query runs a statement over the captured entries without
+	// waiting and hands the result to done on the loop. Tests replace it.
+	query        func(sql string, done func(dbResultSet, error))
+	sqlTemplates []cloudSqlTemplate
+	sql          cloudSQL
 }
 
 // newCloudSession is the viewer for one session, connected to jacad: it subscribes, opens the
@@ -206,6 +218,7 @@ func newCloudSession(p *pane, spec cloudSessionSpec, back func()) screen {
 	v := newCloudViewer(p, spec, back)
 	v.commands = &cloudCommands{}
 	v.call = v.send
+	v.query = v.sendQuery
 	v.connect()
 	return v
 }
@@ -259,6 +272,7 @@ func (v *cloudViewer) begin(st cloudState, have bool, err error) {
 		return
 	}
 	if err != nil {
+		v.wantsRunning = false // nothing was opened: Start tries again
 		v.fail(err)
 		return
 	}
@@ -302,6 +316,10 @@ func (v *cloudViewer) send(method string, params map[string]any) {
 			if q.stopped.Load() || !p.post(func() { v.finishOpen(info, err) }) {
 				v.closeRemote()
 			}
+		case "cloud.saveQueryTemplate", "cloud.saveSqlTemplate":
+			var saved bool
+			err := c.CallTimeout(method, args, &saved, cloudCallTimeout)
+			p.post(func() { v.finishSave(method, saved, err) })
 		case "cloud.sessions.range":
 			var got []cloudEntry
 			err := c.CallTimeout(method, args, &got, cloudCallTimeout)
@@ -322,9 +340,28 @@ func (v *cloudViewer) send(method string, params map[string]any) {
 func (v *cloudViewer) finishCall(method string, err error) {
 	if method == "cloud.sessions.start" || method == "cloud.sessions.stop" {
 		v.busy = max(0, v.busy-1)
+		if v.busy == 0 {
+			// The state event may have come before this reply, when it was still ignored.
+			v.wantsRunning = v.stream.IsRunning
+		}
 	}
 	if err != nil && !v.left {
 		v.fail(err)
+	}
+}
+
+// finishSave confirms a saved template as the app does. jacad answers false for a name it
+// would not save, and the app says nothing then either.
+func (v *cloudViewer) finishSave(method string, saved bool, err error) {
+	switch {
+	case v.left:
+	case err != nil:
+		v.fail(err)
+	case !saved:
+	case method == "cloud.saveSqlTemplate":
+		v.flashed = "Saved SQL template"
+	default:
+		v.flashed = "Saved query template"
 	}
 }
 
@@ -344,11 +381,16 @@ func (v *cloudViewer) finishOpen(info cloudSessionInfo, err error) {
 		return
 	}
 	if err != nil {
+		if !v.opened {
+			// The next Start opens it again. jacad may have made the session all the same (a
+			// reply that timed out): then its state events say whether it runs.
+			v.wantsRunning, v.openFailed = v.stream.IsRunning, true
+		}
 		v.fail(err)
 		return
 	}
 	first := !v.opened
-	v.opened = true
+	v.opened, v.openFailed = true, false
 	if v.feed.opened(info.Existed) {
 		// jacad restarted and made the session again: its seqs start over.
 		v.resetView()
@@ -377,6 +419,9 @@ func (v *cloudViewer) resync() {
 func (v *cloudViewer) finishResync(got []cloudEntry, err error) {
 	if err != nil {
 		got = nil
+		if !v.left {
+			v.fail(err)
+		}
 	}
 	v.appended(v.feed.finishResync(got))
 }
@@ -394,6 +439,7 @@ func (v *cloudViewer) closeRemote() {
 // leave closes the session: left open it keeps polling gcloud until jacad's orphan reaper runs.
 func (v *cloudViewer) leave(wait bool) {
 	v.left = true
+	v.stopSQLRefresh()
 	if v.commands != nil {
 		v.commands.stopped.Store(true)
 	}
@@ -465,6 +511,7 @@ func (v *cloudViewer) setStream(st cloudStreamState) {
 // its sessions: when it changes a running session is re-targeted.
 func (v *cloudViewer) setCloudState(st cloudState) {
 	v.templates = st.QueryTemplates
+	v.sqlTemplates = st.SqlTemplates
 	project, ok := st.project(v.cfg.ProjectID)
 	if !ok {
 		return
@@ -491,6 +538,12 @@ func (v *cloudViewer) start() {
 	if !v.openSent {
 		v.connect() // the open starts it
 		return
+	}
+	if v.openFailed {
+		// The first open failed: it is asked again, ahead of the start. jacad may have made the
+		// session all the same, and opening one that exists doesn't start it.
+		v.openFailed = false
+		v.call("cloud.sessions.open", map[string]any{"id": v.id, "config": v.cfg, "autoStart": true})
 	}
 	v.busy++
 	v.call("cloud.sessions.start", map[string]any{"id": v.id, "config": v.cfg})
@@ -531,7 +584,7 @@ func (v *cloudViewer) apply() {
 func (v *cloudViewer) clear() {
 	v.feed.reset()
 	v.resetView()
-	if v.openSent {
+	if v.openSent && (v.opened || v.gotStream) { // not for a session that failed to open
 		v.call("cloud.sessions.resetScrollback", v.sessionParams())
 	}
 }
@@ -560,16 +613,23 @@ func (v *cloudViewer) setMinSeverity(sev *int) {
 	v.apply()
 }
 
-// setMode switches between the live list and a SQL result. SQL mode isn't built yet.
+// setMode switches between the live list and a SQL result (the app's setViewMode).
 func (v *cloudViewer) setMode(mode cloudMode) {
-	if mode == cloudModeSQL {
+	if v.mode == mode {
 		return
 	}
 	v.mode = mode
+	v.clearSelection() // a selection names rows of the list it was made in
+	if mode == cloudModeSQL {
+		v.enterSQL()
+	} else {
+		v.exitSQL()
+	}
 }
 
-// listed is the entries the list shows, oldest first: the one place its rows are chosen. In
-// Logs mode they are the loaded entries the search keeps; SQL mode will put a query's rows here.
+// listed is the entries the list shows: the one place its rows are chosen. In Logs mode they
+// are the loaded entries the search keeps, oldest first. In SQL mode they are the query's rows
+// in result order (sqlRebuild puts them here), dividers included.
 func (v *cloudViewer) listed() []cloudEntry {
 	return v.visible
 }
@@ -619,6 +679,9 @@ func (v *cloudViewer) appended(added int) {
 		return
 	}
 	v.total += added
+	if v.mode == cloudModeSQL {
+		return // the query owns the list; the live refresh rebuilds it
+	}
 	entries := v.feed.entries()
 	added = min(added, len(entries)) // the limit may have trimmed some of them already
 	rows := 0
@@ -649,6 +712,9 @@ func (v *cloudViewer) prepended(added int) {
 	}
 	v.total += added
 	v.olderAsked = false
+	if v.mode == cloudModeSQL {
+		return
+	}
 	var fresh []cloudEntry
 	var counts []int
 	for _, e := range entries[:added] {
@@ -666,6 +732,10 @@ func (v *cloudViewer) prepended(added int) {
 
 // refilter rebuilds the visible entries after the search or the feed's front changed.
 func (v *cloudViewer) refilter() {
+	if v.mode == cloudModeSQL {
+		v.sqlRebuild()
+		return
+	}
 	v.visible, v.lines, v.totalRows = v.visible[:0], v.lines[:0], 0
 	for _, e := range v.feed.entries() {
 		if v.matches(e) {
@@ -678,20 +748,25 @@ func (v *cloudViewer) refilter() {
 	v.clampOffset()
 }
 
+// cloudOlderRetry is how long a request for older entries that brought nothing blocks the next
+// one. A failed read publishes nothing either, so after it scrolling asks again.
+const cloudOlderRetry = 5 * time.Second
+
 // loadOlder asks for the page before the oldest loaded entry. It does nothing while a page is
-// in flight, when there is nothing older or nothing loaded, and when the last request brought
-// nothing new: a page of entries already loaded publishes nothing and leaves hasMoreOlder set,
-// so asking again would fetch it again.
+// in flight, when there is nothing older or nothing loaded, and for cloudOlderRetry after a
+// request that brought nothing new: a page of entries already loaded publishes nothing and
+// leaves hasMoreOlder set, so asking again at once would fetch it again.
 func (v *cloudViewer) loadOlder() {
 	entries := v.feed.entries()
 	if v.mode != cloudModeLogs || !v.openSent || len(entries) == 0 || v.stream.OlderLoading || !v.stream.HasMoreOlder {
 		return
 	}
 	oldest := entries[0].Seq
-	if v.olderAsked && v.olderAskedSeq == oldest {
+	now := v.now()
+	if v.olderAsked && v.olderAskedSeq == oldest && now.Sub(v.olderAskedAt) < cloudOlderRetry {
 		return
 	}
-	v.olderAsked, v.olderAskedSeq = true, oldest
+	v.olderAsked, v.olderAskedSeq, v.olderAskedAt = true, oldest, now
 	v.call("cloud.sessions.loadOlder", v.sessionParams())
 }
 
@@ -729,9 +804,7 @@ func (v *cloudViewer) scroll(by int) {
 	if v.offset == 0 && !v.sel.on {
 		v.follow = true
 	}
-	if v.topRow() > cloudOlderZone {
-		v.olderAsked = false // away from the top: coming back may ask again
-	} else if by > 0 {
+	if by > 0 && v.topRow() <= cloudOlderZone {
 		v.loadOlder()
 	}
 }
@@ -776,6 +849,9 @@ func (v *cloudViewer) window(n int) []cloudRowRef {
 
 // indexOf is the position of the entry with this seq in the list.
 func (v *cloudViewer) indexOf(seq uint64) (int, bool) {
+	if v.mode == cloudModeSQL {
+		return v.sqlIndexOf(seq)
+	}
 	list := v.listed()
 	i := sort.Search(len(list), func(i int) bool { return list[i].Seq >= seq })
 	return i, i < len(list) && list[i].Seq == seq
@@ -793,6 +869,9 @@ func (v *cloudViewer) selectEntries(s selection) {
 func (v *cloudViewer) selectedEntries() []cloudEntry {
 	if !v.sel.on {
 		return nil
+	}
+	if v.mode == cloudModeSQL {
+		return v.sqlSelectedEntries()
 	}
 	list := v.listed()
 	if v.sel.all {
@@ -838,18 +917,38 @@ func (v *cloudViewer) extend(by int) {
 	if len(list) == 0 {
 		return
 	}
-	if !v.sel.on || v.sel.all {
-		seq := list[len(list)-1].Seq
-		if len(v.rowSeq) > 0 {
-			seq = v.rowSeq[len(v.rowSeq)-1]
+	i, found := v.indexOf(v.sel.cursor)
+	if !v.sel.on || v.sel.all || !found {
+		if seq, ok := v.newestShown(); ok {
+			v.selectEntries(selection{on: true, anchor: seq, cursor: seq})
 		}
-		v.selectEntries(selection{on: true, anchor: seq, cursor: seq})
 		return
 	}
-	i, _ := v.indexOf(v.sel.cursor)
-	i = clampIndex(i+by, len(list))
-	v.sel.cursor = list[i].Seq
-	v.reveal(i)
+	// Dividers are not entries: the cursor steps over them, and stays put at the end.
+	for i += by; i >= 0 && i < len(list); i += by {
+		if !v.sqlMarker(list[i].Seq) {
+			v.sel.cursor = list[i].Seq
+			v.reveal(i)
+			return
+		}
+	}
+}
+
+// newestShown is the entry Enter and Shift-arrow start from with nothing selected: the lowest
+// one on screen, or the last of the list before anything was drawn. Dividers don't count.
+func (v *cloudViewer) newestShown() (uint64, bool) {
+	for i := len(v.rowSeq) - 1; i >= 0; i-- {
+		if !v.sqlMarker(v.rowSeq[i]) {
+			return v.rowSeq[i], true
+		}
+	}
+	list := v.listed()
+	for i := len(list) - 1; i >= 0; i-- {
+		if !v.sqlMarker(list[i].Seq) {
+			return list[i].Seq, true
+		}
+	}
+	return 0, false
 }
 
 // cloudCopyText is the clipboard text for entries: each in the saved copy format, with
@@ -901,16 +1000,24 @@ func (v *cloudViewer) dragSelection(m mouseEvent, released bool) {
 	switch {
 	case len(v.rowSeq) == 0:
 		v.sel.edge = 0
-	case line < 0:
-		v.sel.edge, v.sel.cursor = -1, v.rowSeq[0]
-	case line >= len(v.rowSeq):
-		v.sel.edge, v.sel.cursor = 1, v.rowSeq[len(v.rowSeq)-1]
 	default:
-		v.sel.edge, v.sel.cursor = 0, v.rowSeq[line]
+		v.sel.edge = 0
+		if line < 0 {
+			v.sel.edge, line = -1, 0
+		} else if line >= len(v.rowSeq) {
+			v.sel.edge, line = 1, len(v.rowSeq)-1
+		}
+		if !v.sqlMarker(v.rowSeq[line]) { // a divider is not an entry: the cursor stays
+			v.sel.cursor = v.rowSeq[line]
+		}
 	}
 	if released {
 		v.sel.dragging, v.sel.edge = false, 0
-		v.copySelection()
+		// A plain click only selects and opens the details, as in the app; dragging over
+		// several entries copies them.
+		if v.sel.anchor != v.sel.cursor {
+			v.copySelection()
+		}
 		return
 	}
 	if v.sel.edge != 0 && !v.sel.scrolling {
@@ -932,7 +1039,7 @@ func (v *cloudViewer) edgeScroll() {
 		if v.sel.edge > 0 {
 			at = refs[len(refs)-1]
 		}
-		if at.idx < len(list) {
+		if at.idx < len(list) && !v.sqlMarker(list[at.idx].Seq) {
 			v.sel.cursor = list[at.idx].Seq
 		}
 	}
@@ -946,7 +1053,7 @@ func (v *cloudViewer) copyAtRest() {
 	moves := v.sel.moves
 	time.AfterFunc(250*time.Millisecond, func() {
 		v.p.post(func() {
-			if v.sel.dragging && v.sel.moves == moves && v.sel.edge == 0 {
+			if v.sel.dragging && v.sel.moves == moves && v.sel.edge == 0 && v.sel.anchor != v.sel.cursor {
 				v.copySelection()
 			}
 		})
@@ -1032,7 +1139,7 @@ func (v *cloudViewer) openFork(fork cloudFork) {
 		// With no Herdr to open a tab the new session takes this pane, so this one closes.
 		v.leave(false)
 	}
-	launchCloudFork(v.p, spec, nil, v.fail)
+	launchCloudFork(v.p, spec, v.back, v.fail)
 }
 
 // toggleFavorite pins or unpins a label key for the project's selected log name.
@@ -1066,6 +1173,9 @@ func (v *cloudViewer) helpKeys() [][2]string {
 		{"Enter", "Details / row actions"},
 		{"[  ]", "Previous / next entry"},
 		{"Tab", "Switch between list and details"},
+		{"Q", "Logs / SQL"},
+		{"s", "SQL filter"},
+		{"Ctrl+R", "Run"},
 		{"Esc", "Close / back"},
 		{"?", "Help"},
 		{"q", "Quit"},
@@ -1074,13 +1184,25 @@ func (v *cloudViewer) helpKeys() [][2]string {
 
 func (v *cloudViewer) handleKey(k []byte) bool {
 	if len(k) == 1 && k[0] == 0x03 {
-		return true
+		// Ctrl-C quits, except in the SQL editor, where it copies the selection as it does in
+		// the override editor, and quitting would drop the query being written.
+		if v.focus != cloudSQLBar || !v.sql.editing || v.sql.noRoom {
+			return true
+		}
+		if text := v.sql.text.selectedText(); text != "" {
+			v.copy(text)
+		}
+		return false
 	}
 	if m, ok := parseMouse(k); ok {
 		v.mouse(m)
 		return false
 	}
-	v.saved = "" // the export note lasts until the next key
+	// The export note, the last confirmation and the last failure last until the next key,
+	// once they were on screen.
+	if !v.noticeHidden {
+		v.saved, v.flashed, v.err = "", "", ""
+	}
 	switch {
 	case v.sheet != nil:
 		v.sheet.key(k)
@@ -1098,6 +1220,15 @@ func (v *cloudViewer) handleKey(k []byte) bool {
 		}
 		return false
 	}
+	if v.focus == cloudSQLBar && v.sql.noRoom {
+		// The pane got too short for the SQL bar: this key moves to the list and does no more,
+		// so nothing is typed into an editor out of sight or taken as a list command.
+		v.focus, v.sql.editing = cloudList, false
+		return false
+	}
+	if v.sqlRunKey(k) {
+		return false
+	}
 	switch v.focus {
 	case cloudSearch:
 		v.editSearch(k)
@@ -1105,8 +1236,11 @@ func (v *cloudViewer) handleKey(k []byte) bool {
 	case cloudBar:
 		v.barKey(k)
 		return false
+	case cloudSQLBar:
+		v.sqlKey(k)
+		return false
 	case cloudDetail:
-		if v.detailKey(k) {
+		if v.sqlDetailStep(k) || v.detailKey(k) {
 			return false
 		}
 	}
@@ -1176,6 +1310,10 @@ func (v *cloudViewer) handleKey(k []byte) bool {
 		v.focus = cloudSearch
 	case c == 'F':
 		v.toggleBar()
+	case c == 'Q':
+		v.toggleMode()
+	case c == 's':
+		v.focusSQLBar()
 	case c == 't':
 		v.openTimeMenu(v.anchor("time"))
 	case c == 'u':
@@ -1322,7 +1460,8 @@ func (v *cloudViewer) mouse(m mouseEvent) {
 	rows, _ := termSize()
 	inList := m.y >= v.listTop && m.y < v.listTop+v.listRows
 	inDetail := inList && v.detailX0 > 0 && m.x >= v.detailX0
-	inBar := v.barTop > 0 && m.y >= v.barTop && m.y < v.listTop
+	inSQL := v.sqlBarAt(m.y)
+	inBar := !inSQL && v.barTop > 0 && m.y >= v.barTop && m.y < v.listTop
 	switch m.button {
 	case wheelUp, wheelDown:
 		by := wheelLines
@@ -1331,6 +1470,8 @@ func (v *cloudViewer) mouse(m mouseEvent) {
 		}
 		if inDetail {
 			v.detailTop, v.detailKeep = max(0, v.detailTop-by), false
+		} else if inSQL {
+			v.sqlWheel(by)
 		} else if !inBar {
 			v.scroll(by)
 		}
@@ -1344,6 +1485,8 @@ func (v *cloudViewer) mouse(m mouseEvent) {
 					return
 				}
 			}
+		case inSQL:
+			v.sqlClick(m.x, m.y)
 		case inBar:
 			v.barClick(m.x, m.y)
 		case inDetail:
@@ -1352,7 +1495,7 @@ func (v *cloudViewer) mouse(m mouseEvent) {
 			v.help = true
 		case v.chooseRow != 0 && m.y == v.chooseRow && m.x >= v.chooseX0 && m.x <= v.chooseX1:
 			v.openLogNames()
-		case !inList || m.y-v.listTop >= len(v.rowSeq):
+		case !inList || m.y-v.listTop >= len(v.rowSeq) || v.sqlMarkerRow(m.y):
 			v.focus = cloudList
 			v.clearSelection()
 		default:
@@ -1361,16 +1504,15 @@ func (v *cloudViewer) mouse(m mouseEvent) {
 			seq := v.rowSeq[m.y-v.listTop]
 			v.selectEntries(selection{on: true, dragging: true, anchor: seq, cursor: seq})
 			v.openDetail(seq)
-			v.copyAtRest()
 		}
 	case 2:
 		switch {
 		case inDetail:
 			v.detailClick(m, true)
-		case inList && m.y-v.listTop < len(v.rowSeq):
+		case inList && m.y-v.listTop < len(v.rowSeq) && !v.sqlMarkerRow(m.y):
 			// Like the app's table: a right click on an entry outside the selection selects it,
 			// then the menu acts on the selection.
-			if seq := v.rowSeq[m.y-v.listTop]; !v.sel.has(seq) {
+			if seq := v.rowSeq[m.y-v.listTop]; !v.selected(seq) {
 				v.selectEntries(selection{on: true, anchor: seq, cursor: seq})
 			}
 			v.sel.dragging = false
@@ -1420,7 +1562,10 @@ func (v *cloudViewer) notice() (text string, failed bool) {
 	case v.stream.StatusMessage != "" && !v.statusInBar:
 		return v.stream.StatusMessage, true
 	}
-	return v.saved, false
+	if v.saved != "" {
+		return "↓ " + v.saved, false
+	}
+	return v.flashed, false
 }
 
 // frame draws the pane without its popups: every row at most cols cells.
@@ -1431,18 +1576,29 @@ func (v *cloudViewer) frame(rows, cols int) []string {
 	var frame []string
 	frame = append(frame, v.toolbar(cols, cloudBarTall(rows))...)
 	v.barRows = len(frame)
-	if text, failed := v.notice(); failed {
+	// While the SQL editor has the keys the notice gives way when its row is the one the bar
+	// needs, so a message doesn't take the editor from under the cursor.
+	text, failed := v.notice()
+	v.noticeHidden = false
+	if text != "" && v.mode == cloudModeSQL && v.focus == cloudSQLBar && rows-len(frame)-1-3-1 < 3 && rows-len(frame)-1-3 >= 3 {
+		text, v.noticeHidden = "", true
+	}
+	switch {
+	case text == "":
+	case failed:
 		frame = append(frame, sgrRed+fit(sanitize(text), cols)+sgrReset)
-	} else if text != "" {
-		frame = append(frame, sgrGreen+fit("↓ "+sanitize(text), cols)+sgrReset)
+	default:
+		frame = append(frame, sgrGreen+fit(sanitize(text), cols)+sgrReset)
 	}
 
 	// The builder bar takes what the list can spare.
 	v.barTop, v.barHits = 0, nil
-	if budget := rows - len(frame) - 1 - 3; v.showBar && budget >= 3 {
+	if budget := rows - len(frame) - 1 - 3 - v.sqlBarReserve(); v.showBar && budget >= 3 {
 		v.barTop = len(frame) + 1
 		frame = append(frame, v.barLines(cols, budget)...)
 	}
+	// The SQL editor bar, under it as in the app.
+	frame = append(frame, v.sqlBarLines(cols, rows-len(frame)-1-3, len(frame)+1)...)
 
 	// The list, with the detail panel beside it when an entry is open.
 	v.listTop = len(frame) + 1
@@ -1627,6 +1783,11 @@ func (v *cloudViewer) toolbarTop(cols int, tall bool, level int) (b *cloudBarRow
 	// What follows the log name, so the name takes the width that is left.
 	const logs, sql = " Logs ", " SQL "
 	timeLabel := v.cfg.TimeRange.label() + " ▼"
+	if v.stream.IsLoading {
+		// The loading mark rides on the time range, which is always drawn: the room at the
+		// right is gone in an 80 or 120 column pane.
+		timeLabel += " " + cloudGlyphLoading
+	}
 	timeW := cellWidth(timeLabel) + 2*b.chipPad
 	shareW := 1 + 2*b.chipPad
 	modeW := len(logs) + len(sql)
@@ -1636,7 +1797,9 @@ func (v *cloudViewer) toolbarTop(cols int, tall bool, level int) (b *cloudBarRow
 	}
 	nameRoom := cols - b.used - 1 - 2*b.chipPad - 2 - (1 + timeW) - (1 + shareW) - (1 + modeW)
 	if cellWidth(name) > nameRoom {
-		complete = complete && nameRoom >= 8
+		// A name cut to a few cells can't be told from its neighbours (run.googleapis.com/stderr
+		// and /stdout): a tighter layout that shows more of it is preferred.
+		complete = complete && nameRoom >= min(cellWidth(name), 28)
 		name = clip(name, max(4, nameRoom))
 	}
 	chip(name+" ▼", nameStyle, v.openLogNames)
@@ -1647,9 +1810,6 @@ func (v *cloudViewer) toolbarTop(cols int, tall bool, level int) (b *cloudBarRow
 	room := cols - b.used - 1 - (1 + shareW) - (1 + modeW)
 	status, cells := "", 0
 	v.statusInBar = false
-	if v.stream.IsLoading && room >= 2 {
-		status, cells = sgrDim+cloudGlyphLoading+sgrReset, 1
-	}
 	if msg := sanitize(v.stream.StatusMessage); msg != "" && room-cells-1 >= 12 {
 		text := clip(msg, room-cells-1)
 		if cells > 0 {
@@ -1864,7 +2024,9 @@ func (v *cloudViewer) listColumn(w, n int) []string {
 			text = display[ref.sub]
 		}
 		row := renderCloudRow(e, text, ref.sub, truncated && ref.sub == len(display)-1, w)
-		if v.sel.has(e.Seq) { // a selected entry is drawn plain and reversed
+		if v.sqlMarker(e.Seq) { // a SQL divider is never selected
+			row = renderCloudMarker(text, w)
+		} else if v.selected(e.Seq) { // a selected entry is drawn plain and reversed
 			row = sgrRev + stripSGR(row) + sgrReset
 		}
 		out = append(out, row)

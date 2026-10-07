@@ -205,6 +205,15 @@ func (v *cloudViewer) openSaveTemplate() {
 		})
 }
 
+// openSaveSQLTemplate is the SQL bar's Save SQL template alert.
+func (v *cloudViewer) openSaveSQLTemplate() {
+	v.sheet = v.newForm("Save SQL template", []string{"Template name"}, nil, []string{"Save", "Cancel"}, 0, 1,
+		func(f *cloudForm, _ int) bool {
+			v.call("cloud.saveSqlTemplate", map[string]any{"name": f.value(0), "sql": v.sql.text.String()})
+			return true
+		})
+}
+
 // openTemplatesMenu is the bar's Templates menu: the saved templates under their heading, then
 // saving the current query as one.
 func (v *cloudViewer) openTemplatesMenu(x, y int) {
@@ -215,13 +224,13 @@ func (v *cloudViewer) openTemplatesMenu(x, y int) {
 			items = append(items, menuItem{sanitize(t.Name), func() { v.applyTemplate(t) }})
 		}
 	}
-	items = append(items, menuItem{}, menuItem{"Save current as template…", v.openSaveTemplate})
+	if len(items) > 0 {
+		items = append(items, menuItem{}) // a rule only under the saved ones
+	}
+	items = append(items, menuItem{"Save current as template…", v.openSaveTemplate})
 	menu := &popupMenu{x: x, y: y, items: items}
 	menu.selected = -1
-	menu.move(1)
-	if len(v.templates) > 0 {
-		menu.move(1) // past the heading
-	}
+	menu.move(1) // the first item that does something: past the heading
 	v.menu = menu
 }
 

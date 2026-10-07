@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
 )
 
@@ -154,6 +155,8 @@ func (v *gradleViewer) apply(list []gradleDaemon) {
 		}
 	}
 	sort.SliceStable(next, func(i, j int) bool { return next[i].PID < next[j].PID })
+	// Rows that changed place are drawn at the next tick: until then a click is not for them.
+	v.moved = v.moved || !slices.EqualFunc(v.daemons, next, func(a, b gradleDaemon) bool { return a.PID == b.PID })
 	v.daemons, v.listed, v.loaded = next, listed, true
 	v.reselect(at)
 }
@@ -235,6 +238,17 @@ func (v *gradleViewer) press(i int) {
 			v.kill(pid)
 		}
 	}
+}
+
+func (v *gradleViewer) rowID(i int) string {
+	switch {
+	case i < 0:
+	case i < len(v.caches):
+		return cacheKey(v.caches[i].Name)
+	case i-len(v.caches) < len(v.daemons):
+		return pidKey(v.daemons[i-len(v.caches)].PID)
+	}
+	return ""
 }
 
 func (v *gradleViewer) key(byte) {}

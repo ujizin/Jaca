@@ -103,6 +103,7 @@ func (v *xcodeViewer) scanned(list []derivedEntry, err error) {
 	}
 	v.err = ""
 	v.entries = list
+	delete(v.armed, staleKey) // Confirm? showed the stale entries of the last scan
 	v.selected = clampIndex(v.selected, len(list))
 }
 
@@ -139,6 +140,13 @@ func (v *xcodeViewer) press(i int) {
 	if !v.removing[e.Path] && v.confirm(e.Path) {
 		v.delete(e)
 	}
+}
+
+func (v *xcodeViewer) rowID(i int) string {
+	if i < 0 || i >= len(v.entries) {
+		return ""
+	}
+	return v.entries[i].Path
 }
 
 func (v *xcodeViewer) key(k byte) {
@@ -228,10 +236,12 @@ func (v *xcodeViewer) remove(paths map[string]bool) {
 	if v.selected >= 0 && v.selected < len(v.entries) {
 		at = v.entries[v.selected].Path
 	}
+	for path := range paths {
+		delete(v.removing, path) // also one a rescan already dropped
+	}
 	kept := v.entries[:0:0]
 	for _, e := range v.entries {
 		if paths[e.Path] {
-			delete(v.removing, e.Path)
 			continue
 		}
 		if e.Path == at {

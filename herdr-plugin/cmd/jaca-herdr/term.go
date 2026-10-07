@@ -159,7 +159,7 @@ func enterRaw() (func(), error) {
 	if _, err := sttyRun("raw", "-echo"); err != nil {
 		return nil, err
 	}
-	fmt.Print("\x1b[?1049h\x1b[?25l")
+	fmt.Print("\x1b[?1049h\x1b[?25l\x1b[?7l")
 	refreshTermSize()
 	// The first caller restores; later ones wait (bounded) until it has finished, so main can't
 	// print or exit while the terminal is still half restored.
@@ -178,7 +178,7 @@ func enterRaw() (func(), error) {
 		sttyRun(saved)
 		screenMu.Lock()
 		defer screenMu.Unlock()
-		fmt.Print(mouseOff + "\x1b[?25h\x1b[?1049l")
+		fmt.Print(mouseOff + "\x1b[?7h\x1b[?25h\x1b[?1049l")
 	}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
@@ -368,7 +368,7 @@ func sanitize(s string) string {
 			b.WriteString("    ")
 		case r == 0x1b:
 			i = skipEscape(rs, i)
-		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f, isBidiControl(r):
 		default:
 			b.WriteRune(r)
 		}
@@ -378,11 +378,17 @@ func sanitize(s string) string {
 
 func needsSanitize(s string) bool {
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || isBidiControl(r) {
 			return true
 		}
 	}
 	return false
+}
+
+// isBidiControl is the direction marks, embeddings, overrides and isolates: text from a device
+// or a log could use them to reorder how its row reads.
+func isBidiControl(r rune) bool {
+	return r == 0x061c || r == 0x200e || r == 0x200f || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069)
 }
 
 // skipEscape returns the index of the last rune of the escape sequence starting at rs[i] (ESC):
