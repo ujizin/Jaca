@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // testNetViewer is a viewer on a pane that has quit (posted results are dropped), holding three
@@ -133,7 +134,7 @@ func TestNetDetailContent(t *testing.T) {
 		t.Errorf("request body: %q", got)
 	}
 	// JSON is shown pretty-printed with sorted keys, under the Copy button.
-	if got := text(tabResponse); !strings.HasPrefix(got, "Copy\n\n{") || strings.Index(got, `"a"`) > strings.Index(got, `"b"`) {
+	if got := text(tabResponse); !strings.HasPrefix(strings.TrimLeft(got, " "), "Copy \n\n{") || strings.Index(got, `"a"`) > strings.Index(got, `"b"`) {
 		t.Errorf("response body: %q", got)
 	}
 	if got := text(tabTiming); !strings.Contains(got, "TIME TO FIRST BYTE") || !strings.Contains(got, "220 ms") {
@@ -728,5 +729,102 @@ func TestSaveShortcut(t *testing.T) {
 		if v.focus != netEditor {
 			t.Errorf("%q saved a rule that can't be saved", key)
 		}
+	}
+}
+
+// Text in the detail content is selected by dragging and copied on release; a value that
+// wrapped comes back in one piece. A double click copies the whole value, a right click offers
+// Copy, and the copy buttons are pressed on their own cells only.
+func TestNetDetailSelection(t *testing.T) {
+	v := testNetViewer(t)
+	setTermSize(t, 30, 120)
+	copied := captureClipboard(t)
+	v.selectedID, v.detail = "A", true
+	v.draw()
+	if len(v.detailMeta) == 0 {
+		t.Fatal("no detail content drawn")
+	}
+	line := func(prefix string) int {
+		for i, text := range v.detailText {
+			if strings.HasPrefix(text, prefix) {
+				return i
+			}
+		}
+		t.Fatalf("no detail line starts with %q: %q", prefix, v.detailText)
+		return -1
+	}
+	at := func(line, col int, button int, press bool) mouseEvent {
+		return mouseEvent{button: button, x: v.detailX + col, y: v.detailFirst + line - v.detailTop, press: press}
+	}
+	url, method := line("URL"), line("METHOD")
+	x := v.detailMeta[url].valueX
+
+	// A drag from the URL's first cell to the method's value.
+	v.mouse(at(url, x, 0, true))
+	v.mouse(at(method, v.detailMeta[method].valueX+2, mouseDrag, true))
+	v.mouse(at(method, v.detailMeta[method].valueX+2, 0, false))
+	got := <-copied
+	if !strings.HasPrefix(got, "https://api.example.com/users/42?expand=1") || !strings.HasSuffix(got, "GET") || strings.Count(got, "\n") != 1 {
+		t.Errorf("the drag copied %q", got)
+	}
+	v.draw()
+
+	// A click selects nothing and copies nothing.
+	v.mouse(at(url, x+3, 0, true))
+	v.mouse(at(url, x+3, 0, false))
+	select {
+	case text := <-copied:
+		t.Fatalf("a click copied %q", text)
+	default:
+	}
+	if v.dsel.on {
+		t.Error("a click left a selection")
+	}
+
+	// A double click copies the whole value.
+	v.lastPress = time.Time{}
+	v.mouse(at(method, 1, 0, true))
+	v.mouse(at(method, 1, 0, false))
+	v.mouse(at(method, 1, 0, true))
+	if got := <-copied; got != "GET" {
+		t.Errorf("a double click copied %q", got)
+	}
+	v.mouse(at(method, 1, 0, false))
+
+	// A right click offers Copy for the value under it.
+	v.dsel = detailSel{}
+	v.mouse(at(url, x+1, 2, true))
+	if v.menu == nil || len(v.menu.items) != 1 || v.menu.items[0].label != "Copy" {
+		t.Fatalf("right click opened %+v", v.menu)
+	}
+	v.menu.items[0].act()
+	if got := <-copied; got != "https://api.example.com/users/42?expand=1" {
+		t.Errorf("Copy copied %q", got)
+	}
+	v.menu, v.focus = nil, netList
+
+	// The Copy button of a section is pressed on its cells, not on the rest of its line.
+	v.setTab(tabHeaders)
+	v.draw()
+	button := -1
+	for i, l := range v.detailMeta {
+		if l.act != nil {
+			button = i
+			break
+		}
+	}
+	if button < 0 {
+		t.Fatal("no copy button on the headers tab")
+	}
+	v.mouse(at(button, 0, 0, true))
+	v.mouse(at(button, 0, 0, false))
+	select {
+	case text := <-copied:
+		t.Fatalf("a click beside the button copied %q", text)
+	default:
+	}
+	v.mouse(at(button, v.detailMeta[button].x1-1, 0, true))
+	if got := <-copied; !strings.Contains(got, ": ") {
+		t.Errorf("the button copied %q", got)
 	}
 }

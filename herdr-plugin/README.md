@@ -83,7 +83,11 @@ overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network
   its right or `Esc` clears the range. It shows in panes of 24 rows or more.
 - **Detail**: `Enter` or a click opens the request beside the list, with the app's tabs
   (Overview, Headers, Request, Response, Timing). `Tab` or `1`–`5` switch tabs, `PgUp`/`PgDn`
-  scroll, `Esc` closes it. In the Request tab `C` copies the request body.
+  scroll, `Esc` closes it. In the Request tab `C` copies the request body. Any text in the
+  detail can be copied with the mouse: a drag selects it and copies on release (a value that
+  wrapped over several lines comes back in one piece), a double click copies the whole value
+  under the pointer, and a right click offers `Copy` for it. The `Copy` buttons of the bodies
+  and header sections sit at the right of their line, drawn like the popups' close button.
 - **Request menu**: a right click (or `m`) shows the app's menu: `Override response…` (or
   `Edit override “…”` and `Add another override…` when a rule already answers it), `Copy URL`,
   `Copy response body`, `Filter by this host`.
