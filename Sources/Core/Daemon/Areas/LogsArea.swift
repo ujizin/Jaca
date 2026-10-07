@@ -28,6 +28,15 @@ enum LogsArea {
         var afterSeq: UInt64?
         var limit: Int?
     }
+    struct SearchParams: Codable, Sendable {
+        var id: UUID
+        /// A regular expression over the tag and the message, case-insensitive.
+        var grep: String?
+        var minLevel: LogLevel?
+        var since: Date?
+        /// The newest matches kept: 1...`maxSearchLines`, `defaultSearchLines` when absent.
+        var limit: Int?
+    }
     struct SessionInfo: Codable, Sendable, Equatable {
         var id: UUID
         var device: Device
@@ -37,6 +46,9 @@ enum LogsArea {
         /// False when this open created the session (the daemon didn't have it).
         var existed = true
     }
+
+    static let defaultSearchLines = 200
+    static let maxSearchLines = 5_000
 
     static func linesTopic(_ id: UUID) -> String { "logs.lines.\(id.uuidString)" }
     static func stateTopic(_ id: UUID) -> String { "logs.state.\(id.uuidString)" }
@@ -158,6 +170,15 @@ enum LogsArea {
             return Array(slice.suffix(limit))
         }
 
+        /// The newest replayed lines that match, oldest first. Filtering here keeps a search of
+        /// the whole replay (100k lines) from crossing the socket.
+        func search(_ p: SearchParams) throws -> [LogLine] {
+            guard let hosted = sessions[p.id] else { throw RPCError.failed("No log session \(p.id.uuidString).") }
+            let limit = min(max(p.limit ?? LogsArea.defaultSearchLines, 1), LogsArea.maxSearchLines)
+            return LogSearch(pattern: p.grep ?? "", minLevel: p.minLevel ?? .verbose, since: p.since)
+                .tail(hosted.replay, limit: limit)
+        }
+
         /// Stops and closes sessions nobody has watched for `orphanTimeout`.
         func reapOrphans(now: Date = Date()) {
             for (id, hosted) in sessions {
@@ -196,33 +217,38 @@ enum LogsArea {
 
         let r = server.router
         r.register("logs.open", "Opens (or attaches to, by id) a device log session. Returns its info.",
-                   params: OpenParams.self) { p, _ in
+                   params: OpenParams.self,
+                   takes: .object(["device": .device], optional: [
+                       "id": .uuid, "package": .string, "displayName": .string, "autoStart": .boolean, "seqStart": .integer,
+                   ]),
+                   returns: .logSession) { p, _ in
             try DaemonInput.device(p.device)
             try DaemonInput.package(p.package)
             return try await registry.open(p)
         }
-        r.register("logs.list", "Every open log session.") { (_: RPCEmpty, _) in
+        r.register("logs.list", "Every open log session.", takes: .empty, returns: .array(.logSession)) { (_: RPCEmpty, _) in
             await MainActor.run {
                 registry.sessions.values.map { registry.info($0) }.sorted { $0.id.uuidString < $1.id.uuidString }
             }
         }
-        r.register("logs.start", "Starts streaming.", params: IDParams.self) { p, _ in
+        r.register("logs.start", "Starts streaming.", params: IDParams.self, takes: .sessionID, returns: .empty) { p, _ in
             try await registry.withSession(p.id) { $0.start() }; return RPCEmpty()
         }
         r.register("logs.connect", "Checks the device, then starts streaming (a status message explains a failure).",
-                   params: IDParams.self) { p, _ in
+                   params: IDParams.self, takes: .sessionID, returns: .empty) { p, _ in
             try await registry.withSession(p.id) { $0.connect() }; return RPCEmpty()
         }
-        r.register("logs.stop", "Stops streaming (the session stays open).", params: IDParams.self) { p, _ in
+        r.register("logs.stop", "Stops streaming (the session stays open).", params: IDParams.self,
+                   takes: .sessionID, returns: .empty) { p, _ in
             try await registry.withSession(p.id) { $0.stop() }; return RPCEmpty()
         }
         r.register("logs.setPackage", "Targets an app (PID tracking, simulator stdout, iOS scoping). Empty = whole device.",
-                   params: PackageParams.self) { p, _ in
+                   params: PackageParams.self, takes: .object(["id": .uuid, "package": .string]), returns: .empty) { p, _ in
             try DaemonInput.package(p.package)
             try await registry.withSession(p.id) { $0.setPackage(p.package) }; return RPCEmpty()
         }
         r.register("logs.rename", "Renames a session (its history entry uses the name on the next start).",
-                   params: RenameParams.self) { p, _ in
+                   params: RenameParams.self, takes: .object(["id": .uuid, "name": .string]), returns: .empty) { p, _ in
             try await MainActor.run {
                 guard let hosted = registry.sessions[p.id] else { throw RPCError.failed("No log session \(p.id.uuidString).") }
                 hosted.displayName = p.name
@@ -230,15 +256,24 @@ enum LogsArea {
             return RPCEmpty()
         }
         r.register("logs.resetPairing", "Forgets a half-seen response body (the viewer cleared its scrollback).",
-                   params: IDParams.self) { p, _ in
+                   params: IDParams.self, takes: .sessionID, returns: .empty) { p, _ in
             try await registry.withSession(p.id) { $0.resetBodyPairing() }; return RPCEmpty()
         }
-        r.register("logs.clearDeviceBuffer", "Clears the device's logcat buffer (Android).", params: IDParams.self) { p, _ in
+        r.register("logs.clearDeviceBuffer", "Clears the device's logcat buffer (Android).", params: IDParams.self,
+                   takes: .sessionID, returns: .empty) { p, _ in
             try await registry.withSession(p.id) { $0.clearDeviceBuffer() }; return RPCEmpty()
         }
         r.register("logs.range", "Replayed lines after a seq (default: from the start of the replay buffer), up to limit.",
-                   params: RangeParams.self, concurrent: true) { p, _ in await registry.range(p) }
-        r.register("logs.close", "Stops and closes a session. Returns whether it existed.", params: IDParams.self) { p, _ in
+                   params: RangeParams.self,
+                   takes: .object(["id": .uuid], optional: ["afterSeq": .integer, "limit": .integer]),
+                   returns: .array(.logLine), concurrent: true) { p, _ in await registry.range(p) }
+        r.register("logs.search", "", params: SearchParams.self,
+                   takes: .object(["id": .uuid], optional: [
+                       "grep": .string, "minLevel": .logLevel, "since": .date, "limit": .integer,
+                   ]),
+                   returns: .array(.logLine), concurrent: true) { p, _ in try await registry.search(p) }
+        r.register("logs.close", "Stops and closes a session. Returns whether it existed.", params: IDParams.self,
+                   takes: .sessionID, returns: .boolean) { p, _ in
             await registry.close(p.id)
         }
         r.describeTopic("logs.lines.<id>", "Batches of processed lines (~30ms). Dropped for a slow client; backfill with logs.range. Data: [LogLine].")

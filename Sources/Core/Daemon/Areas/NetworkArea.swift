@@ -22,6 +22,60 @@ enum NetworkArea {
         var state: NetworkCaptureState
         var existed: Bool
     }
+    /// One open capture, as `network.list` reports it.
+    struct Session: Codable, Sendable, Equatable {
+        var id: UUID
+        /// The device's model, or its id when the model is unknown.
+        var name: String
+        var device: Device
+        var state: NetworkCaptureState
+        var transactionCount: Int
+    }
+    struct SearchParams: Codable, Sendable {
+        /// One capture; nil searches every open capture.
+        var id: UUID?
+        var host: String?
+        var method: String?
+        var status: [NetworkStatusRange]?
+        var failed: Bool?
+        var idPrefix: String?
+        /// The newest matches kept: 1...`maxSearchRows`, `defaultSearchRows` when absent.
+        var limit: Int?
+    }
+    /// A transaction without headers or bodies, as `network.search` returns it.
+    struct Row: Codable, Sendable, Equatable {
+        var id: UUID
+        /// The capture it belongs to.
+        var session: UUID
+        var method: String
+        var url: String
+        var host: String
+        var statusCode: Int?
+        var error: String?
+        var startedAt: Date
+        var durationMs: Int?
+        var requestBytes: Int
+        var responseBytes: Int
+        var overriddenByRuleID: UUID?
+
+        init(_ txn: NetworkTransaction, session: UUID) {
+            id = txn.id
+            self.session = session
+            method = txn.method
+            url = txn.url
+            host = txn.host
+            statusCode = txn.statusCode
+            error = txn.error
+            startedAt = txn.startedAt
+            durationMs = txn.duration.map { Int(($0 * 1000).rounded()) }
+            requestBytes = txn.requestBytes
+            responseBytes = txn.responseBytes
+            overriddenByRuleID = txn.overriddenByRuleID
+        }
+    }
+
+    static let defaultSearchRows = 100
+    static let maxSearchRows = 1_000
 
     static func transactionsTopic(_ id: UUID) -> String { "net.txns.\(id.uuidString)" }
     static func stateTopic(_ id: UUID) -> String { "net.state.\(id.uuidString)" }
@@ -160,6 +214,33 @@ enum NetworkArea {
             sessions[id]?.transactions.map { $0.strippingBodies() } ?? []
         }
 
+        func list() -> [Session] {
+            sessions.map { id, hosted in
+                Session(id: id, name: hosted.device.displayModel, device: hosted.device,
+                        state: hosted.engine.state, transactionCount: hosted.transactions.count)
+            }.sorted { $0.id.uuidString < $1.id.uuidString }
+        }
+
+        /// The newest matching transactions of one capture (or of all of them), oldest first.
+        func search(_ p: SearchParams) throws -> [Row] {
+            let searched: [(UUID, Hosted)] = try p.id.map { [($0, try session($0))] } ?? sessions.map { ($0.key, $0.value) }
+            let search = NetworkSearch(host: p.host, method: p.method, status: p.status ?? [],
+                                       failed: p.failed ?? false, idPrefix: p.idPrefix)
+            let limit = min(max(p.limit ?? NetworkArea.defaultSearchRows, 1), NetworkArea.maxSearchRows)
+            var rows: [Row] = []
+            for (id, hosted) in searched {
+                // Each capture is in arrival order: its newest `limit` matches are enough.
+                var kept = 0
+                for txn in hosted.transactions.reversed() where search.matches(txn) {
+                    rows.append(Row(txn, session: id))
+                    kept += 1
+                    if kept == limit { break }
+                }
+            }
+            rows.sort { ($0.startedAt, $0.id.uuidString) < ($1.startedAt, $1.id.uuidString) }
+            return Array(rows.suffix(limit))
+        }
+
         /// nil when the capture or the transaction is unknown (closed, cleared), so the client can
         /// tell "unavailable" from an empty body.
         func bodies(_ p: BodyParams) async -> Bodies? {
@@ -171,6 +252,19 @@ enum NetworkArea {
             guard txn.bodiesEvicted, let cache = bodyCache else { return Bodies() }
             let loaded = await cache.load(p.transaction)
             return Bodies(request: loaded.req, response: loaded.resp)
+        }
+
+        /// One transaction with its headers and bodies (spilled ones read back). nil when the
+        /// capture or the transaction is unknown.
+        func transaction(_ p: BodyParams) async -> NetworkTransaction? {
+            guard let bodies = await bodies(p), let hosted = sessions[p.id], let i = hosted.indexByID[p.transaction] else {
+                return nil
+            }
+            var txn = hosted.transactions[i]
+            txn.requestBody = bodies.request
+            txn.responseBody = bodies.response
+            txn.bodiesEvicted = false
+            return txn
         }
 
         /// HAR of everything captured. Bodies still in memory are included, spilled ones are
@@ -220,9 +314,11 @@ enum NetworkArea {
         }
     }
 
+    /// Installs the area and returns its captures, which `OverridesArea` seeds rules from.
     @MainActor
+    @discardableResult
     static func install(on server: DaemonServer, captures: Captures? = nil,
-                        interceptServices: @escaping () -> InterceptServices? = { nil }) {
+                        interceptServices: @escaping () -> InterceptServices? = { nil }) -> Captures {
         let orphan = DaemonDefaults.orphanTimeout
         let captures = captures ?? Captures(bus: server.bus, orphanTimeout: orphan)
         captures.interceptServices = interceptServices
@@ -237,12 +333,16 @@ enum NetworkArea {
 
         let r = server.router
         r.register("network.open", "Opens (or attaches to, by id) a network capture for a device.",
-                   params: OpenParams.self) { p, _ in
+                   params: OpenParams.self,
+                   takes: .object(["id": .uuid, "device": .device],
+                                  optional: ["sourceID": .string, "package": .string, "autoStart": .boolean]),
+                   returns: .object(["id": .uuid, "state": .networkCaptureState, "existed": .boolean])) { p, _ in
             try DaemonInput.device(p.device)
             try DaemonInput.package(p.package)
             return await captures.open(p)
         }
-        r.register("network.select", "Chooses a capture source (agent) and starts it.", params: SelectParams.self) { p, _ in
+        r.register("network.select", "Chooses a capture source (agent) and starts it.", params: SelectParams.self,
+                   takes: .object(["id": .uuid, "sourceID": .string], optional: ["package": .string]), returns: .empty) { p, _ in
             try DaemonInput.package(p.package)
             try await MainActor.run {
                 // Companion capture needs the CA and the gRPC links, which stay in the app.
@@ -253,39 +353,104 @@ enum NetworkArea {
             }
             return RPCEmpty()
         }
-        r.register("network.reopenChooser", "Stops and returns to source selection.", params: IDParams.self) { p, _ in
+        r.register("network.reopenChooser", "Stops and returns to source selection.", params: IDParams.self,
+                   takes: .sessionID, returns: .empty) { p, _ in
             try await MainActor.run { try captures.session(p.id).engine.reopenChooser() }; return RPCEmpty()
         }
-        r.register("network.stop", "Stops capturing.", params: IDParams.self) { p, _ in
+        r.register("network.stop", "Stops capturing.", params: IDParams.self,
+                   takes: .sessionID, returns: .empty) { p, _ in
             try await MainActor.run { try captures.session(p.id).engine.stop() }; return RPCEmpty()
         }
         r.register("network.restartForInterceptChange", "Restarts the running source so it picks up changed override settings.",
-                   params: IDParams.self) { p, _ in
+                   params: IDParams.self, takes: .sessionID, returns: .empty) { p, _ in
             try await MainActor.run { try captures.session(p.id).engine.restartForInterceptChange() }; return RPCEmpty()
         }
         r.register("network.relaunchToAttach", "iOS Simulator: relaunches the app to put the agent back.",
-                   params: IDParams.self) { p, _ in
+                   params: IDParams.self, takes: .sessionID, returns: .empty) { p, _ in
             try await MainActor.run { try captures.session(p.id).engine.relaunchToAttach() }; return RPCEmpty()
         }
-        r.register("network.clearProxyNeedsSetup", "Dismisses the proxy setup prompt.", params: IDParams.self) { p, _ in
+        r.register("network.clearProxyNeedsSetup", "Dismisses the proxy setup prompt.", params: IDParams.self,
+                   takes: .sessionID, returns: .empty) { p, _ in
             try await MainActor.run { try captures.session(p.id).engine.clearProxyNeedsSetup() }; return RPCEmpty()
         }
-        r.register("network.transactions", "Every captured transaction, bodies omitted.", params: IDParams.self, concurrent: true) { p, _ in
+        r.register("network.list", "", takes: .empty, returns: .array(.networkSession)) { (_: RPCEmpty, _) in
+            await captures.list()
+        }
+        r.register("network.transactions", "Every captured transaction, bodies omitted.", params: IDParams.self,
+                   takes: .sessionID, returns: .array(.networkTransaction), concurrent: true) { p, _ in
             await captures.transactions(p.id)
         }
-        r.register("network.body", "A transaction's request and response bodies (base64).", params: BodyParams.self, concurrent: true) { p, _ in
+        r.register("network.search", "", params: SearchParams.self,
+                   takes: .object(optional: [
+                       "id": .uuid, "host": .string, "method": .string, "status": .array(.networkStatusRange),
+                       "failed": .boolean, "idPrefix": .string, "limit": .integer,
+                   ]),
+                   returns: .array(.networkRow), concurrent: true) { p, _ in
+            try await captures.search(p)
+        }
+        r.register("network.transaction", "", params: BodyParams.self,
+                   takes: .object(["id": .uuid, "transaction": .uuid]),
+                   returns: .nullable(.networkTransaction), concurrent: true) { p, _ in
+            await captures.transaction(p)
+        }
+        r.register("network.body", "A transaction's request and response bodies (base64).", params: BodyParams.self,
+                   takes: .object(["id": .uuid, "transaction": .uuid]),
+                   returns: .nullable(.object(optional: ["request": .bytes, "response": .bytes])), concurrent: true) { p, _ in
             await captures.bodies(p)
         }
-        r.register("network.exportHAR", "The capture as HAR JSON (base64 data), or null.", params: IDParams.self, concurrent: true) { p, _ in
+        r.register("network.exportHAR", "The capture as HAR JSON (base64 data), or null.", params: IDParams.self,
+                   takes: .sessionID, returns: .nullable(.bytes), concurrent: true) { p, _ in
             await captures.har(p.id)
         }
-        r.register("network.clear", "Forgets captured transactions.", params: IDParams.self) { p, _ in
+        r.register("network.clear", "Forgets captured transactions.", params: IDParams.self,
+                   takes: .sessionID, returns: .empty) { p, _ in
             await captures.clear(p.id); return RPCEmpty()
         }
-        r.register("network.close", "Stops and closes a capture. Returns whether it existed.", params: IDParams.self) { p, _ in
+        r.register("network.close", "Stops and closes a capture. Returns whether it existed.", params: IDParams.self,
+                   takes: .sessionID, returns: .boolean) { p, _ in
             await captures.close(p.id)
         }
         r.describeTopic("net.txns.<id>", "Coalesced transaction upserts (~50ms), bodies omitted. Dropped for a slow client; resync with network.transactions. Data: [NetworkTransaction].")
         r.describeTopic("net.state.<id>", "The capture's state. Data: NetworkCaptureState.", retained: true)
+        return captures
+    }
+}
+
+extension NetworkArea.Session {
+    private enum CodingKeys: String, CodingKey { case id, name, device, state, transactionCount }
+
+    /// Tolerant: only the id and the device are required.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let device = try c.decode(Device.self, forKey: .device)
+        self.init(id: try c.decode(UUID.self, forKey: .id),
+                  name: (try? c.decodeIfPresent(String.self, forKey: .name)) ?? device.displayModel,
+                  device: device,
+                  state: (try? c.decodeIfPresent(NetworkCaptureState.self, forKey: .state)) ?? NetworkCaptureState(),
+                  transactionCount: (try? c.decodeIfPresent(Int.self, forKey: .transactionCount)) ?? 0)
+    }
+}
+
+extension NetworkArea.Row {
+    private enum CodingKeys: String, CodingKey {
+        case id, session, method, url, host, statusCode, error, startedAt, durationMs
+        case requestBytes, responseBytes, overriddenByRuleID
+    }
+
+    /// Tolerant: only the two ids are required.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        session = try c.decode(UUID.self, forKey: .session)
+        method = (try? c.decodeIfPresent(String.self, forKey: .method)) ?? ""
+        url = (try? c.decodeIfPresent(String.self, forKey: .url)) ?? ""
+        host = (try? c.decodeIfPresent(String.self, forKey: .host)) ?? ""
+        statusCode = try? c.decodeIfPresent(Int.self, forKey: .statusCode)
+        error = try? c.decodeIfPresent(String.self, forKey: .error)
+        startedAt = (try? c.decodeIfPresent(Date.self, forKey: .startedAt)) ?? Date(timeIntervalSince1970: 0)
+        durationMs = try? c.decodeIfPresent(Int.self, forKey: .durationMs)
+        requestBytes = (try? c.decodeIfPresent(Int.self, forKey: .requestBytes)) ?? 0
+        responseBytes = (try? c.decodeIfPresent(Int.self, forKey: .responseBytes)) ?? 0
+        overriddenByRuleID = try? c.decodeIfPresent(UUID.self, forKey: .overriddenByRuleID)
     }
 }

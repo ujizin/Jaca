@@ -15,6 +15,27 @@ final class DaemonRouter: @unchecked Sendable {
     struct MethodInfo: Codable, Sendable, Equatable {
         var name: String
         var summary: String
+        /// The shapes of `params` and `result`, for the methods that declare them.
+        var params: DaemonSchema?
+        var result: DaemonSchema?
+
+        init(name: String, summary: String, params: DaemonSchema? = nil, result: DaemonSchema? = nil) {
+            self.name = name
+            self.summary = summary
+            self.params = params
+            self.result = result
+        }
+
+        private enum CodingKeys: String, CodingKey { case name, summary, params, result }
+
+        /// Tolerant: the schemas arrived after the first version of this message.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.init(name: try c.decode(String.self, forKey: .name),
+                      summary: (try? c.decodeIfPresent(String.self, forKey: .summary)) ?? "",
+                      params: try? c.decodeIfPresent(DaemonSchema.self, forKey: .params),
+                      result: try? c.decodeIfPresent(DaemonSchema.self, forKey: .result))
+        }
     }
 
     struct TopicInfo: Codable, Sendable, Equatable {
@@ -34,20 +55,26 @@ final class DaemonRouter: @unchecked Sendable {
     func register<P: Decodable, R: Encodable>(
         _ method: String,
         _ summary: String,
+        takes: DaemonSchema? = nil,
+        returns: DaemonSchema? = nil,
         concurrent: Bool = false,
         _ body: @escaping @Sendable (P, DaemonRequestContext) async throws -> R
     ) {
-        register(method, summary, params: P.self, concurrent: concurrent, body)
+        register(method, summary, params: P.self, takes: takes, returns: returns, concurrent: concurrent, body)
     }
 
     /// `concurrent: false` (the default): requests on one connection run one at a time, in the
     /// order they arrived, so a client may pipeline "open" then "select" and rely on the order.
     /// `concurrent: true` for slow read-only work (`du`, gcloud, SQL, bodies), which then runs
     /// alongside instead of holding up everything sent after it.
+    ///
+    /// `takes` and `returns` describe `params` and `result` in `api.describe`.
     func register<P: Decodable, R: Encodable>(
         _ method: String,
         _ summary: String,
         params: P.Type,
+        takes: DaemonSchema? = nil,
+        returns: DaemonSchema? = nil,
         concurrent: Bool = false,
         _ body: @escaping @Sendable (P, DaemonRequestContext) async throws -> R
     ) {
@@ -69,7 +96,7 @@ final class DaemonRouter: @unchecked Sendable {
         }
         lock.lock()
         handlers[method] = handler
-        methodInfo[method] = MethodInfo(name: method, summary: summary)
+        methodInfo[method] = MethodInfo(name: method, summary: summary, params: takes, result: returns)
         if concurrent { concurrentMethods.insert(method) } else { concurrentMethods.remove(method) }
         lock.unlock()
     }

@@ -23,15 +23,21 @@ enum DevicesArea {
         bus.onDemand(prefix: listTopic, start: follow, stop: follow)
 
         let router = server.router
-        router.register("devices.list", "Discovered devices (adb, simulators, iOS devices), ordered by platform.") { (_: RPCEmpty, _) in
-            await engine.devices
+        // Concurrent: with nobody watching the topic it runs discovery first, for seconds.
+        router.register("devices.list", "Discovered devices (adb, simulators, iOS devices), ordered by platform.",
+                        takes: .empty, returns: .array(.device), concurrent: true) { (_: RPCEmpty, _) in
+            await engine.snapshot()
         }
-        router.register("devices.reload", "Re-resolves the toolchain (after the adb path setting changes) and restarts discovery.") { (_: RPCEmpty, _) in
+        router.register("devices.reload", "Re-resolves the toolchain (after the adb path setting changes) and restarts discovery.",
+                        takes: .empty, returns: .empty) { (_: RPCEmpty, _) in
             await engine.reload()
             return RPCEmpty()
         }
         router.register("devices.apps", "Installed apps on a device. Empty when the device is unknown or unreachable.",
-                        params: DeviceParams.self, concurrent: true) { p, _ in
+                        params: DeviceParams.self,
+                        takes: .object(["deviceID": .string]),
+                        returns: .array(.object(["id": .string, "isUserApp": .boolean], optional: ["name": .string])),
+                        concurrent: true) { p, _ in
             guard let device = await engine.device(p.deviceID) else { return [AppEntry]() }
             return await InstalledApps.list(for: device, adbURL: engine.adbURL)
         }
