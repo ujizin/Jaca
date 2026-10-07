@@ -636,9 +636,11 @@ empty table rather than a sentence. Unknown sessions reuse `No log session <x>.`
 
 **Limits.**
 - Sessions exist in the daemon only for areas the app runs there, so `logs list` and `net list`
-  are empty with `daemonAreas` off, and `net list` with "HTTPS debugging" chosen.
-- With "HTTPS debugging" the app's in-process override engine owns the library: a rule saved by
-  `jaca` reaches `rules.json`, and the app lists it only after its next edit or relaunch.
+  are empty with `daemonAreas` off.
+- "HTTPS debugging" (the companion MITM mode) captures in the app, so `net list`, `net requests`
+  and `net show` have nothing to read there. Response overrides are on only with "Agent HTTPS
+  debugging", the default, where capture and the override engine run in `jacad`: the CLI reads the
+  sessions open in the app, and a rule it adds shows up in the app at once.
 - A rule body given with `--body-file` is not checked against `OverrideSeeding.warning`.
 - No command opens, starts or closes a session, or flips the master switch.
 
