@@ -68,6 +68,9 @@ struct DatabaseService: Sendable {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("jaca-db-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // A pull that fails takes its directory with it; only a returned copy is left behind.
+        var pulled = false
+        defer { if !pulled { try? FileManager.default.removeItem(at: dir) } }
         let local = dir.appendingPathComponent(db.name)
 
         switch device.platform {
@@ -93,6 +96,7 @@ struct DatabaseService: Sendable {
               (try? FileManager.default.attributesOfItem(atPath: local.path)[.size] as? Int) ?? 0 > 0 else {
             throw DBError.command("the pulled database was empty")
         }
+        pulled = true
         return local
     }
 
@@ -132,6 +136,53 @@ struct DatabaseService: Sendable {
                 rows.append((0..<n).map { i in cellValue(stmt, Int32(i)) })
             }
             return DBResultSet(columns: columns, rows: rows)
+        }
+    }
+
+    // MARK: - Bounded read (for a caller that serves someone else's SQL)
+
+    /// `rows(localDB:table:limit:offset:)` under `limits`.
+    func rows(localDB: URL, table: String, limit: Int, offset: Int,
+              limits: DBReadLimits, token: DBReadToken) throws -> DBResultSet {
+        try query(localDB: localDB,
+                  sql: "SELECT * FROM \(quoteIdent(table)) LIMIT \(max(0, limit)) OFFSET \(max(0, offset))",
+                  limits: limits, token: token)
+    }
+
+    /// `query(localDB:sql:)` under `limits`. Throws `DBLimitExceeded` past the row or byte cap.
+    /// The statement is interrupted (SQLite's own error, as `DBError.sqlite`) once the deadline
+    /// passes or `token` is cancelled, and a step that fails is an error, never a short result.
+    func query(localDB: URL, sql: String, limits: DBReadLimits, token: DBReadToken) throws -> DBResultSet {
+        try withDB(localDB) { db in
+            token.start(deadline: limits.deadline)
+            // Called between VM steps: the only way to stop a statement that never yields a row.
+            sqlite3_progress_handler(db, 1_000, { context in
+                guard let context else { return 0 }
+                return Unmanaged<DBReadToken>.fromOpaque(context).takeUnretainedValue().shouldStop ? 1 : 0
+            }, Unmanaged.passUnretained(token).toOpaque())
+            defer { sqlite3_progress_handler(db, 0, nil, nil) }
+
+            return try withExtendedLifetime(token) {
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                    throw DBError.sqlite(String(cString: sqlite3_errmsg(db)))
+                }
+                defer { sqlite3_finalize(stmt) }
+                let n = Int(sqlite3_column_count(stmt))
+                let columns = (0..<n).map { String(cString: sqlite3_column_name(stmt, Int32($0))) }
+                var rows: [[String?]] = []
+                var bytes = 0
+                while true {
+                    let rc = sqlite3_step(stmt)
+                    if rc == SQLITE_DONE { break }
+                    guard rc == SQLITE_ROW else { throw DBError.sqlite(String(cString: sqlite3_errmsg(db))) }
+                    let row = (0..<n).map { i in cellValue(stmt, Int32(i)) }
+                    bytes += DBReadLimits.bytes(in: row)
+                    if let exceeded = limits.exceeded(rows: rows.count + 1, bytes: bytes) { throw exceeded }
+                    rows.append(row)
+                }
+                return DBResultSet(columns: columns, rows: rows)
+            }
         }
     }
 
