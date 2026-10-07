@@ -19,6 +19,9 @@ const cloudAuthCommand = "gcloud auth login"
 const (
 	// authPollEvery is how often the home re-checks sign-in while it shows "Not signed in".
 	authPollEvery = 3 * time.Second
+	// authPollFor is how long those checks go on after the last key or click: each one runs
+	// gcloud in jacad, which a home left open on "Not signed in" should not do for ever.
+	authPollFor = 10 * time.Minute
 	// The waits for the calls that run gcloud in jacad, a little over the daemon's own limits
 	// (20 s for auth, 30 s to validate a project, 45 s to list log names).
 	authTimeout     = 25 * time.Second
@@ -95,6 +98,7 @@ type cloudHome struct {
 
 	armed      map[string]time.Time // the Remove buttons waiting for their second press
 	guard      pressGuard           // so a held key doesn't arm and confirm by itself
+	authUntil  time.Time            // sign-in is re-checked until then
 	quietUntil time.Time            // until then keys are ignored: a sheet closed by itself
 	toast      string
 	toastUntil time.Time
@@ -253,9 +257,16 @@ func (h *cloudHome) needsLogin() bool {
 // watchAuth re-checks sign-in every authPollEvery while the home shows "Not signed in", so the
 // pane updates by itself once the browser login completes: `gcloud auth login` runs in another
 // tab and nothing tells jacad when it has finished. One cloud.refreshAuth is in flight at a
-// time, and the checks stop when gcloud is signed in or the pane leaves the home.
+// time, and the checks stop when gcloud is signed in, when the pane leaves the home, and
+// authPollFor after the last key or click (the next one starts them again; Re-check always asks).
 func (h *cloudHome) watchAuth() {
 	if h.authWatch || !h.needsLogin() {
+		return
+	}
+	if h.authUntil.IsZero() {
+		h.authUntil = h.now().Add(authPollFor)
+	}
+	if !h.now().Before(h.authUntil) {
 		return
 	}
 	h.authWatch = true
@@ -526,6 +537,8 @@ func (h *cloudHome) handleKey(k []byte) bool {
 	if len(k) == 1 && k[0] == 0x03 {
 		return true
 	}
+	h.authUntil = h.now().Add(authPollFor) // someone is here: keep watching for the login
+	h.watchAuth()
 	if m, ok := parseMouse(k); ok {
 		if m.press && m.button == 0 {
 			h.guard.drop()
@@ -668,6 +681,8 @@ func (h *cloudHome) draw() {
 	case h.help:
 		if box := keysBox(h.helpKeys(), rows, cols); len(box) > 0 {
 			frame = overlay(frame, box, max(0, (rows-len(box))/2), max(0, (cols-cellWidth(stripSGR(box[0])))/2))
+		} else {
+			h.help = false // no room to draw it: it is closed, not left holding the keys unseen
 		}
 	case h.sheet != nil:
 		if box, top, left := h.sheet.box(rows, cols); len(box) > 0 {

@@ -598,7 +598,7 @@ func TestCloudSQLBarKeysAndClicks(t *testing.T) {
 	answer(t, queries, idRows(), nil)
 	frame = v.frame(40, 160)
 	head := stripSGR(frame[v.sql.top-1])
-	order := []string{"SQL filter · 0 shown · re-runs live", cloudLabelExamplesTitle, "Labels", "Schema", "Templates", "Save…", "Run"}
+	order := []string{"SQL filter · 0 shown · re-runs live", "Labels", "Schema", "Templates", "Save…", "Run"}
 	at := 0
 	for _, label := range order {
 		i := strings.Index(head[at:], label)
@@ -635,21 +635,15 @@ func TestCloudSQLBarKeysAndClicks(t *testing.T) {
 		t.Errorf("a click on Templates opened %+v", v.menu)
 	}
 	v.handleKey([]byte{0x1b})
-	click(cloudLabelExamplesTitle)
-	if _, ok := v.sheet.(*cloudLabelExamples); !ok {
-		t.Errorf("a click on %s opened %+v", cloudLabelExamplesTitle, v.sheet)
-	}
-	answer(t, queries, dbResultSet{}, nil)
-	v.handleKey([]byte{0x1b})
 
 	// Tab walks every stop and comes back; on the editor it moves on until Enter edits.
-	v.sql.stop, v.sql.editing = sqlStopExamples, false
+	v.sql.stop, v.sql.editing = sqlStopLabels, false
 	seen := []string{}
 	for range sqlStops {
 		seen = append(seen, v.sql.stop)
 		v.handleKey([]byte("\t"))
 	}
-	if !reflect.DeepEqual(seen, sqlStops) || v.sql.stop != sqlStopExamples {
+	if !reflect.DeepEqual(seen, sqlStops) || v.sql.stop != sqlStopLabels {
 		t.Errorf("Tab went over %v", seen)
 	}
 	v.handleKey([]byte("\x1b[Z"))
@@ -701,132 +695,6 @@ func TestCloudSQLBarKeysAndClicks(t *testing.T) {
 	v.frame(16, 160)
 	if v.sql.top == 0 || v.sql.editRows < 1 || v.sql.editRows >= cloudSQLEditorRows {
 		t.Errorf("in a short pane the SQL bar is at %d with %d editor rows", v.sql.top, v.sql.editRows)
-	}
-}
-
-// The label examples sheet: the keys of both scopes merged by bare key with the larger count,
-// and Save sending only the rules that differ from the default.
-func TestCloudSQLLabelExamples(t *testing.T) {
-	merged := mergeLabelCardinalities(sqlRows(
-		[]any{"labels", "user_id", "40"},
-		[]any{"labels", "tag", "3"},
-		[]any{"resource", "tag", "5"},
-		[]any{"resource", "user_id", "2"},
-		[]any{"resource", "zone", "1"},
-		[]any{"labels", "bad", "many"},
-		[]any{"labels", nil, "2"},
-		[]any{"short"},
-	))
-	want := []labelCardinality{{"resource", "tag", 5}, {"labels", "user_id", 40}, {"resource", "zone", 1}}
-	if !reflect.DeepEqual(merged, want) {
-		t.Fatalf("merged %+v", merged)
-	}
-	if !strings.HasPrefix(cloudLabelCardinalitySQL, "SELECT scope, k, COUNT(*) AS distinct_values FROM (\n  SELECT DISTINCT 'labels' AS scope") ||
-		!strings.HasSuffix(cloudLabelCardinalitySQL, ")\nGROUP BY scope, k\nORDER BY scope, k;") {
-		t.Errorf("cardinality SQL %q", cloudLabelCardinalitySQL)
-	}
-
-	v, calls, queries := testSQLViewer(t)
-	v.project.LabelExampleRulesByLogName = map[string]map[string]labelExampleRule{
-		testLogName: {"tag": {All: true, Count: 1}, "old": {Count: 4}, "plain": {Count: 1}},
-	}
-	v.setMode(cloudModeSQL)
-	answer(t, queries, idRows(), nil)
-	v.focus, v.sql.stop = cloudSQLBar, sqlStopExamples
-	v.handleKey([]byte("\r"))
-	sheet, ok := v.sheet.(*cloudLabelExamples)
-	if !ok || !sheet.loading || len(*queries) != 1 || (*queries)[0].sql != cloudLabelCardinalitySQL {
-		t.Fatalf("the sheet: %+v, %d queries", v.sheet, len(*queries))
-	}
-	setTermSize(t, 40, 120)
-	// Save does nothing while the keys load.
-	sheet.save()
-	if v.sheet == nil || len(*calls) != 0 {
-		t.Fatal("Save went through while loading")
-	}
-	answer(t, queries, dbResultSet{Columns: []string{"scope", "k", "distinct_values"}, Rows: sqlRows(
-		[]any{"labels", "tag", "3"}, []any{"labels", "user_id", "40"}, []any{"resource", "zone", "1"})}, nil)
-	box, _, _ := sheet.box(40, 120)
-	text := boxWords(box)
-	for _, want := range []string{
-		"Label examples for Claude How many example values of each label to send to Claude, so it learns the format. Default is 1. " +
-			"Set a low-cardinality label (e.g. tag) to All; keep a high-cardinality one (e.g. user_id) at 1. tag ● All − all +",
-		"labels · 3 values user_id ○ All − 1 + labels · 40 values zone ○ All − 1 + resource · 1 value Cancel Save",
-	} {
-		if !strings.Contains(text, want) {
-			t.Errorf("the sheet has no %q in %q", want, text)
-		}
-	}
-
-	// tag is All: its count doesn't step. Turning All off lets it, up to its 3 values.
-	sheet.focus = 0
-	v.handleKey([]byte("+"))
-	if got := sheet.rule("tag"); !got.All || got.Count != 1 {
-		t.Errorf("stepping a key set to All: %+v", got)
-	}
-	v.handleKey([]byte(" "))
-	for i := 0; i < 5; i++ {
-		v.handleKey([]byte("\x1b[C"))
-	}
-	if got := sheet.rule("tag"); got.All || got.Count != 3 {
-		t.Errorf("tag after All off and five steps: %+v", got)
-	}
-	// user_id: up one and back, which leaves the default. zone has one value and can't step.
-	v.handleKey([]byte("\x1b[B"))
-	v.handleKey([]byte("+"))
-	v.handleKey([]byte("-"))
-	v.handleKey([]byte("-"))
-	v.handleKey([]byte("\x1b[B"))
-	v.handleKey([]byte("+"))
-	if got := sheet.rule("user_id"); got.All || got.Count != 1 {
-		t.Errorf("user_id %+v", got)
-	}
-	if got := sheet.rule("zone"); got.All || got.Count != 1 {
-		t.Errorf("zone stepped past its one value: %+v", got)
-	}
-	v.handleKey([]byte("\r"))
-	if got := sheet.rule("zone"); !got.All {
-		t.Errorf("Enter on zone: %+v", got)
-	}
-	// Down to Cancel, right to Save, Enter.
-	v.handleKey([]byte("\x1b[B"))
-	v.handleKey([]byte("\x1b[C"))
-	v.handleKey([]byte("\r"))
-	if v.sheet != nil || len(*calls) != 1 || (*calls)[0].method != "cloud.setLabelExampleRules" {
-		t.Fatalf("Save sent %+v", *calls)
-	}
-	wantParams := map[string]any{"project": "proj-1", "logName": testLogName, "rules": map[string]labelExampleRule{
-		"tag": {Count: 3}, "old": {Count: 4}, "zone": {All: true, Count: 1},
-	}}
-	if !reflect.DeepEqual((*calls)[0].params, wantParams) {
-		t.Errorf("Save sent %+v, want %+v", (*calls)[0].params, wantParams)
-	}
-
-	// With nothing captured the sheet asks nothing and shows the app's notice; Esc cancels.
-	*calls = nil
-	v.setStream(cloudStreamState{})
-	v.openLabelExamples()
-	sheet = v.sheet.(*cloudLabelExamples)
-	box, _, _ = sheet.box(40, 120)
-	if sheet.loading || len(*queries) != 0 || !strings.Contains(stripSGR(strings.Join(box, "\n")), "No labels detected yet — capture some logs first.") {
-		t.Errorf("with no data: loading %v, %d queries", sheet.loading, len(*queries))
-	}
-	v.handleKey([]byte{0x1b})
-	if v.sheet != nil || len(*calls) != 0 {
-		t.Errorf("Esc: sheet %v, %d calls", v.sheet, len(*calls))
-	}
-	// A failed query leaves the sheet empty, and saving then sends no rules as an object.
-	v.setStream(cloudStreamState{HasData: true})
-	v.project.LabelExampleRulesByLogName = nil
-	v.openLabelExamples()
-	answer(t, queries, dbResultSet{}, errors.New("no such table"))
-	sheet = v.sheet.(*cloudLabelExamples)
-	if sheet.loading || len(sheet.rows) != 0 {
-		t.Errorf("after a failed query: loading %v, %d rows", sheet.loading, len(sheet.rows))
-	}
-	sheet.save()
-	if rules, ok := (*calls)[0].params["rules"].(map[string]labelExampleRule); !ok || rules == nil || len(rules) != 0 {
-		t.Errorf("saving nothing sent %#v", (*calls)[0].params["rules"])
 	}
 }
 
@@ -953,27 +821,6 @@ func TestCloudSQLFrameFits(t *testing.T) {
 	schema.selected = 0
 	check("schema back at the top")
 
-	v.openLabelExamples()
-	check("examples loading")
-	keys := [][]any{}
-	for i := 0; i < 30; i++ {
-		keys = append(keys, []any{"labels", fmt.Sprint("key-", i, "-", long[:i*3]), fmt.Sprint(i * 12345)})
-	}
-	keys = append(keys, []any{"resource " + long, "日本語", "1"})
-	answer(t, queries, dbResultSet{Rows: sqlRows(keys...)}, nil)
-	examples := v.sheet.(*cloudLabelExamples)
-	if len(examples.rows) != 31 {
-		t.Fatalf("%d example rows", len(examples.rows))
-	}
-	for i := 0; i < len(examples.rows)+2; i += 3 {
-		examples.focus = i
-		examples.toggleAll(i)
-		check(fmt.Sprint("examples on ", i))
-	}
-	examples.focus = len(examples.rows) + 1
-	check("examples on Save")
-	examples.rows = nil
-	check("examples with no labels")
 	v.sheet = nil
 	v.help = true
 	check("help")
