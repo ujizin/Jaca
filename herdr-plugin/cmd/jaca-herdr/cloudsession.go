@@ -100,6 +100,8 @@ type cloudHit struct {
 // query builder bar, in SQL mode the SQL editor bar, the log list with the detail panel beside
 // it, and the status bar. The stream runs in jacad; this is its view.
 type cloudViewer struct {
+	snack snackbar // "Copied"
+
 	p    *pane
 	back func() // returns to the home when the session runs in its pane; nil in a tab
 	left bool   // the pane moved on; results that land now are dropped
@@ -1037,9 +1039,14 @@ func (v *cloudViewer) copySelection() {
 func (v *cloudViewer) copy(text string) {
 	write := copyToClipboard
 	go func() {
-		if err := write(text); err != nil {
-			v.p.post(func() { v.fail(err) })
-		}
+		err := write(text)
+		v.p.post(func() {
+			if err != nil {
+				v.fail(err)
+			} else {
+				v.snack.show(v.p, copiedNotice)
+			}
+		})
 	}()
 }
 
@@ -1582,7 +1589,7 @@ func (v *cloudViewer) draw() {
 	if box, top, left := v.popup(rows, cols); len(box) > 0 {
 		frame = overlay(frame, box, top, left)
 	}
-	paintRows(frame)
+	paintRows(v.snack.over(frame, rows, cols))
 }
 
 // popup is the open popup's box and where it goes (0-based), nil when none is open.

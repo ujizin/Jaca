@@ -227,6 +227,12 @@ detail panel, and the date pickers of an absolute range (two text fields read as
 `2006-01-02 15:04`). A match mode is changed by pressing it until the wanted one shows, where
 the app opens a menu. A pane does not survive a jacad restart: it exits, and is opened again.
 
+## Copying
+
+Every copy in the log, network and Cloud Logging session panes (a button, a key, a menu item,
+a selection released) shows `Copied` for a moment near the bottom of the pane, the app's
+notice for it. A copy that fails shows the error instead.
+
 ## Colors
 
 Herdr doesn't pass its theme to plugins, so the panes work it out the way Herdr does: the

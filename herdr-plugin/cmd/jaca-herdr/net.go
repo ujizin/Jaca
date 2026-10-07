@@ -44,6 +44,7 @@ type netBodies struct {
 // netViewer is the app's network tab for the in-process agent (NetworkSessionView): the capture
 // of one app's requests, a detail pane beside the list, and the response overrides.
 type netViewer struct {
+	snack  snackbar // "Copied"
 	p      *pane
 	device device
 	back   func() // returns to the picker when the viewer runs in its pane; nil in a tab
@@ -736,9 +737,14 @@ func (v *netViewer) exportHAR() {
 func (v *netViewer) copy(text string) {
 	write := copyToClipboard
 	go func() {
-		if err := write(text); err != nil {
-			v.p.post(func() { v.err = err.Error() })
-		}
+		err := write(text)
+		v.p.post(func() {
+			if err != nil {
+				v.err = err.Error()
+			} else {
+				v.snack.show(v.p, copiedNotice)
+			}
+		})
 	}()
 }
 
@@ -1392,7 +1398,7 @@ func (v *netViewer) draw() {
 		box, top, left := v.overridesBox(rows, cols)
 		frame = overlay(frame, box, top, left)
 	}
-	paintRows(frame)
+	paintRows(v.snack.over(frame, rows, cols))
 }
 
 // barBuilder lays a toolbar out left to right, one or three rows tall, recording what each

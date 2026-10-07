@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -942,5 +943,27 @@ func TestHeldKeyNeverConfirms(t *testing.T) {
 				t.Fatalf("delay %v, interval %v: two presses made %v", delay, interval, calls.made)
 			}
 		}
+	}
+}
+
+// The snackbar shows over the bottom of a frame until its time is up.
+func TestSnackbar(t *testing.T) {
+	frame := func() []string { return []string{"a", "b", "c", "d", "e", "f"} }
+	var s snackbar
+	if got := s.over(frame(), 6, 40); !reflect.DeepEqual(got, frame()) {
+		t.Fatalf("an empty snackbar drew %q", got)
+	}
+	s.text, s.until = copiedNotice, time.Now().Add(time.Minute)
+	got := s.over(frame(), 6, 40)
+	// Centered: 8 cells in 40 start at column 17.
+	if !strings.Contains(got[3], " Copied ") || !strings.Contains(got[3], "\x1b[17G") {
+		t.Errorf("row 4 is %q", got[3])
+	}
+	if got := s.over(frame()[:3], 3, 40); !reflect.DeepEqual(got, frame()[:3]) {
+		t.Errorf("a pane too short for it drew %q", got)
+	}
+	s.until = time.Now().Add(-time.Second)
+	if got := s.over(frame(), 6, 40); !reflect.DeepEqual(got, frame()) || s.text != "" {
+		t.Errorf("a lapsed snackbar drew %q", got)
 	}
 }
