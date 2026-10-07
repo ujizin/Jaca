@@ -56,6 +56,14 @@ title = "Network"
 placement = "tab"
 command = ["bin/jaca-herdr", "pane", "network"]
 
+# The app's Browse Database: one app's local SQLite databases, read from a pulled snapshot.
+# Opened by the device picker like logs.
+[[panes]]
+id = "database"
+title = "Database"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "database"]
+
 # Cloud Logging: the home (projects, sign-in) in a popup and, in tabs it opens, the log sessions
 # (the same entrypoint, opened in a tab with the session in JACA_HERDR_CLOUD_SESSION).
 [[panes]]
@@ -67,7 +75,7 @@ command = ["bin/jaca-herdr", "pane", "cloud"]
 [[panes]]
 id = "projects"
 title = "Projects"
-placement = "split"
+placement = "tab"
 command = ["bin/jaca-herdr", "pane", "projects"]
 
 [[actions]]
