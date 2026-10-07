@@ -11,6 +11,7 @@ enum DaemonAreas {
         DevicesArea.install(on: server)
         LogsArea.install(on: server)
         CloudArea.install(on: server)
+        DatabaseArea.install(on: server)
         let overrides = OverridesArea.install(on: server)
         NetworkArea.install(on: server, interceptServices: {
             FeatureFlags.responseOverridesEnabled ? overrides.services() : nil

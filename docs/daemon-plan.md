@@ -6,7 +6,7 @@ areas as terminal panes, becomes a second one.
 
 Status: experimental, on branches `exp/daemon` and `exp/daemon-overrides` (the latter also
 carries response overrides; see the last section). Nothing merges to `main` until an area works
-end to end through the daemon. Last updated: 2026-10-06.
+end to end through the daemon. Last updated: 2026-10-07.
 
 ## Progress
 
@@ -21,6 +21,7 @@ end to end through the daemon. Last updated: 2026-10-06.
 | 6. Cloud logging | Done. Tested with a scripted poller, not against GCP. |
 | 7. Network capture | Done for the in-process agent. Companion capture stays in the app (see below). |
 | 7b. Response overrides | Done on branch `exp/daemon-overrides` (see below). |
+| 7c. Database browsing | Daemon side written (`DatabaseArea`, see the last section). Not built or run yet; the app still browses in-process. |
 | 8. Herdr plugin, full | Partly done: `devices` (a picker popup), `logs` (the log tab's filters, package picker and status bar), `network` (agent capture with response overrides), `gradle` and `projects` panes, `tools` (a picker for Gradle and Xcode), `xcode` and `cloud` (the home and the log sessions) panes, two actions. |
 
 ### Trying it
@@ -519,3 +520,53 @@ on toggle has no automated test (it needs a full `AppModel`).
 - A pending call has no deadline except `hello` and the CLI's short commands; a protocol-version
   mismatch still replaces the running daemon regardless of which build is newer.
 
+## Database browsing in the daemon (`DatabaseArea`)
+
+The app's read-only "Browse Database" feature (`DatabaseService`) served to a terminal client. The
+app's own Database tab still runs in-process (`DatabaseSession`); there is no `database` entry in
+`daemonAreas` because the app does not mirror this area.
+
+A session belongs to one device. The client lists an app's databases, pulls one into a temp dir
+(`jaca-db-<UUID>`), then reads that copy. The copy is a snapshot: pull again to refresh.
+
+| Method | Params | Result |
+|---|---|---|
+| `database.open` | `{id, device}` | `{id, existed}`. Idempotent by id. |
+| `database.databases` | `{id, package}` | `[{name, path}]`. The session keeps this list for the package. |
+| `database.pull` | `{id, package, database}` (`database` is a `path` listed for `package`) | `[{name, rowCount}]`. Replaces the session's copy and deletes the previous one. |
+| `database.rows` | `{id, database, table, limit, offset}` (`database` is the pulled `path`) | `{columns, rows}`. `limit` is clamped to 1...1000 (100 when absent), `offset` to 0 or more. |
+| `database.query` | `{id, database, sql}` (`database` is the pulled `path`) | `{columns, rows}`, at most 50000 rows. Refuses anything but SELECT / WITH / PRAGMA / EXPLAIN. |
+| `database.close` | `{id}` | `Bool`: whether it existed. Deletes the copy. |
+
+- **Only listed paths are pulled.** The session keeps one listing per package. `database.pull` looks
+  its `database` up in the listing for its `package`; any other string is an error and never
+  reaches adb. The device id and the package are validated where they enter (`DaemonInput`; an
+  empty package is refused too).
+- **Reads name their database.** A session holds one copy, the last pull to finish. `rows` and
+  `query` fail with `No database pulled in session <id>.` when `database` is not that copy's path,
+  so a client whose pull was overtaken by another does not get rows from the other database. The
+  check is by path only: two packages with the same relative path (Android's `databases/app.db`)
+  are not told apart, so a client pulls for one package at a time per session.
+- **Bounded reads** (`DatabaseArea.maxQueryRows`, `maxResultBytes`, `readDeadline`; the app's own
+  reads and `cloud.sessions.query` are not bounded by these):
+  - `query` over 50000 rows: `The result has more than 50000 rows. Add a LIMIT to the query.`
+  - `rows` or `query` over 64 MB of cell text: `The result is larger than 64 MB. Select fewer rows or columns.`
+  - a statement running for 30 s, or one whose session is closed or reaped meanwhile, is stopped
+    from SQLite's progress handler and fails with `SQLite: interrupted`.
+  - a step that fails is an error (`SQLite: <message>`), never a short result.
+- **Errors.** A missing session (`No database session <id>.`), an unlisted path
+  (`No database <path> in session <id>.`) and a read of a database that is not the pulled one are
+  `failed` (-32000). A `DBError` from the service (not debuggable, adb or SQLite failures, the
+  read-only refusal) is `failed` with its own description. A bad device id or package, or a
+  missing field, is `invalidParams` (-32602).
+- **Ordering.** `databases`, `pull`, `rows` and `query` are concurrent methods, so they do not wait
+  for an `open` sent just before them on the same connection. A client waits for each response
+  before the call that depends on it.
+- **Lifetime.** The area has no topics, so no subscriber tells the daemon a client is still there.
+  Every call marks its session as used when it starts and when it ends; one unused for
+  `JACAD_ORPHAN_SECONDS` (default 600) is closed and its copy deleted, even under a call that has
+  run that long. An open session keeps the daemon from idling out.
+- **Temp dirs.** A pull that fails removes the directory it made (`DatabaseService.pull`, so the
+  app's tab too).
+- **Limit.** Areas have no shutdown hook, so a copy still held when the daemon stops stays in the
+  temp dir until the system clears it.
