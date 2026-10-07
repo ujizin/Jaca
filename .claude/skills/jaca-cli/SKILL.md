@@ -20,7 +20,8 @@ open in the app and what it changes shows up there.
 2. `jaca logs list` and `jaca net list` show the open sessions. Empty tables mean nothing is open
    in the daemon: the user has to open a log or network tab in Jaca first. Sessions only live in
    the daemon when the app runs with daemon areas on (`defaults read dev.srsouza.Jaca daemonAreas`),
-   and network capture only when Settings → Network inspection is "Agent HTTPS debugging".
+   and network capture only when Settings → Network inspection is "Agent HTTPS debugging" (the
+   default; "HTTPS debugging" captures inside the app, out of reach).
    Don't change either setting yourself; tell the user what is missing.
 
 ## Rules of the road
@@ -87,9 +88,10 @@ jaca overrides rm 9c41
 - A rule only takes effect while a capture that supports overrides is running for that app; a
   rule with `hitCount` 0 after the app made the request has not matched (check the pattern and
   method) or nothing is armed.
-- With Settings → Network inspection on "HTTPS debugging" the app runs its own override engine.
-  A rule written by `jaca` is saved to the rule library, but the app lists it only after its next
-  edit of the library or a relaunch. Say so instead of reporting the rule as live.
+- Overrides apply only with Settings → Network inspection on "Agent HTTPS debugging" (the
+  default). With "HTTPS debugging" the app captures in-process: `net list` is empty, there is no
+  request to make a rule from, and existing rules answer nothing. Tell the user which mode is
+  needed instead of adding rules.
 
 ## Anything else
 
