@@ -86,6 +86,8 @@ func optionsFor(d device) []deviceOption {
 		// Named for how it captures: an inspector without the agent may sit beside it later.
 		options = append(options, deviceOption{"Inspect Network (Agent HTTP)", "network", "Jaca network - "})
 	}
+	// Offered for every device, as in the app: where it can't be done jacad says so.
+	options = append(options, deviceOption{"Browse Database", "database", "Jaca database - "})
 	return options
 }
 
@@ -205,9 +207,12 @@ func (d *devicePicker) confirm() {
 	options := optionsFor(dev)
 	option := options[clampIndex(d.option, len(options))]
 	if !d.launch {
-		if option.entrypoint == "network" {
+		switch option.entrypoint {
+		case "network":
 			d.p.screen = newNetViewer(d.p, dev, d.back)
-		} else {
+		case "database":
+			d.p.screen = newDBViewer(d.p, dev, d.back)
+		default:
 			d.p.screen = newLogViewer(d.p, dev, d.back)
 		}
 		return

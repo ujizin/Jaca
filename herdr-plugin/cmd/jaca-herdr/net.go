@@ -70,7 +70,6 @@ type netViewer struct {
 
 	detail    bool // the detail pane is open
 	tab       int
-	detailTop int
 	bodies    map[string]*netBodies // by transaction id; nil while not fetched
 	bodyFinal map[string]bool       // the bodies were fetched after the request finished
 	fetching  map[string]bool
@@ -97,19 +96,12 @@ type netViewer struct {
 
 	// The pane as last drawn, for the mouse.
 	listTop, listRows, listW int
-	detailMeta               []detailLine // the detail content's lines: their values and buttons
-	detailText               []string     // and their text, without styles
-	detailFirst              int          // the screen row of the first detail content line
-	detailX                  int          // the screen column of a content line's first cell
-	detailRoom               int          // the content rows on screen
-	dsel                     detailSel    // the text selected in the detail content
-	lastPress                time.Time    // the last press on the detail content, and its line,
-	lastLine                 int          // for a double click
-	tabHits                  []hit
-	closeX0, closeX1         int
-	bannerRow                int
-	bannerX0, bannerX1       int
-	helpX0, helpX1           int
+	detailContent
+	tabHits            []hit
+	closeX0, closeX1   int
+	bannerRow          int
+	bannerX0, bannerX1 int
+	helpX0, helpX1     int
 }
 
 // runNetworkPane is the viewer for the device the picker passed in deviceEnv. Opened without
@@ -974,11 +966,13 @@ func (v *netViewer) handleKey(k []byte) bool {
 
 // detailLine is one line of the detail content: the value it shows part of (empty for a
 // heading or a button), where the value starts on the line, whether a long value wrapped onto
-// it, and for a button what a click on its cells x0..x1 does.
+// it, and for a button what a click on its cells x0..x1 does. Lines with the same group (other
+// than 0) show one value that has line breaks of its own: a double click selects them all.
 type detailLine struct {
 	value  string
 	valueX int
 	cont   bool
+	group  int
 	act    func()
 	x0, x1 int
 }
@@ -1037,24 +1031,39 @@ func cellSlice(s string, from, to int) string {
 	return b.String()
 }
 
+// detailContent is the content of a detail pane as last drawn and the text selected in it with
+// the mouse. The network and database viewers both hold one.
+type detailContent struct {
+	detailTop   int          // the first content line drawn
+	detailMeta  []detailLine // the content's lines: their values and buttons,
+	detailDrawn []string     // and the lines as drawn
+	detailText  []string     // their text without styles, where a viewer keeps it
+	detailFirst int          // the screen row of the first content line
+	detailX     int          // the screen column of a content line's first cell
+	detailRoom  int          // the content rows on screen
+	dsel        detailSel    // the text selected in the content
+	lastPress   time.Time    // the last press on the content, and its line,
+	lastLine    int          // for a double click
+}
+
 // selectedDetailText is the selection as text: a value that wrapped over several lines comes
 // back in one piece, and other lines are separated by a line break.
-func (v *netViewer) selectedDetailText() string {
-	if !v.dsel.on {
+func (d *detailContent) selectedDetailText() string {
+	if !d.dsel.on {
 		return ""
 	}
-	l0, _, l1, _ := v.dsel.ordered()
+	l0, _, l1, _ := d.dsel.ordered()
 	var b strings.Builder
-	for i := max(0, l0); i <= l1 && i < len(v.detailText) && i < len(v.detailMeta); i++ {
-		from, to, ok := v.dsel.span(i, v.detailMeta)
+	for i := max(0, l0); i <= l1 && i < len(d.detailDrawn) && i < len(d.detailMeta); i++ {
+		from, to, ok := d.dsel.span(i, d.detailMeta)
 		if !ok {
 			continue
 		}
-		if b.Len() > 0 && !v.detailMeta[i].cont {
+		if b.Len() > 0 && !d.detailMeta[i].cont {
 			b.WriteString("\n")
 		}
-		part := cellSlice(v.detailText[i], from, to)
-		if i == l1 || i+1 >= len(v.detailMeta) || !v.detailMeta[i+1].cont {
+		part := cellSlice(stripSGR(d.detailDrawn[i]), from, to)
+		if i == l1 || i+1 >= len(d.detailMeta) || !d.detailMeta[i+1].cont {
 			part = strings.TrimRight(part, " ")
 		}
 		b.WriteString(part)
@@ -1063,85 +1072,115 @@ func (v *netViewer) selectedDetailText() string {
 }
 
 // detailAt is the content line and cell under the pointer, kept inside the content.
-func (v *netViewer) detailAt(m mouseEvent) (line, col int) {
-	line = max(0, min(m.y-v.detailFirst+v.detailTop, len(v.detailMeta)-1))
-	return line, max(0, m.x-v.detailX)
+func (d *detailContent) detailAt(m mouseEvent) (line, col int) {
+	line = max(0, min(m.y-d.detailFirst+d.detailTop, len(d.detailMeta)-1))
+	return line, max(0, m.x-d.detailX)
 }
 
 // detailPress is a left press on the detail content: a button is pressed, a second press on
 // the same line selects and copies its whole value, and anything else starts a selection that
-// a drag extends.
-func (v *netViewer) detailPress(m mouseEvent) {
-	if m.y < v.detailFirst || len(v.detailMeta) == 0 || m.y-v.detailFirst+v.detailTop >= len(v.detailMeta) {
-		v.dsel = detailSel{}
+// a drag extends. copy is what copies a text.
+func (d *detailContent) detailPress(m mouseEvent, copy func(string)) {
+	if m.y < d.detailFirst || len(d.detailMeta) == 0 || m.y-d.detailFirst+d.detailTop >= len(d.detailMeta) {
+		d.dsel = detailSel{}
 		return
 	}
-	line, col := v.detailAt(m)
-	if l := v.detailMeta[line]; l.act != nil {
+	line, col := d.detailAt(m)
+	if l := d.detailMeta[line]; l.act != nil {
 		if col >= l.x0 && col <= l.x1 {
 			l.act()
 		}
-		v.dsel = detailSel{}
+		d.dsel = detailSel{}
 		return
 	}
 	now := time.Now()
-	double := line == v.lastLine && now.Sub(v.lastPress) < 400*time.Millisecond
-	v.lastPress, v.lastLine = now, line
-	if double && v.detailMeta[line].value != "" {
+	double := line == d.lastLine && now.Sub(d.lastPress) < 400*time.Millisecond
+	d.lastPress, d.lastLine = now, line
+	if double && d.detailMeta[line].value != "" {
 		first, last := line, line
-		for first > 0 && v.detailMeta[first].cont {
+		for first > 0 && d.detailMeta[first].cont {
 			first--
 		}
-		for last+1 < len(v.detailMeta) && v.detailMeta[last+1].cont {
+		for last+1 < len(d.detailMeta) && d.detailMeta[last+1].cont {
 			last++
 		}
-		v.dsel = detailSel{on: true, line0: first, col0: v.detailMeta[first].valueX, line1: last, col1: 1 << 29}
-		v.copy(v.detailMeta[line].value)
+		// A value with line breaks of its own: all of its lines.
+		if group := d.detailMeta[line].group; group != 0 {
+			for first > 0 && d.detailMeta[first-1].group == group {
+				first--
+			}
+			for last+1 < len(d.detailMeta) && d.detailMeta[last+1].group == group {
+				last++
+			}
+		}
+		d.dsel = detailSel{on: true, line0: first, col0: d.detailMeta[first].valueX, line1: last, col1: 1 << 29}
+		copy(d.detailMeta[line].value)
 		return
 	}
-	v.dsel = detailSel{on: true, dragging: true, line0: line, col0: col, line1: line, col1: col}
+	d.dsel = detailSel{on: true, dragging: true, line0: line, col0: col, line1: line, col1: col}
 }
 
 // detailDrag extends the selection to the pointer, scrolling when it leaves the content, and
 // on release copies what is selected. A press released where it began selects nothing.
-func (v *netViewer) detailDrag(m mouseEvent, released bool) {
+func (d *detailContent) detailDrag(m mouseEvent, released bool, copy func(string)) {
 	if !released {
 		switch {
-		case m.y < v.detailFirst:
-			v.detailTop = max(0, v.detailTop-1)
-		case m.y >= v.detailFirst+v.detailRoom:
-			v.detailTop++
+		case m.y < d.detailFirst:
+			d.detailTop = max(0, d.detailTop-1)
+		case m.y >= d.detailFirst+d.detailRoom:
+			d.detailTop++
 		}
-		v.dsel.line1, v.dsel.col1 = v.detailAt(m)
+		d.dsel.line1, d.dsel.col1 = d.detailAt(m)
 		return
 	}
-	v.dsel.dragging = false
-	if v.dsel.line0 == v.dsel.line1 && v.dsel.col0 == v.dsel.col1 {
-		v.dsel = detailSel{}
+	d.dsel.dragging = false
+	if d.dsel.line0 == d.dsel.line1 && d.dsel.col0 == d.dsel.col1 {
+		d.dsel = detailSel{}
 		return
 	}
-	v.lastPress = time.Time{} // a drag is not the first half of a double click
-	if text := v.selectedDetailText(); text != "" {
-		v.copy(text)
+	d.lastPress = time.Time{} // a drag is not the first half of a double click
+	if text := d.selectedDetailText(); text != "" {
+		copy(text)
 	}
 }
 
 // detailMenu is a right click on the detail content: Copy for the value under the pointer, or
-// for the selection when the click is on it.
-func (v *netViewer) detailMenu(m mouseEvent) {
-	if m.y < v.detailFirst || m.y-v.detailFirst+v.detailTop >= len(v.detailMeta) {
-		return
+// for the selection when the click is on it. Nil when there is nothing to copy there.
+func (d *detailContent) detailMenu(m mouseEvent, copy func(string)) *popupMenu {
+	if m.y < d.detailFirst || len(d.detailMeta) == 0 || m.y-d.detailFirst+d.detailTop >= len(d.detailMeta) {
+		return nil
 	}
-	line, _ := v.detailAt(m)
-	text := v.detailMeta[line].value
-	if _, _, ok := v.dsel.span(line, v.detailMeta); ok {
-		text = v.selectedDetailText()
+	line, _ := d.detailAt(m)
+	text := d.detailMeta[line].value
+	if _, _, ok := d.dsel.span(line, d.detailMeta); ok {
+		text = d.selectedDetailText()
 	}
 	if text == "" {
-		return
+		return nil
 	}
-	v.menu = &popupMenu{x: m.x, y: m.y, items: []menuItem{{"Copy", func() { v.copy(text) }}}}
-	v.focus = netMenu
+	return &popupMenu{x: m.x, y: m.y, items: []menuItem{{"Copy", func() { copy(text) }}}}
+}
+
+// detailRows draws the content lines w cells wide in at most room rows, from detailTop, with
+// the selected text reversed, and records them for the mouse. Each row is a space and the
+// line, filled out to w cells. Only the lines on screen are looked at, so the content can be
+// long.
+func (d *detailContent) detailRows(lines []string, meta []detailLine, w, room int) []string {
+	d.detailMeta, d.detailDrawn, d.detailText, d.detailRoom = meta, lines, nil, room
+	d.detailTop = max(0, min(d.detailTop, len(lines)-room))
+	var out []string
+	for i := d.detailTop; i < len(lines) && len(out) < room; i++ {
+		row := lines[i]
+		if cellWidth(stripSGR(row)) > w-1 { // a line the pane is too narrow for, plain and cut
+			row = clip(stripSGR(row), w-1)
+		}
+		if from, to, ok := d.dsel.span(i, meta); ok { // the selected part, reversed
+			text := stripSGR(row)
+			row = cellSlice(text, 0, from) + sgrRev + cellSlice(text, from, to) + sgrReset + cellSlice(text, to, cellWidth(text))
+		}
+		out = append(out, " "+padStyled(row, w-1))
+	}
+	return out
 }
 
 // page scrolls the detail pane when it is open, else moves the selection a page.
@@ -1196,7 +1235,7 @@ func (v *netViewer) mouse(m mouseEvent) {
 		return
 	}
 	if v.dsel.dragging && (m.button&mouseDrag != 0 || released) {
-		v.detailDrag(m, released)
+		v.detailDrag(m, released, v.copy)
 		return
 	}
 	if !m.press {
@@ -1275,10 +1314,12 @@ func (v *netViewer) mouse(m mouseEvent) {
 				}
 			}
 		default:
-			v.detailPress(m)
+			v.detailPress(m, v.copy)
 		}
 	case inDetail && m.button == 2:
-		v.detailMenu(m)
+		if menu := v.detailMenu(m, v.copy); menu != nil {
+			v.menu, v.focus = menu, netMenu
+		}
 	case inDetail:
 	case v.showsChooser() && m.button == 0 && m.y >= v.listTop:
 		v.focus = netList
@@ -1860,7 +1901,7 @@ func (v *netViewer) detailColumn(w, n int) []string {
 	if v.listW > 0 {
 		x++
 	}
-	v.closeX0, v.closeX1, v.tabHits, v.detailMeta, v.detailText = 0, 0, v.tabHits[:0], nil, nil
+	v.closeX0, v.closeX1, v.tabHits, v.detailMeta, v.detailDrawn, v.detailText = 0, 0, v.tabHits[:0], nil, nil, nil
 	v.detailX = x + 1
 	if w < len(escClose)+4 {
 		for len(out) < n {
@@ -1899,21 +1940,10 @@ func (v *netViewer) detailColumn(w, n int) []string {
 		out = append(out, " "+sgrDim+fit("Select a request to inspect it.", w-1)+sgrReset)
 	} else {
 		lines, meta := v.detailLines(t, w-2)
-		v.detailMeta, v.detailText, v.detailRoom = meta, make([]string, len(lines)), room
+		out = append(out, v.detailRows(lines, meta, w, room)...)
+		v.detailText = make([]string, len(lines))
 		for i, line := range lines {
 			v.detailText[i] = stripSGR(line)
-		}
-		v.detailTop = max(0, min(v.detailTop, len(lines)-room))
-		for i := v.detailTop; i < len(lines) && len(out) < n; i++ {
-			row := lines[i]
-			if cellWidth(stripSGR(row)) > w-1 { // a line the pane is too narrow for, plain and cut
-				row = clip(stripSGR(row), w-1)
-			}
-			if from, to, ok := v.dsel.span(i, meta); ok { // the selected part, reversed
-				text := stripSGR(row)
-				row = cellSlice(text, 0, from) + sgrRev + cellSlice(text, from, to) + sgrReset + cellSlice(text, to, cellWidth(text))
-			}
-			out = append(out, " "+padStyled(row, w-1))
 		}
 	}
 	for len(out) < n {
@@ -1960,29 +1990,41 @@ type appPicker struct {
 
 // open shows the list and fetches it again, so a failed listing is retried by reopening.
 func (a *appPicker) open(p *pane, deviceID string) {
-	a.query.set("")
-	a.selected = 0
-	if a.loading {
+	if !a.begin() {
 		return
 	}
-	a.loading = true
 	go func() {
 		var list []appEntry
 		_ = p.c.Call("devices.apps", map[string]any{"deviceID": deviceID}, &list)
-		p.post(func() {
-			a.loading = false
-			if len(list) == 0 {
-				return // keep the last list when a refresh comes back empty
-			}
-			sort.SliceStable(list, func(i, j int) bool {
-				if list[i].IsUserApp != list[j].IsUserApp {
-					return list[i].IsUserApp
-				}
-				return strings.ToLower(list[i].display()) < strings.ToLower(list[j].display())
-			})
-			a.apps = list
-		})
+		p.post(func() { a.loaded(list) })
 	}()
+}
+
+// begin resets the search for a newly shown list. False when a listing is already in flight,
+// so the caller starts no other.
+func (a *appPicker) begin() bool {
+	a.query.set("")
+	a.selected = 0
+	if a.loading {
+		return false
+	}
+	a.loading = true
+	return true
+}
+
+// loaded takes a listing: user apps first, then by name.
+func (a *appPicker) loaded(list []appEntry) {
+	a.loading = false
+	if len(list) == 0 {
+		return // keep the last list when a refresh comes back empty
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].IsUserApp != list[j].IsUserApp {
+			return list[i].IsUserApp
+		}
+		return strings.ToLower(list[i].display()) < strings.ToLower(list[j].display())
+	})
+	a.apps = list
 }
 
 func (a *appPicker) filtered() []appEntry {
