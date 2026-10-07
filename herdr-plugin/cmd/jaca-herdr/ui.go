@@ -294,6 +294,38 @@ func (g *pressGuard) pressed(now time.Time) time.Time {
 	return now
 }
 
+// snackbar is a short notice over the bottom of a pane, for something done that leaves nothing
+// else to see (a copy).
+type snackbar struct {
+	text  string
+	until time.Time
+}
+
+const snackLife = 1600 * time.Millisecond
+
+// show puts text up for snackLife. The pane is drawn again when it lapses.
+func (s *snackbar) show(p *pane, text string) {
+	s.text, s.until = text, time.Now().Add(snackLife)
+	time.AfterFunc(snackLife+10*time.Millisecond, func() { p.post(func() {}) })
+}
+
+// over draws the notice onto a frame, in the style of the popups' button, centered two rows
+// above the status bar. A frame with no room for it is left as it is.
+func (s *snackbar) over(frame []string, rows, cols int) []string {
+	if s.text == "" || !time.Now().Before(s.until) {
+		s.text = ""
+		return frame
+	}
+	label := " " + s.text + " "
+	if rows < 4 || cellWidth(label) > cols {
+		return frame
+	}
+	return overlay(frame, []string{closeButton(label)}, rows-3, (cols-cellWidth(label))/2)
+}
+
+// copied is the notice for a copy, the app's.
+const copiedNotice = "Copied"
+
 func isEnter(k []byte) bool { return len(k) == 1 && (k[0] == '\r' || k[0] == '\n') }
 func isEsc(k []byte) bool   { return len(k) == 1 && k[0] == 0x1b }
 

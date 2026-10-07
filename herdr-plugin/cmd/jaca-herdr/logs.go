@@ -53,6 +53,7 @@ const (
 // regex and system-log chips, the text filter, the package filter with its installed-apps list,
 // clear, and the status bar.
 type logViewer struct {
+	snack  snackbar // "Copied"
 	p      *pane
 	device device
 	back   func() // returns to the picker when the viewer runs in its pane; nil in a tab
@@ -824,9 +825,14 @@ func (v *logViewer) copyLines(messagesOnly bool) {
 func (v *logViewer) copy(text string) {
 	write := copyToClipboard
 	go func() {
-		if err := write(text); err != nil {
-			v.p.post(func() { v.err = err.Error() })
-		}
+		err := write(text)
+		v.p.post(func() {
+			if err != nil {
+				v.err = err.Error()
+			} else {
+				v.snack.show(v.p, copiedNotice)
+			}
+		})
 	}()
 }
 
@@ -1145,7 +1151,7 @@ func (v *logViewer) draw() {
 		box := v.menu.box(rows, cols)
 		frame = overlay(frame, box, v.menu.top-1, v.menu.left-1)
 	}
-	paintRows(frame)
+	paintRows(v.snack.over(frame, rows, cols))
 }
 
 // levelChip is a selected level chip's style: the level's badge color as its background.
