@@ -96,8 +96,14 @@ type netViewer struct {
 
 	// The pane as last drawn, for the mouse.
 	listTop, listRows, listW int
-	detailActs               map[int]func() // detail content line -> what a click on it does
-	detailFirst              int            // the screen row of the first detail content line
+	detailMeta               []detailLine // the detail content's lines: their values and buttons
+	detailText               []string     // and their text, without styles
+	detailFirst              int          // the screen row of the first detail content line
+	detailX                  int          // the screen column of a content line's first cell
+	detailRoom               int          // the content rows on screen
+	dsel                     detailSel    // the text selected in the detail content
+	lastPress                time.Time    // the last press on the detail content, and its line,
+	lastLine                 int          // for a double click
 	tabHits                  []hit
 	closeX0, closeX1         int
 	bannerRow                int
@@ -533,7 +539,7 @@ func (v *netViewer) moveTo(row int) {
 	}
 	t := v.txns[v.visible[clampIndex(row, len(v.visible))]]
 	if t.ID != v.selectedID {
-		v.selectedID, v.detailTop = t.ID, 0
+		v.selectedID, v.detailTop, v.dsel = t.ID, 0, detailSel{}
 	}
 	v.scrolled = false
 	if v.detail {
@@ -960,6 +966,178 @@ func (v *netViewer) handleKey(k []byte) bool {
 	return false
 }
 
+// detailLine is one line of the detail content: the value it shows part of (empty for a
+// heading or a button), where the value starts on the line, whether a long value wrapped onto
+// it, and for a button what a click on its cells x0..x1 does.
+type detailLine struct {
+	value  string
+	valueX int
+	cont   bool
+	act    func()
+	x0, x1 int
+}
+
+// detailSel is the text selected in the detail content, from the cell the drag began on to the
+// one it is on: line indexes into the content and cells of a line.
+type detailSel struct {
+	on, dragging bool
+	line0, col0  int
+	line1, col1  int
+}
+
+// ordered is the selection's ends, the earlier first.
+func (s detailSel) ordered() (l0, c0, l1, c1 int) {
+	if s.line0 < s.line1 || (s.line0 == s.line1 && s.col0 <= s.col1) {
+		return s.line0, s.col0, s.line1, s.col1
+	}
+	return s.line1, s.col1, s.line0, s.col0
+}
+
+// span is the cells of line i the selection covers. The padding before the part of a value
+// that wrapped onto the line is never part of it.
+func (s detailSel) span(i int, meta []detailLine) (from, to int, ok bool) {
+	if !s.on || i < 0 || i >= len(meta) {
+		return 0, 0, false
+	}
+	l0, c0, l1, c1 := s.ordered()
+	if i < l0 || i > l1 {
+		return 0, 0, false
+	}
+	from, to = 0, 1<<30
+	if i == l0 {
+		from = c0
+	}
+	if i == l1 {
+		to = c1 + 1
+	}
+	if meta[i].cont {
+		from = max(from, meta[i].valueX)
+	}
+	return from, to, from < to
+}
+
+// cellSlice is the part of s in cells from..to (to excluded).
+func cellSlice(s string, from, to int) string {
+	var b strings.Builder
+	at, prev := 0, 0
+	for _, r := range s {
+		w := widthAfter(r, prev)
+		if at >= from && at+w <= to {
+			b.WriteRune(r)
+		}
+		at += w
+		prev = runeWidth(r)
+	}
+	return b.String()
+}
+
+// selectedDetailText is the selection as text: a value that wrapped over several lines comes
+// back in one piece, and other lines are separated by a line break.
+func (v *netViewer) selectedDetailText() string {
+	if !v.dsel.on {
+		return ""
+	}
+	l0, _, l1, _ := v.dsel.ordered()
+	var b strings.Builder
+	for i := max(0, l0); i <= l1 && i < len(v.detailText) && i < len(v.detailMeta); i++ {
+		from, to, ok := v.dsel.span(i, v.detailMeta)
+		if !ok {
+			continue
+		}
+		if b.Len() > 0 && !v.detailMeta[i].cont {
+			b.WriteString("\n")
+		}
+		part := cellSlice(v.detailText[i], from, to)
+		if i == l1 || i+1 >= len(v.detailMeta) || !v.detailMeta[i+1].cont {
+			part = strings.TrimRight(part, " ")
+		}
+		b.WriteString(part)
+	}
+	return b.String()
+}
+
+// detailAt is the content line and cell under the pointer, kept inside the content.
+func (v *netViewer) detailAt(m mouseEvent) (line, col int) {
+	line = max(0, min(m.y-v.detailFirst+v.detailTop, len(v.detailMeta)-1))
+	return line, max(0, m.x-v.detailX)
+}
+
+// detailPress is a left press on the detail content: a button is pressed, a second press on
+// the same line selects and copies its whole value, and anything else starts a selection that
+// a drag extends.
+func (v *netViewer) detailPress(m mouseEvent) {
+	if m.y < v.detailFirst || len(v.detailMeta) == 0 || m.y-v.detailFirst+v.detailTop >= len(v.detailMeta) {
+		v.dsel = detailSel{}
+		return
+	}
+	line, col := v.detailAt(m)
+	if l := v.detailMeta[line]; l.act != nil {
+		if col >= l.x0 && col <= l.x1 {
+			l.act()
+		}
+		v.dsel = detailSel{}
+		return
+	}
+	now := time.Now()
+	double := line == v.lastLine && now.Sub(v.lastPress) < 400*time.Millisecond
+	v.lastPress, v.lastLine = now, line
+	if double && v.detailMeta[line].value != "" {
+		first, last := line, line
+		for first > 0 && v.detailMeta[first].cont {
+			first--
+		}
+		for last+1 < len(v.detailMeta) && v.detailMeta[last+1].cont {
+			last++
+		}
+		v.dsel = detailSel{on: true, line0: first, col0: v.detailMeta[first].valueX, line1: last, col1: 1 << 29}
+		v.copy(v.detailMeta[line].value)
+		return
+	}
+	v.dsel = detailSel{on: true, dragging: true, line0: line, col0: col, line1: line, col1: col}
+}
+
+// detailDrag extends the selection to the pointer, scrolling when it leaves the content, and
+// on release copies what is selected. A press released where it began selects nothing.
+func (v *netViewer) detailDrag(m mouseEvent, released bool) {
+	if !released {
+		switch {
+		case m.y < v.detailFirst:
+			v.detailTop = max(0, v.detailTop-1)
+		case m.y >= v.detailFirst+v.detailRoom:
+			v.detailTop++
+		}
+		v.dsel.line1, v.dsel.col1 = v.detailAt(m)
+		return
+	}
+	v.dsel.dragging = false
+	if v.dsel.line0 == v.dsel.line1 && v.dsel.col0 == v.dsel.col1 {
+		v.dsel = detailSel{}
+		return
+	}
+	v.lastPress = time.Time{} // a drag is not the first half of a double click
+	if text := v.selectedDetailText(); text != "" {
+		v.copy(text)
+	}
+}
+
+// detailMenu is a right click on the detail content: Copy for the value under the pointer, or
+// for the selection when the click is on it.
+func (v *netViewer) detailMenu(m mouseEvent) {
+	if m.y < v.detailFirst || m.y-v.detailFirst+v.detailTop >= len(v.detailMeta) {
+		return
+	}
+	line, _ := v.detailAt(m)
+	text := v.detailMeta[line].value
+	if _, _, ok := v.dsel.span(line, v.detailMeta); ok {
+		text = v.selectedDetailText()
+	}
+	if text == "" {
+		return
+	}
+	v.menu = &popupMenu{x: m.x, y: m.y, items: []menuItem{{"Copy", func() { v.copy(text) }}}}
+	v.focus = netMenu
+}
+
 // page scrolls the detail pane when it is open, else moves the selection a page.
 func (v *netViewer) page(dir int) {
 	if v.detail {
@@ -971,7 +1149,7 @@ func (v *netViewer) page(dir int) {
 
 func (v *netViewer) setTab(tab int) {
 	if v.detail {
-		v.tab, v.detailTop = (tab+len(netTabs))%len(netTabs), 0
+		v.tab, v.detailTop, v.dsel = (tab+len(netTabs))%len(netTabs), 0, detailSel{}
 	}
 }
 
@@ -1009,6 +1187,10 @@ func (v *netViewer) mouse(m mouseEvent) {
 	released := !m.press || (m.button&mouseDrag == 0 && m.button&3 == 3)
 	if v.dragging && (m.button&mouseDrag != 0 || released) {
 		v.timelineMouse(m, released)
+		return
+	}
+	if v.dsel.dragging && (m.button&mouseDrag != 0 || released) {
+		v.detailDrag(m, released)
 		return
 	}
 	if !m.press {
@@ -1087,10 +1269,10 @@ func (v *netViewer) mouse(m mouseEvent) {
 				}
 			}
 		default:
-			if act := v.detailActs[m.y-v.detailFirst+v.detailTop]; act != nil && m.y >= v.detailFirst {
-				act()
-			}
+			v.detailPress(m)
 		}
+	case inDetail && m.button == 2:
+		v.detailMenu(m)
 	case inDetail:
 	case v.showsChooser() && m.button == 0 && m.y >= v.listTop:
 		v.focus = netList
@@ -1553,39 +1735,62 @@ func (v *netViewer) bodyText(t netTransaction, request bool) string {
 
 // detailLines is the selected request's detail for the open tab, w cells wide, with what a
 // click does on the lines that are buttons.
-func (v *netViewer) detailLines(t netTransaction, w int) (lines []string, acts map[int]func()) {
-	acts = map[int]func(){}
+func (v *netViewer) detailLines(t netTransaction, w int) (lines []string, meta []detailLine) {
+	// add appends a content line. value is what the line shows part of (a field's value, a
+	// body), valueX the cell it starts at, and cont marks a line a long value wrapped onto.
+	add := func(line, value string, valueX int, cont bool) {
+		lines = append(lines, line)
+		meta = append(meta, detailLine{value: value, valueX: valueX, cont: cont})
+	}
+	plain := func(line string) { add(line, "", 0, false) }
 	labelW := min(20, max(1, w/2))
 	field := func(label, value string) {
-		wrapped := wrapCells(value, max(1, w-labelW))
-		for i, part := range wrapped {
+		for i, part := range wrapCells(value, max(1, w-labelW)) {
 			head := strings.Repeat(" ", labelW)
 			if i == 0 {
 				head = sgrDim + fit(strings.ToUpper(label), labelW) + sgrReset
 			}
-			lines = append(lines, head+part)
+			add(head+part, value, labelW, i > 0)
 		}
 	}
-	button := func(label string, act func()) {
-		acts[len(lines)] = act
-		lines = append(lines, sgrUnder+label+sgrReset)
+	// button puts a copy button at the right of a line that starts with left, in the style of
+	// the popups' close button.
+	button := func(left, label string, act func()) {
+		label = " " + label + " "
+		room := w - cellWidth(stripSGR(left)) - len(label)
+		if room < 1 {
+			left, room = "", max(0, w-len(label))
+		}
+		plain(left + strings.Repeat(" ", room) + closeButton(label))
+		meta[len(meta)-1].act, meta[len(meta)-1].x0, meta[len(meta)-1].x1 = act, room+cellWidth(stripSGR(left)), w-1
 	}
 	body := func(request bool) {
 		text := v.bodyText(t, request)
 		if text == "" {
-			lines = append(lines, sgrDim+"No body."+sgrReset)
+			plain(sgrDim + "No body." + sgrReset)
 			return
 		}
-		button("Copy", func() { v.copy(text) })
-		lines = append(lines, "")
-		lines = append(lines, wrapCells(text, w)...)
+		button("", "Copy", func() { v.copy(text) })
+		plain("")
+		for _, para := range strings.Split(text, "\n") {
+			for i, part := range wrapCells(para, w) {
+				add(part, text, 0, i > 0)
+			}
+		}
 	}
 	headers := func(title string, list []headerPair) {
-		lines = append(lines, sgrDim+strings.ToUpper(title)+sgrReset)
+		var text []string
+		for _, h := range list {
+			text = append(text, h.Name+": "+h.Value)
+		}
+		heading := sgrDim + strings.ToUpper(title) + sgrReset
 		if len(list) == 0 {
-			lines = append(lines, "—", "")
+			plain(heading)
+			plain("—")
+			plain("")
 			return
 		}
+		button(heading, "Copy "+title, func() { v.copy(strings.Join(text, "\n")) })
 		nameW := min(28, w/3)
 		for _, h := range list {
 			for i, part := range wrapCells(h.Value, max(1, w-nameW-1)) {
@@ -1593,15 +1798,10 @@ func (v *netViewer) detailLines(t netTransaction, w int) (lines []string, acts m
 				if i == 0 {
 					head = sgrCyan + fit(sanitize(h.Name), nameW) + sgrReset + " "
 				}
-				lines = append(lines, head+part)
+				add(head+part, h.Value, nameW+1, i > 0)
 			}
 		}
-		var text []string
-		for _, h := range list {
-			text = append(text, h.Name+": "+h.Value)
-		}
-		button("Copy "+title, func() { v.copy(strings.Join(text, "\n")) })
-		lines = append(lines, "")
+		plain("")
 	}
 	clock := func(at time.Time) string { return at.Local().Format("15:04:05") }
 
@@ -1642,7 +1842,7 @@ func (v *netViewer) detailLines(t netTransaction, w int) (lines []string, acts m
 		field("Finished", finished)
 		field("Total duration", formatNetDuration(t.duration()))
 	}
-	return lines, acts
+	return lines, meta
 }
 
 // detailColumn draws the detail pane w cells wide and n rows tall: the request and the close
@@ -1654,7 +1854,8 @@ func (v *netViewer) detailColumn(w, n int) []string {
 	if v.listW > 0 {
 		x++
 	}
-	v.closeX0, v.closeX1, v.tabHits, v.detailActs = 0, 0, v.tabHits[:0], nil
+	v.closeX0, v.closeX1, v.tabHits, v.detailMeta, v.detailText = 0, 0, v.tabHits[:0], nil, nil
+	v.detailX = x + 1
 	if w < len(escClose)+4 {
 		for len(out) < n {
 			out = append(out, "")
@@ -1691,13 +1892,20 @@ func (v *netViewer) detailColumn(w, n int) []string {
 	if !ok {
 		out = append(out, " "+sgrDim+fit("Select a request to inspect it.", w-1)+sgrReset)
 	} else {
-		lines, acts := v.detailLines(t, w-2)
-		v.detailActs = acts
+		lines, meta := v.detailLines(t, w-2)
+		v.detailMeta, v.detailText, v.detailRoom = meta, make([]string, len(lines)), room
+		for i, line := range lines {
+			v.detailText[i] = stripSGR(line)
+		}
 		v.detailTop = max(0, min(v.detailTop, len(lines)-room))
 		for i := v.detailTop; i < len(lines) && len(out) < n; i++ {
 			row := lines[i]
 			if cellWidth(stripSGR(row)) > w-1 { // a line the pane is too narrow for, plain and cut
 				row = clip(stripSGR(row), w-1)
+			}
+			if from, to, ok := v.dsel.span(i, meta); ok { // the selected part, reversed
+				text := stripSGR(row)
+				row = cellSlice(text, 0, from) + sgrRev + cellSlice(text, from, to) + sgrReset + cellSlice(text, to, cellWidth(text))
 			}
 			out = append(out, " "+padStyled(row, w-1))
 		}
