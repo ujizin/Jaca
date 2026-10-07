@@ -276,7 +276,7 @@ func (d *devicePicker) draw() {
 
 	// No heading: the popup's border already carries the pane's title.
 	line(header("", escClose))
-	room++
+	line("") // a row between the button and the selected row's highlight
 	switch {
 	case !d.loaded:
 	case len(d.devices) == 0:

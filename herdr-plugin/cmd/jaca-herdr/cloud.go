@@ -632,7 +632,7 @@ func (h *cloudHome) handleKey(k []byte) bool {
 // pad is the rows the popup's close button takes above the home.
 func (h *cloudHome) pad() int {
 	if h.popup {
-		return 2
+		return 3 // an empty row, the button, and a row between it and the home
 	}
 	return 0
 }
@@ -716,7 +716,7 @@ func (h *cloudHome) draw() {
 			h.closeX0, h.closeX1 = w+1, w+len(escClose)
 			button = strings.Repeat(" ", w) + closeButton(escClose)
 		}
-		frame = append([]string{"", button}, frame...)
+		frame = append([]string{"", button, ""}, frame...)
 	}
 	switch {
 	case h.help:
