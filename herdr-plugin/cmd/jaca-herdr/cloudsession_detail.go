@@ -47,14 +47,14 @@ func (v *cloudViewer) openDetailAtCursor() {
 	if len(list) == 0 {
 		return
 	}
-	seq := list[len(list)-1].Seq
-	switch {
-	case v.sel.on && !v.sel.all:
-		seq = v.sel.cursor
-	case len(v.rowSeq) > 0:
-		seq = v.rowSeq[len(v.rowSeq)-1]
-	}
-	if !v.sel.on || v.sel.all {
+	seq := v.sel.cursor
+	_, found := v.indexOf(seq)
+	if !v.sel.on || v.sel.all || !found {
+		newest, ok := v.newestShown()
+		if !ok {
+			return
+		}
+		seq = newest
 		v.selectEntries(selection{on: true, anchor: seq, cursor: seq})
 	}
 	v.openDetail(seq)
@@ -313,8 +313,23 @@ func (v *cloudViewer) detailContent(w int) (lines []string, rows []cloudDetailRo
 			if v.isFavorite(key) {
 				star = sgrYellow + "★" + sgrReset + " "
 			}
-			text := star + sgrCyan + fit(sanitize(key), keyW) + sgrReset + " " + clip(shown, max(1, textW-keyW-3))
-			row([]string{text}, "", func() []menuItem { return v.labelMenu(scope, key, value) }, nil)
+			// A long value wraps under itself, so a UUID or a URL can be read whole.
+			valueW := max(1, textW-keyW-3)
+			var lines []string
+			if most := cloudDetailLines * valueW; len(shown) > most {
+				shown = string([]rune(shown)[:min(most, len([]rune(shown)))]) // no more than is laid out
+			}
+			for i, part := range wrapCells(shown, valueW) {
+				if i == cloudDetailLines {
+					break
+				}
+				head := strings.Repeat(" ", keyW+3)
+				if i == 0 {
+					head = star + sgrCyan + fit(sanitize(key), keyW) + sgrReset + " "
+				}
+				lines = append(lines, head+part)
+			}
+			row(lines, "", func() []menuItem { return v.labelMenu(scope, key, value) }, nil)
 		}
 		gap()
 	}

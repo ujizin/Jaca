@@ -25,8 +25,9 @@ const slowTimeout = 10 * time.Minute
 type toolOwner interface {
 	// lines are the pane's rows at this width: head stays put, body scrolls.
 	lines(cols int) (head, body []toolLine)
-	rowCount() int // the rows the cursor moves over
-	press(i int)   // one press of row i's button
+	rowCount() int      // the rows the cursor moves over
+	press(i int)        // one press of row i's button
+	rowID(i int) string // what row i is, so a press that waits finds it again
 	refresh()
 	key(k byte) // a key the shared ones don't take
 	helpKeys() [][2]string
@@ -57,6 +58,7 @@ type toolPane struct {
 	call  func(method string, params, out any, timeout time.Duration) error
 	spawn func(work func() func())
 
+	guard      pressGuard           // so a held key doesn't arm and confirm by itself
 	armed      map[string]time.Time // the buttons waiting for their second press, and when each lapses
 	toast      string
 	toastUntil time.Time
@@ -66,6 +68,7 @@ type toolPane struct {
 	selected int
 	top      int  // the first body line drawn
 	follow   bool // bring the selected row into view at the next draw
+	moved    bool // an event changed the rows since they were drawn
 
 	// As last drawn, for the mouse.
 	shown          map[int]toolLine // by screen row (1-based)
@@ -98,12 +101,14 @@ func newToolPane(p *pane, back func()) toolPane {
 // within that time confirms. Each button is armed on its own, as the app's rows are.
 func (t *toolPane) confirm(key string) bool {
 	now := t.now()
-	if until, ok := t.armed[key]; ok && now.Before(until) {
+	// A second press waits before it gets here (pressGuard): what counts is when it was made.
+	if until, ok := t.armed[key]; ok && t.guard.pressed(now).Before(until) {
 		delete(t.armed, key)
 		return true
 	}
 	t.armed[key] = now.Add(armWindow)
 	t.after(armWindow, t.expire)
+	t.after(armWindow+keyRepeat.wait(), t.expire)
 	return false
 }
 
@@ -122,7 +127,7 @@ func (t *toolPane) flash(msg string) {
 func (t *toolPane) expire() {
 	now := t.now()
 	for key, until := range t.armed {
-		if !now.Before(until) {
+		if !now.Before(until.Add(keyRepeat.wait())) {
 			delete(t.armed, key)
 		}
 	}
@@ -148,9 +153,13 @@ func (t *toolPane) handleKey(k []byte) bool {
 		return true
 	}
 	if m, ok := parseMouse(k); ok {
+		if m.press && m.button == 0 {
+			t.guard.drop()
+		}
 		t.mouse(m)
 		return false
 	}
+	t.guard.note(k, t.now())
 	if t.help {
 		if isEsc(k) || isEnter(k) || (len(k) == 1 && (k[0] == 'q' || k[0] == '?')) {
 			t.help = false
@@ -167,7 +176,7 @@ func (t *toolPane) handleKey(k []byte) bool {
 	case isDown(k):
 		t.move(1)
 	case isEnter(k):
-		t.pressSelected()
+		t.guard.press(t.after, t.pressRow())
 	case isEsc(k):
 		if t.back != nil {
 			t.owner.leave(false)
@@ -177,19 +186,36 @@ func (t *toolPane) handleKey(k []byte) bool {
 	case k[0] == 'q':
 		return true
 	case k[0] == 'x' || k[0] == 0x7f || k[0] == 0x08:
-		t.pressSelected()
+		t.guard.press(t.after, t.pressRow())
 	case k[0] == 'r':
 		t.owner.refresh()
 	case k[0] == '?':
 		t.help = true
 	default:
-		t.owner.key(k[0])
+		// A pane's own keys may confirm too (the Xcode pane's clean-stale).
+		key := k[0]
+		t.guard.press(t.after, func() { t.owner.key(key) })
 	}
 	return false
 }
 
+// pressRow is a press of the selected row's button for the guard to run, now or after a wait:
+// it does nothing when the row under the cursor is no longer the one the key was pressed on.
+func (t *toolPane) pressRow() func() {
+	if t.moved || t.selected < 0 || t.selected >= t.owner.rowCount() {
+		return func() {} // also for rows an update moved and the screen doesn't show yet
+	}
+	id := t.owner.rowID(t.selected)
+	return func() {
+		if t.selected >= 0 && t.selected < t.owner.rowCount() && t.owner.rowID(t.selected) == id {
+			t.pressSelected()
+		}
+	}
+}
+
 func (t *toolPane) pressSelected() {
 	if t.selected >= 0 && t.selected < t.owner.rowCount() {
+		t.follow = true // the row a key presses is shown, with its armed button
 		t.owner.press(t.selected)
 	}
 }
@@ -219,6 +245,9 @@ func (t *toolPane) mouse(m mouseEvent) {
 		if !ok {
 			return
 		}
+		if line.item >= 0 && t.moved {
+			return // the row under the pointer is not the one on screen: the click is dropped
+		}
 		if line.item >= 0 {
 			t.selected = clampIndex(line.item, t.owner.rowCount())
 		}
@@ -242,6 +271,7 @@ func (t *toolPane) draw() {
 // frame is the pane without its popup: the head, the body scrolled to the selected row, and in
 // a pane tall enough for them the toast line and the status bar on the last two rows.
 func (t *toolPane) frame(rows, cols int) []string {
+	t.moved = false
 	t.selected = clampIndex(t.selected, t.owner.rowCount())
 	head, body := t.owner.lines(cols)
 	footer := rows >= len(head)+3

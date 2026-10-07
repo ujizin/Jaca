@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -58,6 +61,7 @@ func (p *pane) setLive(closeMethod, id string) {
 // runPane drives the screen first returns until a key quits it or jacad goes away.
 func runPane(c *client, first func(p *pane) screen) int {
 	p := &pane{c: c, work: make(chan func()), done: make(chan struct{})}
+	useSystemRepeat()
 	p.screen = first(p)
 	defer close(p.done)
 	// Deferred before restore so it runs after it: the terminal is back before teardown waits.
@@ -162,6 +166,132 @@ func titledBorder(title string, w int) string {
 		return "╭" + strings.Repeat("─", max(0, w-2)) + "╮"
 	}
 	return "╭─ " + sgrBold + title + sgrReset + " " + strings.Repeat("─", rest) + "╮"
+}
+
+// pressGuard keeps a held key from pressing a confirming control over and over. A terminal sends
+// a held key as a stream of the same key, so a two-press confirm would otherwise be armed by the
+// first and confirmed by a repeat, and go on down the list.
+//
+// The same key seen again when a repeat is due (keyRepeat) is taken for one and does nothing.
+// Any other second press of the same key waits a moment before it acts, and is dropped when a
+// repeat follows it, in case the timing read from the system is not the terminal's.
+type pressGuard struct {
+	key     string
+	last    time.Time
+	kind    pressKind
+	pending func()
+	at      time.Time // when the press that waits was made
+	acting  time.Time // that time, while it acts
+	gen     int
+}
+
+type pressKind int
+
+const (
+	pressFirst  pressKind = iota // a key other than the last one, or the same one long after
+	pressAgain                   // the same key again: a second press
+	pressRepeat                  // the same key when a repeat was due: a held key
+)
+
+// repeatTiming is how a held key repeats: the delay before the first repeat and the interval
+// between the following ones.
+type repeatTiming struct{ delay, interval time.Duration }
+
+// keyRepeat is macOS's timing out of the box, until useSystemRepeat has read this Mac's.
+var keyRepeat = repeatTiming{delay: 375 * time.Millisecond, interval: 90 * time.Millisecond}
+
+// useSystemRepeat reads the key repeat settings (the global InitialKeyRepeat and KeyRepeat
+// defaults, in 15 ms steps). One that is not set, or can't be read in time, keeps its default.
+func useSystemRepeat() {
+	read := func(name string, into *time.Duration) {
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "defaults", "read", "-g", name)
+		cmd.WaitDelay = 100 * time.Millisecond
+		out, err := cmd.Output()
+		if err != nil {
+			return
+		}
+		if steps, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil && steps > 0 && steps < 100000 {
+			*into = time.Duration(steps) * 15 * time.Millisecond
+		}
+	}
+	read("InitialKeyRepeat", &keyRepeat.delay)
+	read("KeyRepeat", &keyRepeat.interval)
+}
+
+// rapid is under any repeat interval a person would also press at.
+const rapid = 150 * time.Millisecond
+
+// due reports whether a key seen since after itself comes when a repeat would: right after
+// (a fast repeat), an interval after, or the first delay after.
+func (r repeatTiming) due(since time.Duration) bool {
+	return since < rapid ||
+		(since >= r.interval*2/3 && since <= r.interval*4/3) ||
+		(since >= r.delay-40*time.Millisecond && since <= r.delay+60*time.Millisecond)
+}
+
+// wait is how long a second press waits for a repeat to follow it: past the next repeat, so a
+// repeat that came early or late and was taken for a press is still dropped by the one after.
+func (r repeatTiming) wait() time.Duration {
+	return min(max(rapid, r.interval*4/3), armWindow)
+}
+
+// note records a key press, whoever handles it. A press that was waiting acts first, unless
+// this key is its repeat: then it is dropped.
+func (g *pressGuard) note(k []byte, now time.Time) {
+	since := now.Sub(g.last)
+	switch {
+	case string(k) != g.key || since >= armWindow:
+		g.flush()
+		g.kind = pressFirst
+	case keyRepeat.due(since):
+		g.pending = nil
+		g.kind = pressRepeat
+	default:
+		g.flush()
+		g.kind = pressAgain
+	}
+	g.key, g.last = string(k), now
+	g.gen++
+}
+
+// press runs act for the key just noted: at once for a first press, after the wait for a second
+// one, never for a repeat.
+func (g *pressGuard) press(after func(time.Duration, func()), act func()) {
+	switch g.kind {
+	case pressFirst:
+		act()
+	case pressAgain:
+		gen := g.gen
+		g.pending, g.at = act, g.last
+		after(keyRepeat.wait(), func() {
+			if g.gen == gen {
+				g.flush()
+			}
+		})
+	}
+}
+
+// flush runs the press that was waiting, before something else is handled.
+func (g *pressGuard) flush() {
+	if act := g.pending; act != nil {
+		g.pending = nil
+		g.acting = g.at
+		act()
+		g.acting = time.Time{}
+	}
+}
+
+// drop forgets the press that was waiting: a click came in, and the rows may not be the same.
+func (g *pressGuard) drop() { g.pending = nil }
+
+// pressed is when the press now acting was made: now, unless it waited.
+func (g *pressGuard) pressed(now time.Time) time.Time {
+	if !g.acting.IsZero() {
+		return g.acting
+	}
+	return now
 }
 
 func isEnter(k []byte) bool { return len(k) == 1 && (k[0] == '\r' || k[0] == '\n') }
@@ -301,9 +431,13 @@ func renderField(t *textInput, placeholder string, focused bool, w int, style st
 		return sgrRev + " " + sgrReset + style + sgrDim + fit(placeholder, w-1) + sgrReset
 	}
 	pos := max(0, min(t.pos, len(t.text)))
-	start := 0
-	for cellWidth(string(t.text[start:pos])) > w-1 { // scroll until the cursor's cell fits
-		start++
+	// Scrolled until the cursor's cell fits: the text before it fills at most w-1 cells.
+	start := pos
+	for room := w - 1; start > 0; start-- {
+		room -= runeWidth(t.text[start-1])
+		if room < 0 {
+			break
+		}
 	}
 	var b strings.Builder
 	b.WriteString(style)

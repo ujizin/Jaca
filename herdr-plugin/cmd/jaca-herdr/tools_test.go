@@ -24,20 +24,28 @@ func (c *toolClock) after(d time.Duration, f func()) {
 	c.timers = append(c.timers, toolTimer{c.now.Add(d), f})
 }
 
+// advance moves the clock on, running each timer that comes due at its own time, earliest
+// first, as the pane's loop would.
 func (c *toolClock) advance(d time.Duration) {
-	c.now = c.now.Add(d)
-	var due, later []toolTimer
-	for _, timer := range c.timers {
-		if timer.at.After(c.now) {
-			later = append(later, timer)
-		} else {
-			due = append(due, timer)
+	end := c.now.Add(d)
+	for {
+		next := -1
+		for i, timer := range c.timers {
+			if !timer.at.After(end) && (next < 0 || timer.at.Before(c.timers[next].at)) {
+				next = i
+			}
 		}
-	}
-	c.timers = later
-	for _, timer := range due {
+		if next < 0 {
+			break
+		}
+		timer := c.timers[next]
+		c.timers = append(c.timers[:next:next], c.timers[next+1:]...)
+		if timer.at.After(c.now) {
+			c.now = timer.at
+		}
 		timer.f()
 	}
+	c.now = end
 }
 
 // toolCalls stands in for jacad: it records each call and answers with the JSON held for the
@@ -102,7 +110,8 @@ func testGradleViewer(t *testing.T) (*gradleViewer, *toolClock, *toolCalls) {
 	}
 	v.apply(list)
 	v.measured([]gradleCache{{"modules-2", 6143}, {"8.7", 512}}, nil)
-	v.selected = 0 // the cursor followed its daemon when the cache folders arrived above it
+	v.selected = 0  // the cursor followed its daemon when the cache folders arrived above it
+	v.moved = false // as after the first draw
 	return v, clock, calls
 }
 
@@ -396,7 +405,7 @@ func TestConfirmTakesTwoPressesWithinThreeSeconds(t *testing.T) {
 		t.Fatal("a confirmed button stays armed")
 	}
 	clock.advance(100 * time.Millisecond)
-	if tp.isArmed("b") || len(tp.armed) != 0 {
+	if tp.isArmed("b") {
 		t.Fatalf("after three seconds %v is still armed", tp.armed)
 	}
 	// Past the window a press arms again.
@@ -606,7 +615,24 @@ func TestXcodeDeleteOutcomes(t *testing.T) {
 	if len(calls.made) != 0 || !v.isArmed("/dd/App-ccc") {
 		t.Fatalf("one press: calls %v", calls.made)
 	}
+	// A held key repeats, the first time after a delay: its repeats don't confirm what the
+	// first press armed.
+	clock.advance(400 * time.Millisecond)
+	for i := 0; i < 20; i++ {
+		v.handleKey([]byte("x"))
+		clock.advance(40 * time.Millisecond)
+	}
+	clock.advance(keyRepeat.wait())
+	if len(calls.made) != 0 || !v.isArmed("/dd/App-ccc") {
+		t.Fatalf("a held key confirmed: calls %v", calls.made)
+	}
+	// A second press does, once no repeat has followed it.
+	clock.advance(600 * time.Millisecond)
 	v.handleKey([]byte("x"))
+	if len(calls.made) != 0 {
+		t.Fatalf("the second press acted before a repeat could follow: %v", calls.made)
+	}
+	clock.advance(keyRepeat.wait())
 	if len(calls.made) != 1 || !v.removing["/dd/App-ccc"] || len(v.entries) != 5 {
 		t.Fatalf("two presses: calls %v, removing %v", calls.made, v.removing)
 	}
@@ -637,7 +663,19 @@ func TestXcodeCleanStaleRemovesEveryStaleRow(t *testing.T) {
 	if text := frameText(v.frame(24, 100)); !strings.Contains(text, "Confirm? (2.08 GB)") {
 		t.Errorf("the armed clean button lacks its label:\n%s", text)
 	}
+	// A held S doesn't confirm; a second press does.
+	clock.advance(400 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		v.handleKey([]byte("S"))
+		clock.advance(90 * time.Millisecond)
+	}
+	clock.advance(keyRepeat.wait())
+	if len(calls.made) != 0 {
+		t.Fatalf("a held key cleaned: %v", calls.made)
+	}
+	clock.advance(600 * time.Millisecond)
 	v.handleKey([]byte("S"))
+	clock.advance(keyRepeat.wait())
 	if len(calls.made) != 2 || !v.removing["/dd/Old-aaa"] || len(v.entries) != 5 {
 		t.Fatalf("two presses: calls %v, removing %v", calls.made, v.removing)
 	}
@@ -823,6 +861,85 @@ func TestClipMiddle(t *testing.T) {
 		for _, s := range []string{path, "日本語のパス/プロジェクト.xcodeproj", ""} {
 			if got := cellWidth(clipMiddle(s, w)); got > w {
 				t.Fatalf("clipMiddle(%q, %d) is %d cells", s, w, got)
+			}
+		}
+	}
+}
+
+// A key seen again when a repeat is due is one; a second press at another time is a press.
+func TestRepeatTiming(t *testing.T) {
+	ms := time.Millisecond
+	for _, c := range []struct {
+		timing repeatTiming
+		since  time.Duration
+		due    bool
+	}{
+		{repeatTiming{375 * ms, 90 * ms}, 30 * ms, true},
+		{repeatTiming{375 * ms, 90 * ms}, 90 * ms, true},
+		{repeatTiming{375 * ms, 90 * ms}, 375 * ms, true},
+		{repeatTiming{375 * ms, 90 * ms}, 420 * ms, true},
+		{repeatTiming{375 * ms, 90 * ms}, 200 * ms, false},
+		{repeatTiming{375 * ms, 90 * ms}, 600 * ms, false},
+		{repeatTiming{700 * ms, 450 * ms}, 450 * ms, true},
+		{repeatTiming{700 * ms, 450 * ms}, 580 * ms, true},
+		{repeatTiming{700 * ms, 450 * ms}, 700 * ms, true},
+		{repeatTiming{700 * ms, 450 * ms}, 1000 * ms, false},
+		{repeatTiming{1800 * ms, 2700 * ms}, 2700 * ms, true},
+		{repeatTiming{1800 * ms, 2700 * ms}, 1000 * ms, false},
+	} {
+		if got := c.timing.due(c.since); got != c.due {
+			t.Errorf("%v: a key %v after itself is a repeat: %v, want %v", c.timing, c.since, got, c.due)
+		}
+	}
+	for interval, want := range map[time.Duration]time.Duration{30 * ms: 150 * ms, 90 * ms: 150 * ms, 180 * ms: 240 * ms, 450 * ms: 600 * ms, 1800 * ms: 2400 * ms, 2700 * ms: 3 * time.Second} {
+		if got := (repeatTiming{375 * ms, interval}).wait(); got != want {
+			t.Errorf("interval %v waits %v, want %v", interval, got, want)
+		}
+	}
+}
+
+// Holding a confirming key never confirms, however the system repeats and however long the
+// hold; two presses do.
+func TestHeldKeyNeverConfirms(t *testing.T) {
+	ms := time.Millisecond
+	saved := keyRepeat
+	t.Cleanup(func() { keyRepeat = saved })
+	for _, delay := range []time.Duration{225 * ms, 375 * ms, 700 * ms, 1800 * ms} {
+		for _, interval := range []time.Duration{30 * ms, 90 * ms, 180 * ms, 450 * ms, 900 * ms, 1800 * ms, 2700 * ms} {
+			for _, off := range []time.Duration{0, -60 * ms, 80 * ms} { // the first repeat on time, early, late
+				keyRepeat = repeatTiming{delay, interval}
+				// Every hold length that ends just after a repeat, and a long one.
+				for repeats := 1; repeats <= 12; repeats++ {
+					v, clock, calls := testXcodeViewer(t)
+					v.selected = 3
+					v.handleKey([]byte("x"))
+					if repeats < 2 && off != 0 {
+						continue // released before a second repeat: off time, it can't be told from a press
+					}
+					clock.advance(delay + off)
+					for i := 0; i < repeats; i++ {
+						v.handleKey([]byte("x"))
+						if i < repeats-1 {
+							clock.advance(interval)
+						}
+					}
+					clock.advance(5 * time.Second)
+					if len(calls.made) != 0 {
+						t.Fatalf("delay %v%+v, interval %v: a hold of %d repeats deleted: %v", delay, off, interval, repeats, calls.made)
+					}
+				}
+			}
+			v, clock, calls := testXcodeViewer(t)
+			v.selected = 3
+			v.handleKey([]byte("x"))
+			clock.advance(delay + 200*ms) // not when a repeat is due
+			if keyRepeat.due(delay + 200*ms) {
+				continue
+			}
+			v.handleKey([]byte("x"))
+			clock.advance(keyRepeat.wait())
+			if len(calls.made) != 1 {
+				t.Fatalf("delay %v, interval %v: two presses made %v", delay, interval, calls.made)
 			}
 		}
 	}

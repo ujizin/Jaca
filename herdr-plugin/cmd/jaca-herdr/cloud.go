@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -90,8 +91,11 @@ type cloudHome struct {
 	action   int // the action of that row Enter presses
 	top      int // the first body line drawn
 	follow   bool
+	moved    bool // an event changed the rows since they were drawn
 
 	armed      map[string]time.Time // the Remove buttons waiting for their second press
+	guard      pressGuard           // so a held key doesn't arm and confirm by itself
+	quietUntil time.Time            // until then keys are ignored: a sheet closed by itself
 	toast      string
 	toastUntil time.Time
 	err        string // why the last call failed, as jacad or Herdr reported it
@@ -217,6 +221,8 @@ func (h *cloudHome) apply(st cloudState) {
 	if h.selected >= 0 && h.selected < len(h.state.Projects) {
 		at = h.state.Projects[h.selected].ProjectID
 	}
+	// Rows that changed place are drawn at the next tick: until then a click is not for them.
+	h.moved = h.moved || !slices.EqualFunc(h.state.Projects, st.Projects, func(a, b cloudProject) bool { return a.ProjectID == b.ProjectID })
 	h.state, h.loaded = st, true
 	h.selected = clampIndex(h.selected, len(st.Projects))
 	for i, p := range st.Projects {
@@ -230,6 +236,7 @@ func (h *cloudHome) apply(st cloudState) {
 			sheet.setProject(p)
 		} else {
 			h.sheet = nil
+			h.hush()
 		}
 	}
 	h.watchAuth()
@@ -292,12 +299,14 @@ func (h *cloudHome) accountLine() string {
 // within that time confirms.
 func (h *cloudHome) confirm(key string) bool {
 	now := h.now()
-	if until, ok := h.armed[key]; ok && now.Before(until) {
+	// A second press waits before it gets here (pressGuard): what counts is when it was made.
+	if until, ok := h.armed[key]; ok && h.guard.pressed(now).Before(until) {
 		delete(h.armed, key)
 		return true
 	}
 	h.armed[key] = now.Add(armWindow)
 	h.after(armWindow, h.expire)
+	h.after(armWindow+keyRepeat.wait(), h.expire)
 	return false
 }
 
@@ -316,7 +325,7 @@ func (h *cloudHome) flash(msg string) {
 func (h *cloudHome) expire() {
 	now := h.now()
 	for key, until := range h.armed {
-		if !now.Before(until) {
+		if !now.Before(until.Add(keyRepeat.wait())) {
 			delete(h.armed, key)
 		}
 	}
@@ -338,6 +347,12 @@ func (h *cloudHome) closeSheet(s cloudSheet) {
 		h.sheet = nil
 	}
 }
+
+// hush is for a sheet that closes by itself, on a result: the keys the user is still typing
+// into it don't act on the home.
+func (h *cloudHome) hush() { h.quietUntil = h.now().Add(hushTime) }
+
+const hushTime = 700 * time.Millisecond
 
 // detect is Re-check: jacad looks for gcloud again and re-reads the account.
 func (h *cloudHome) detect() {
@@ -420,9 +435,13 @@ func (h *cloudHome) titleOf(id, displayName string) string {
 func (h *cloudHome) rename(id, name string) {
 	h.spawn(func() func() {
 		err := h.call("cloud.setDisplayName", map[string]any{"id": id, "name": name}, nil, callTimeout)
-		return func() { h.failed(err) }
+		return func() {
+			h.failed(err)
+			if err == nil {
+				h.flash("Renamed")
+			}
+		}
 	})
-	h.flash("Renamed")
 }
 
 func removeKey(id string) string { return "remove:" + id }
@@ -432,12 +451,16 @@ func (h *cloudHome) remove(p cloudProject) {
 	if !h.confirm(removeKey(p.ProjectID)) {
 		return
 	}
-	id := p.ProjectID
+	id, title := p.ProjectID, p.title()
 	h.spawn(func() func() {
 		err := h.call("cloud.removeProject", map[string]any{"id": id}, nil, callTimeout)
-		return func() { h.failed(err) }
+		return func() {
+			h.failed(err)
+			if err == nil {
+				h.flash("Removed " + title)
+			}
+		}
 	})
-	h.flash("Removed " + p.title())
 }
 
 // startSession opens a stopped session on a project, as the app's New session does. The log
@@ -451,6 +474,22 @@ func (h *cloudHome) startSession(projectID, rawFilter string) {
 	}
 	cfg.RawFilter = rawFilter
 	h.launch(cloudSessionSpec{Config: cfg, Name: name, AutoStart: false})
+}
+
+// pressRow is a press of action n on the selected project for the guard to run, now or after a
+// wait: it does nothing when the project under the cursor is no longer the one the key was
+// pressed on. The row a key presses is brought into view, with its armed button.
+func (h *cloudHome) pressRow(n int) func() {
+	if h.moved || h.selected < 0 || h.selected >= len(h.state.Projects) {
+		return func() {} // also for rows an update moved and the screen doesn't show yet
+	}
+	id := h.state.Projects[h.selected].ProjectID
+	return func() {
+		if h.selected >= 0 && h.selected < len(h.state.Projects) && h.state.Projects[h.selected].ProjectID == id {
+			h.follow = true
+			h.press(h.selected, n)
+		}
+	}
 }
 
 // press is one press of action n of project i.
@@ -471,9 +510,11 @@ func (h *cloudHome) press(i, n int) {
 	}
 }
 
+// move moves the row cursor. The action cursor goes back to New session, so Enter on another
+// project never presses a Remove chosen for the one before.
 func (h *cloudHome) move(by int) {
 	h.selected = clampIndex(h.selected+by, len(h.state.Projects))
-	h.follow = true
+	h.action, h.follow = actionNewSession, true
 }
 
 func (h *cloudHome) moveAction(by int) {
@@ -486,9 +527,13 @@ func (h *cloudHome) handleKey(k []byte) bool {
 		return true
 	}
 	if m, ok := parseMouse(k); ok {
+		if m.press && m.button == 0 {
+			h.guard.drop()
+		}
 		h.mouse(m)
 		return false
 	}
+	h.guard.note(k, h.now()) // a sheet's keys too: Enter held past its close is still held
 	if h.help {
 		if isEsc(k) || isEnter(k) || (len(k) == 1 && (k[0] == 'q' || k[0] == '?')) {
 			h.help = false
@@ -497,6 +542,11 @@ func (h *cloudHome) handleKey(k []byte) bool {
 	}
 	if h.sheet != nil {
 		h.sheet.key(k)
+		return false
+	}
+	// Keys still arriving from a sheet that closed on its own (a project validated while the
+	// user typed) don't act on the home.
+	if h.now().Before(h.quietUntil) {
 		return false
 	}
 	h.err = "" // any key dismisses the last failure
@@ -519,9 +569,9 @@ func (h *cloudHome) handleKey(k []byte) bool {
 		h.move(1)
 	case isEnter(k):
 		if len(h.state.Projects) == 0 {
-			h.openAddSheet()
+			h.guard.press(h.after, h.openAddSheet)
 		} else {
-			h.press(h.selected, h.action)
+			h.guard.press(h.after, h.pressRow(h.action))
 		}
 	case string(k) == "\x1b[Z": // Shift-Tab
 		h.moveAction(-1)
@@ -537,7 +587,7 @@ func (h *cloudHome) handleKey(k []byte) bool {
 	case k[0] == 'e':
 		h.press(h.selected, actionRename)
 	case k[0] == 'x' || k[0] == 0x7f || k[0] == 0x08:
-		h.press(h.selected, actionRemove)
+		h.guard.press(h.after, h.pressRow(actionRemove))
 	case k[0] == 'a':
 		h.openAddSheet()
 	case k[0] == 'u':
@@ -575,6 +625,9 @@ func (h *cloudHome) mouse(m mouseEvent) {
 		line, ok := h.shown[m.y]
 		if !ok {
 			return
+		}
+		if line.item >= 0 && h.moved {
+			return // the row under the pointer is not the one on screen: the click is dropped
 		}
 		if line.item >= 0 {
 			h.selected = clampIndex(line.item, len(h.state.Projects))
@@ -628,6 +681,7 @@ func (h *cloudHome) draw() {
 // banner, the projects scrolled to the selected one, and in a pane tall enough for them the
 // toast line and the status bar on the last two rows.
 func (h *cloudHome) frame(rows, cols int) []string {
+	h.moved = false
 	h.selected = clampIndex(h.selected, len(h.state.Projects))
 	head, body := h.headLines(cols), h.bodyLines(cols)
 	footer := rows >= len(head)+3

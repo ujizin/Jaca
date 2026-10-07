@@ -728,8 +728,9 @@ func (v *netViewer) exportHAR() {
 }
 
 func (v *netViewer) copy(text string) {
+	write := copyToClipboard
 	go func() {
-		if err := copyToClipboard(text); err != nil {
+		if err := write(text); err != nil {
 			v.p.post(func() { v.err = err.Error() })
 		}
 	}()

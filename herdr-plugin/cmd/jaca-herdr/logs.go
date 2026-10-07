@@ -134,6 +134,8 @@ type popupMenu struct {
 	top      int // as last drawn: the screen row of its top border,
 	left     int // its first column,
 	width    int // and its width
+	first    int // the first item drawn, when the pane is too short for them all,
+	shown    int // and how many are
 }
 
 type menuItem struct {
@@ -144,7 +146,7 @@ type menuItem struct {
 // move steps the menu's selection over the separators.
 func (m *popupMenu) move(by int) {
 	for i := m.selected + by; i >= 0 && i < len(m.items); i += by {
-		if m.items[i].label != "" {
+		if m.items[i].label != "" && m.items[i].act != nil { // not a separator or a heading
 			m.selected = i
 			return
 		}
@@ -160,14 +162,21 @@ func (m *popupMenu) box(rows, cols int) []string {
 	}
 	w = min(w+4, cols)
 	if w < 5 || rows < 3 {
+		m.shown = 0 // nothing drawn, nothing to click
 		return nil
 	}
 	rule := strings.Repeat("─", w-2)
 	box := []string{"╭" + rule + "╮"}
-	for i, it := range m.items {
-		if len(box) >= rows-1 {
-			break
-		}
+	// A menu taller than the pane shows the items around the selected one.
+	m.shown = min(len(m.items), rows-2)
+	m.first = max(0, min(m.first, len(m.items)-m.shown))
+	if sel := m.selected; sel >= 0 && sel < m.first {
+		m.first = sel
+	} else if sel < len(m.items) && sel >= m.first+m.shown {
+		m.first = sel - m.shown + 1
+	}
+	for i := m.first; i < m.first+m.shown; i++ {
+		it := m.items[i]
 		switch {
 		case it.label == "":
 			box = append(box, "├"+rule+"┤")
@@ -187,7 +196,11 @@ func (m *popupMenu) box(rows, cols int) []string {
 // itemAt is the index of the item drawn at a cell, or -1.
 func (m *popupMenu) itemAt(x, y int) int {
 	i := y - m.top - 1
-	if x < m.left || x >= m.left+m.width || i < 0 || i >= len(m.items) || m.items[i].label == "" {
+	if x < m.left || x >= m.left+m.width || i < 0 || i >= m.shown {
+		return -1
+	}
+	i += m.first
+	if i >= len(m.items) || m.items[i].label == "" {
 		return -1
 	}
 	return i
@@ -809,8 +822,9 @@ func (v *logViewer) copyLines(messagesOnly bool) {
 }
 
 func (v *logViewer) copy(text string) {
+	write := copyToClipboard
 	go func() {
-		if err := copyToClipboard(text); err != nil {
+		if err := write(text); err != nil {
 			v.p.post(func() { v.err = err.Error() })
 		}
 	}()

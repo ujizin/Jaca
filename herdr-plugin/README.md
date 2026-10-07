@@ -14,6 +14,7 @@ Experimental. Standard library Go only.
 | pane | `logs` | The log viewer for the device chosen in `devices`, with the app log tab's tools. `1`–`6` set the minimum level (V…F), `/` edits the filter text, `r` toggles regex, `s` toggles system logs (not on Android), `P` edits the package id, `a` lists the installed apps to pick one, `c` clears the view, `C` clears the device buffer (Android), `p` or `space` pauses/resumes the stream, `j`/`k` and `PgUp`/`PgDn` scroll, `Shift+PgDn` (or `G`) follows the tail again, and scrolling up leaves it, `S` exports the lines the filter keeps to the file chosen in the macOS save dialog (named after the device, starting in Downloads), `y` opens the app's Copy format sheet as a popup (presets with an example each, the template and date format to edit, a live example; arrows or `Tab` move, `Enter` chooses, `Ctrl+S` or `⌘S` saves, `Esc` cancels, nothing is saved before Save), `?` shows the keys (any of `Esc`, `Enter`, `q`, `?` or a click closes it), `q` quits. The level chips, `.*`, `System logs`, `Export` and both fields are clickable, as are the arrow at the end of the package field (the installed apps) and `Help` and `Copy format` at the right of the status bar, the apps list too, and the wheel scrolls. A click on a log line selects it, and dragging extends the selection line by line; past the top or bottom of the lines the view scrolls that way. Letting go copies the selected lines whole, in the app's copy format (with `pbcopy`). The view holds still under a selection, and `Esc`, any key or a click outside the lines drops it. A right click opens the app's row menu on the selected lines (`Copy Line`, `Copy Message only`, `Copy Format…`, `Select All`); `Copy Format…` opens the Copy format popup, which saves to `~/.jaca/log-copy-format.json`, the file the app reads. For that menu the pane asks Herdr to send it right clicks (`herdr pane input --right-click pane`), so Herdr's own pane menu doesn't open on a right click in this pane. The pane draws this selection itself because it has the mouse for the toolbar, so the terminal can't select in it. In a field, `Enter` or `Esc` leaves it and `Ctrl-U` empties it; the package id applies on `Enter`. Opened without a device, it shows the picker first and streams in the same pane (`Esc` goes back). |
 | pane | `network` | The app's network tab for the in-process agent ("Inspect Network (Agent HTTP)" in the device picker, Android and iOS Simulator), with response overrides. See [Network and overrides](#network-and-overrides). |
 | pane | `tools` | A popup listing `Gradle` and `Xcode`. `Enter` or a click opens the chosen pane in a new tab named `Gradle - Jaca` or `Xcode - Jaca` and closes the popup. `j`/`k` or arrows move, `Esc` or `q` closes. Run outside Herdr, the chosen pane shows in place (`Esc` goes back). |
+| pane | `cloud` | The app's Cloud Logging area: the home (gcloud sign-in, projects) and, in tabs it opens, the log sessions. See [Cloud Logging](#cloud-logging). |
 | pane | `gradle` | The app's Gradle area: the folders of `~/.gradle/caches` with their sizes, then the live daemons from the daemon's `gradle.daemons` topic. See [Gradle and Xcode](#gradle-and-xcode). |
 | pane | `xcode` | The app's Xcode area: the DerivedData folders with their sizes and kind (`LIVE`, `STALE`, `SHARED`). See [Gradle and Xcode](#gradle-and-xcode). |
 | pane | `projects` | Projects and their checkouts with cached sizes. `c` cleans the selected checkout's build caches, `r` rescans, `q` quits. |
@@ -155,6 +156,70 @@ In a narrow pane the name is cut first, then columns are left out: the JDK, heap
 uptime, PID and `BUSY`/`IDLE` in the Gradle pane, the workspace path, kind and size in the Xcode pane. The button goes
 last.
 
+## Cloud Logging
+
+The `cloud` pane is the app's Cloud Logging area on jacad's `cloud.*` methods. It opens on the
+home; each session opens in its own tab named `Jaca cloud - <project>`.
+
+To open it with a key, in `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+l"
+type = "shell"
+command = "herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint cloud"
+```
+
+**Home.** The header shows what jacad found: `Signed in as …`, `Not signed in` or
+`gcloud CLI not found`. Signed out, `Open Terminal` opens a Herdr tab running
+`gcloud auth login` (jacad never runs it: it has no terminal to prompt in), and the home asks
+jacad to re-read the account every 3 seconds until the login lands. `j`/`k` move between
+projects, `←`/`→` or `Tab` choose a row's action and `Enter` presses it; `n` is New session,
+`l` Log names, `e` Rename, `x` or `Backspace` Remove (two presses), `a` Add project, `u` From
+URL…, `r` Re-check.
+
+**Session.** `p` or `space` starts and stops, `c` clears, `f` toggles Follow tail (`G` turns
+it on), `l` opens the log names, `t` the time range, `u` the share menu, `1`–`6` set the
+minimum severity (All, D, I, W, E, C), `F` opens the Filters bar, `/` searches the loaded
+logs, `S` exports, `C` copies the selection, `y` sets the copy format. A click or `Enter`
+opens an entry's details beside the list; there `j`/`k` move between fields, `Enter` opens a
+field's actions (filter by a label or severity, open it in a new session, favorite a label),
+and `[` `]` step between entries. Scrolling to the top loads older logs.
+
+Changing what is sent to gcloud (the log name, the time range, the severity, the Filters bar's
+conditions) restarts a running session, as in the app; the search box only filters what is
+loaded.
+
+**SQL.** `Q` switches between Logs and SQL, and `s` goes to the SQL editor. The statement
+runs over the entries loaded in the session (jacad's `cloud.sessions.query`), with `Ctrl+R`,
+or `⌘↩` where the terminal passes it on; once it has run it runs again every 2 seconds, as in
+the app.
+The bar has the app's Schema popup, the Labels menu (inserts a filter on a label), the
+Templates menu (saved templates, starters, From current filter), `Save…` and the label
+examples sheet. In the
+editor `Tab` indents, `Esc` leaves it, and `Ctrl+C` copies the selection. A pane with fewer
+than three rows to spare shows no SQL bar.
+
+A confirming press has to be a separate press: the repeats of a held key don't confirm what
+its first press armed. The pane reads how this Mac repeats keys (`InitialKeyRepeat` and
+`KeyRepeat`, when it starts) and takes the same key for a repeat when one is due: right after
+the last one, one interval after, or the first delay after (375 ms unless changed, from
+40 ms before it to 60 ms after, so a second press that lands there has to be made again). Any other second press
+of the same key waits a moment (150 ms at the usual repeat rate) and is dropped when a repeat
+follows it. It then acts on the row it was pressed on, or on nothing when that row has moved.
+What this cannot tell from two presses: a key held just past its first repeat and let go,
+when that repeat came more than 40 ms early or 60 ms late.
+This applies to every two-press button (Remove here; Kill, Delete and Clean in the Gradle and
+Xcode panes). A click on a row that an update moved before it was drawn is dropped.
+
+Not carried over from the app: the Ask Claude buttons (SQL and regex), the gcloud debug
+console (it reads a log kept inside the app, which jacad has no method for), resizing the
+detail panel, horizontal scrolling of long lines, syntax highlighting and autocomplete in the
+SQL editor, the tab subtitle (`project · log · range`), selecting part of a value in the
+detail panel, and the date pickers of an absolute range (two text fields read as
+`2006-01-02 15:04`). A match mode is changed by pressing it until the wanted one shows, where
+the app opens a menu. A pane does not survive a jacad restart: it exits, and is opened again.
+
 ## Colors
 
 Herdr doesn't pass its theme to plugins, so the panes work it out the way Herdr does: the
@@ -179,7 +244,23 @@ Newline-delimited JSON-RPC 2.0 on the socket. `jacad describe` lists every metho
 ## Copy
 
 Every string a pane shows is taken from the app (the Gradle, Xcode, device list, device menu, log and
-Projects views, the sidebar titles, `DeviceState.label`, `LogLevel.short`, the Projects toasts). The log toolbar's field placeholders are the app's with a capital first letter. In the network pane's `?` popup, `Delete request`, `Select requests`, `Select request`, `Inspect request`, `Switch tab`, `Request menu` and `Follow new requests` are placeholders too, as is the `network` pane title. In the Gradle and Xcode panes' `?` popups, `Select row` is a placeholder (the other labels are the app's buttons and tooltips, or the placeholders the log viewer already uses), as is the `tools` pane title, `Jaca`. Those two panes show nothing while a refresh the user asked for is running, because the app has no text for it. The `?` popup's labels are the app's where it has one; `Minimum level`, `Filter text`, `Regex`, `Package id`, `Pause / unpause`, `Scroll`, `Help` (also the popup's title and the status bar button) and `Quit` are placeholders that need specified copy. Two things have no app copy
+Projects views, the sidebar titles, `DeviceState.label`, `LogLevel.short`, the Projects toasts). In the Cloud Logging panes these have no app copy and are placeholders: the `?` popup labels
+`Select row`, `Select action`, `Press`, `Start / Stop`, `Time range`, `Minimum severity`,
+`Select entries`, `Details / row actions`, `Previous / next entry`,
+`Switch between list and details`, `Close / back`, `Logs / SQL`, `SQL filter`,
+`Copy Logs Explorer URL / Open in browser` (and `Scroll`, `Help`, `Quit` as in the
+other panes); the `Help` button in the status bar; the tab name `Jaca cloud - <project>`; the
+glyphs that stand in for the app's icon buttons (`▶ ■ ⌫ ⤓ ↗ ⟳ ⊕ ⊖ ▾ ▼ ▸ ★ ☆ ✓ ● ○ − +`), the `│` gutter of the SQL editor and the `↓ <path>` note
+after an export (the app shows nothing there); the SQL bar's `Label examples for Claude`
+control, which is the title of the sheet it opens (in the app the control is an icon beside
+Ask Claude, which this pane does not have); and the error
+lines the client itself produces when Herdr or jacad returns something it can't read
+(`herdr tab create: no pane_id`, and the decode errors in `cloudwire.go`). The row
+`… <n> more lines — ⌘C copies all` is the app's string, though the key here is `C`; so is the
+SQL bar's `⌘↩ to run · …` hint, where the key that always works is `Ctrl+R`. The ` esc close `
+and ` esc back ` buttons stand where the app's sheets have `Cancel`. The client's own error
+lines (`<method>: no reply from jacad after <time>`, `jacad closed the connection`) have no
+app copy either. The log toolbar's field placeholders are the app's with a capital first letter. In the network pane's `?` popup, `Delete request`, `Select requests`, `Select request`, `Inspect request`, `Switch tab`, `Request menu` and `Follow new requests` are placeholders too, as is the `network` pane title. In the Gradle and Xcode panes' `?` popups, `Select row` is a placeholder (the other labels are the app's buttons and tooltips, or the placeholders the log viewer already uses), as is the `tools` pane title, `Jaca`. Those two panes show nothing while a refresh the user asked for is running, because the app has no text for it. The `?` popup's labels are the app's where it has one; `Minimum level`, `Filter text`, `Regex`, `Package id`, `Pause / unpause`, `Scroll`, `Help` (also the popup's title and the status bar button) and `Quit` are placeholders that need specified copy. Two things have no app copy
 yet and are left out until it's specified: a key legend for the projects pane, and the size-scan
 approval prompt (so the projects pane shows only sizes already computed). The two action titles
 and the `logs` pane title in `herdr-plugin.toml` are placeholders written for this prototype and
