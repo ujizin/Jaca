@@ -86,7 +86,9 @@ func paintRows(rows []string) {
 var (
 	panelStyle  = themePanel(herdrTheme)
 	borderStyle = themeAccent(herdrTheme)
-	buttonStyle = themeButton(herdrTheme)
+	// sectionStyle is a section title inside a panel: bold, in the accent.
+	sectionStyle = sgrBold + themeAccent(herdrTheme)
+	buttonStyle  = themeButton(herdrTheme)
 )
 
 // The labels of a popup's close button, as in Herdr's own overlays: at its top right, it closes

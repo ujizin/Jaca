@@ -223,8 +223,18 @@ func (v *cloudViewer) detailContent(w int) (lines []string, rows []cloudDetailRo
 	marker := func() string {
 		return rowMarker(v.focus == cloudDetail && len(rows) == v.detailRow)
 	}
+	// A section's title stands out from its values: bold in the theme's accent, with a rule
+	// to the panel's edge.
+	titled := func(title string) string { return sectionStyle + clip(title, textW) + sgrReset }
+	rule := func(n int) string {
+		if n < 2 {
+			return strings.Repeat(" ", max(0, n))
+		}
+		return " " + sgrDim + strings.Repeat("─", n-1) + sgrReset
+	}
 	heading := func(title string) {
-		lines = append(lines, "  "+sgrDim+clip(title, textW)+sgrReset)
+		line := "  " + titled(title)
+		lines = append(lines, line+rule(w-cellWidth(stripSGR(line))))
 	}
 	row := func(text []string, style string, menu func() []menuItem, press func()) {
 		lead := marker()
@@ -258,10 +268,12 @@ func (v *cloudViewer) detailContent(w int) (lines []string, rows []cloudDetailRo
 		if open {
 			chevron = "▾"
 		}
-		line := marker() + sgrDim + clip(chevron+" "+title, textW) + sgrReset
+		line := marker() + titled(chevron+" "+title)
 		if room := w - cellWidth(stripSGR(line)) - cellWidth(action); room >= 2 {
 			hits = append(hits, boxHit{row: len(lines), x0: w - cellWidth(action), x1: w - 1, act: func(int) { v.copy(text) }})
-			line += strings.Repeat(" ", room) + sgrUnder + action + sgrReset
+			line += rule(room-1) + " " + sgrUnder + action + sgrReset
+		} else {
+			line += rule(w - cellWidth(stripSGR(line)))
 		}
 		rows = append(rows, cloudDetailRow{first: len(lines), count: 1, menu: copyMenu(action, text), press: toggle})
 		lines = append(lines, line)
