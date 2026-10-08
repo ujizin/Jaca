@@ -269,21 +269,6 @@ final class OverridesModel {
     /// its payload.
     func seed(from txn: NetworkTransaction, session: NetworkSession) async -> OverrideRule {
         let bodies = await session.bodies(for: txn.id)
-        let responseBody = bodies.resp ?? Data()
-
-        var rule = OverrideRule()
-        rule.name = OverrideSeeding.name(for: txn)
-        rule.matcher = OverrideMatcher(pattern: OverrideSeeding.pattern(for: txn),
-                                       kind: .glob,
-                                       methods: [txn.method.uppercased()])
-        rule.routedHosts = OverrideCompiler.derivedRoutedHosts(for: rule.matcher)
-
-        let pretty = OverrideSeeding.prettyPrinted(responseBody, contentType: txn.responseContentType)
-        rule.action = .respond(OverrideResponseSpec(
-            statusCode: txn.statusCode ?? 200,
-            headers: OverrideSeeding.headers(txn.responseHeaders),
-            body: OverrideRuleStore.makeBodyRef(pretty)
-        ))
-        return rule
+        return OverrideSeeding.rule(for: txn, responseBody: bodies.resp ?? Data())
     }
 }

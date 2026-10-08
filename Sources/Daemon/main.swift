@@ -9,15 +9,27 @@ import Foundation
 //
 // Client commands start the daemon if it isn't running, unless --no-spawn is given.
 // See docs/daemon-plan.md.
+//
+// Invoked as `jaca` (a symlink to this binary on PATH, see scripts/install-cli.sh) it is the
+// command line over those calls: `jaca devices`, `jaca logs tail`, `jaca net requests`,
+// `jaca overrides add`… (`CLIParser`, `CLIRunner`). The app's own executable is `Jaca`, and the
+// filesystem is case-insensitive, so `jaca` can't be a second binary next to it.
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
+/// The name this binary was run as: `jacad`, or `jaca` through the symlink.
+let program = URL(fileURLWithPath: CommandLine.arguments.first ?? "jacad").lastPathComponent == "jaca" ? "jaca" : "jacad"
+
+func printError(_ text: String) {
+    FileHandle.standardError.write(Data("\(text)\n".utf8))
+}
+
 func fail(_ message: String, code: Int32 = 1) -> Never {
-    FileHandle.standardError.write(Data("jacad: \(message)\n".utf8))
+    printError("\(program): \(message)")
     exit(code)
 }
 
-let usage = """
+let usage = program == "jaca" ? CLIUsage.text(under: [], program: program) : """
 usage: jacad serve [--idle SECONDS]
        jacad call METHOD [PARAMS_JSON] [--no-spawn]
        jacad watch TOPIC... [--no-spawn]
@@ -25,10 +37,14 @@ usage: jacad serve [--idle SECONDS]
 """
 
 var args = Array(CommandLine.arguments.dropFirst())
-let noSpawn = args.contains("--no-spawn")
+/// What `jaca` was asked for; nil as `jacad`, and for the client commands both names share.
+var invocation: CLIInvocation?
+if program == "jaca" {
+    let parsed = CLIParser.parse(args)
+    if case .daemonCommand = parsed.command {} else { invocation = parsed }
+}
+let noSpawn = invocation?.noSpawn ?? args.contains("--no-spawn")
 args.removeAll { $0 == "--no-spawn" }
-guard let command = args.first else { fail(usage, code: 2) }
-args.removeFirst()
 
 /// Signal sources, held for the life of the process.
 var signalSources: [DispatchSourceSignal] = []
@@ -41,17 +57,51 @@ func runMain(_ body: @escaping @MainActor () async -> Int32) -> Never {
     exit(0)
 }
 
+func tryConnect() async throws -> DaemonClient {
+    let client = try await DaemonLauncher.connect(spawn: !noSpawn)
+    let _: DaemonServer.HelloResult = try await client.call(
+        "hello", DaemonServer.HelloParams(protocolVersion: DaemonProtocol.version, client: "\(program)-cli"),
+        timeout: DaemonDefaults.shortCallTimeout)
+    return client
+}
+
 func connect() async -> DaemonClient {
     do {
-        let client = try await DaemonLauncher.connect(spawn: !noSpawn)
-        let _: DaemonServer.HelloResult = try await client.call(
-            "hello", DaemonServer.HelloParams(protocolVersion: DaemonProtocol.version, client: "jacad-cli"),
-            timeout: DaemonDefaults.shortCallTimeout)
-        return client
+        return try await tryConnect()
     } catch {
         fail(error.localizedDescription)
     }
 }
+
+if let invocation {
+    switch invocation.command {
+    case .usage(let path):
+        printError(CLIUsage.text(under: path, program: program))
+        exit(2)
+    case .help(let path):
+        print(CLIUsage.text(under: path, program: program))
+        // The whole command list stands alone; a command or a group adds what its methods take and return.
+        if path.isEmpty { exit(0) }
+    default:
+        break
+    }
+    runMain {
+        let client: DaemonClient
+        if case .help = invocation.command {
+            // The usage is already printed: help without a daemon stops there.
+            guard let reached = try? await tryConnect() else { return 0 }
+            client = reached
+        } else {
+            client = await connect()
+        }
+        let runner = CLIRunner(client: client, program: program, json: invocation.json, raw: invocation.raw,
+                               out: { print($0) }, err: printError)
+        return await runner.run(invocation.command)
+    }
+}
+
+guard let command = args.first else { fail(usage, code: 2) }
+args.removeFirst()
 
 /// Prints a response line's `result` as compact JSON, or its error to stderr (returns 1).
 func printResult(_ line: Data) -> Int32 {
@@ -60,7 +110,7 @@ func printResult(_ line: Data) -> Int32 {
     }
     if let error = object["error"] as? [String: Any] {
         let message = error["message"] as? String ?? "error"
-        FileHandle.standardError.write(Data("jacad: \(message)\n".utf8))
+        printError("\(program): \(message)")
         return 1
     }
     let result = object["result"] ?? NSNull()
@@ -158,7 +208,7 @@ case "stop":
         } catch let error as RPCError where error.code == RPCError.disconnectedCode {
             code = 0   // it closed the connection: already stopping (idle), wait for it below
         } catch {
-            FileHandle.standardError.write(Data("jacad: \(error.localizedDescription)\n".utf8))
+            printError("\(program): \(error.localizedDescription)")
             return 1
         }
         // Return once the daemon is gone, so a command run right after can't reach it mid-exit.
@@ -167,7 +217,7 @@ case "stop":
             try? await Task.sleep(for: .milliseconds(50))
         }
         if FileManager.default.fileExists(atPath: socket) {
-            FileHandle.standardError.write(Data("jacad: still running after 2.5s\n".utf8))
+            printError("\(program): still running after 2.5s")
             return 1
         }
         return code
