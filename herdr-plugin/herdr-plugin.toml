@@ -1,0 +1,91 @@
+# Jaca for Herdr: Jaca's areas as Herdr panes, driven by the jacad daemon.
+# Link with: herdr plugin link "$PWD"   (see README.md)
+id = "dev.srsouza.jaca"
+name = "Jaca"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Jaca areas (devices and logs, Gradle daemons, Xcode DerivedData, projects) as Herdr panes, served by jacad"
+platforms = ["macos"]
+
+[[build]]
+command = ["go", "build", "-o", "bin/jaca-herdr", "./cmd/jaca-herdr"]
+
+# Make sure jacad is running (starts it if needed) when the Herdr server starts.
+[[startup]]
+command = ["bin/jaca-herdr", "ensure"]
+
+# The picker for the Gradle and Xcode panes. Choosing one opens it in a new tab.
+[[panes]]
+id = "tools"
+title = "Jaca"
+placement = "popup"
+command = ["bin/jaca-herdr", "pane", "tools"]
+
+[[panes]]
+id = "gradle"
+title = "Gradle"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "gradle"]
+
+[[panes]]
+id = "xcode"
+title = "Xcode"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "xcode"]
+
+# The device picker. Choosing a device and an option opens that option's pane in a new tab.
+[[panes]]
+id = "devices"
+title = "Devices"
+placement = "popup"
+command = ["bin/jaca-herdr", "pane", "devices"]
+
+# Opened by the device picker, which passes the device in JACA_HERDR_DEVICE. Opened directly,
+# it shows the picker first.
+[[panes]]
+id = "logs"
+title = "Logs"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "logs"]
+
+# Network inspection with the in-process agent and response overrides. Opened by the device
+# picker like logs.
+[[panes]]
+id = "network"
+title = "Network"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "network"]
+
+# The app's Browse Database: one app's local SQLite databases, read from a pulled snapshot.
+# Opened by the device picker like logs.
+[[panes]]
+id = "database"
+title = "Database"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "database"]
+
+# Cloud Logging: the home (projects, sign-in) in a popup and, in tabs it opens, the log sessions
+# (the same entrypoint, opened in a tab with the session in JACA_HERDR_CLOUD_SESSION).
+[[panes]]
+id = "cloud"
+title = "Cloud Logging"
+placement = "popup"
+command = ["bin/jaca-herdr", "pane", "cloud"]
+
+[[panes]]
+id = "projects"
+title = "Projects"
+placement = "tab"
+command = ["bin/jaca-herdr", "pane", "projects"]
+
+[[actions]]
+id = "gradle-kill-all"
+title = "Kill all Gradle daemons"
+contexts = ["global"]
+command = ["bin/jaca-herdr", "action", "gradle-kill-all"]
+
+[[actions]]
+id = "projects-clear-cache"
+title = "Clear build caches for this worktree"
+contexts = ["workspace", "pane"]
+command = ["bin/jaca-herdr", "action", "projects-clear-cache"]
