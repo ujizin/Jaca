@@ -20,11 +20,14 @@ struct OverridesPopover: View {
             header
             Divider().overlay(LemonadeTheme.colors.border.borderNeutralLow)
 
-            if overrides.rules.isEmpty {
-                emptyState
-            } else {
-                rulesList
+            Group {
+                if overrides.rules.isEmpty {
+                    emptyState
+                } else {
+                    rulesList
+                }
             }
+            .animation(.easeInOut(duration: 0.2), value: overrides.rules.isEmpty)
 
             Divider().overlay(LemonadeTheme.colors.border.borderNeutralLow)
             footer
@@ -89,6 +92,9 @@ struct OverridesPopover: View {
                     }
                 }
             }
+            // In daemon mode the edit lands later, from jacad's state, outside the button's
+            // `withAnimation`: animate list changes whenever they arrive.
+            .animation(.easeInOut(duration: 0.2), value: overrides.rules)
         }
         .frame(maxHeight: 320)
     }

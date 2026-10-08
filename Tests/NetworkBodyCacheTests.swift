@@ -12,7 +12,7 @@ final class NetworkBodyCacheTests: XCTestCase {
     }
 
     func testBodyCacheRoundTrips() async throws {
-        let cache = try XCTUnwrap(NetworkBodyCache())
+        let cache = try XCTUnwrap(NetworkBodyCache(directory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("nbc-\(UUID().uuidString.prefix(8))")))
         let id = UUID()
         let req = Data("the-request".utf8), resp = Data(repeating: 7, count: 4096)
         await cache.save(id, req: req, resp: resp)
@@ -27,7 +27,7 @@ final class NetworkBodyCacheTests: XCTestCase {
     @MainActor
     func testOlderBodiesEvictToDiskAndReloadOnSelect() async throws {
         let ca = try XCTUnwrap(try? CertificateAuthority())
-        let cache = try XCTUnwrap(NetworkBodyCache())
+        let cache = try XCTUnwrap(NetworkBodyCache(directory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("nbc-\(UUID().uuidString.prefix(8))")))
         let device = Device(id: "dev", platform: .android, model: "Model", state: .connected)
         let session = NetworkSession(device: device, ca: ca, adbURL: nil, bodyCache: cache)
 

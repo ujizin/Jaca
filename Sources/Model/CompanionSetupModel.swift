@@ -34,7 +34,7 @@ final class CompanionSetupModel {
         server = s
         if let ip = LANAddress.current() {
             connectURL = "http://\(ip):\(port)/"
-            qr = QRCode.image(connectURL)
+            qr = QRCode.png(connectURL).flatMap(NSImage.init(data:))
         } else {
             connectURL = "Wi-Fi address unavailable — connect this Mac to Wi-Fi."
         }

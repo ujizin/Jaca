@@ -9,7 +9,8 @@ struct GradleDaemonService: Sendable {
     func list() async -> [GradleDaemon] {
         guard let result = try? await CommandRunner.run(
             URL(fileURLWithPath: "/bin/ps"),
-            ["-axo", "pid=,etime=,pcpu=,rss=,command="]
+            // This user's processes only: another account's command line is not ours to list or kill.
+            ["-x", "-U", String(getuid()), "-o", "pid=,etime=,pcpu=,rss=,command="]
         ) else { return [] }
 
         var daemons: [GradleDaemon] = []
@@ -76,6 +77,8 @@ struct GradleDaemonService: Sendable {
 
     /// Deletes `~/.gradle/caches/<name>`. Returns true on success.
     func deleteCache(name: String) async -> Bool {
+        // A single directory name only: never a path that climbs out of ~/.gradle/caches.
+        guard !name.isEmpty, !name.contains("/"), name != ".", name != ".." else { return false }
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".gradle/caches/\(name)")
         do { try FileManager.default.removeItem(at: dir); return true }

@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Keying by package alone cross-wired two devices running the same app — the second
 /// registration replaced the first, orphaning its host-set updates.
-struct InterceptTarget: Sendable, Hashable {
+struct InterceptTarget: Sendable, Hashable, Codable {
     var deviceID: String
     var package: String
 }

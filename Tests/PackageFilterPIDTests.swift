@@ -6,13 +6,13 @@ final class PackageFilterPIDTests: XCTestCase {
     /// set to empty hid EVERY line. Accumulation must never clear on death.
     func testAccumulatePIDsNeverClearsWhenAppDies() {
         var pids: Set<Int32> = []
-        pids = LogSession.accumulatePIDs(pids, with: [100])   // app starts
+        pids = LogStreamEngine.accumulatePIDs(pids, with: [100])   // app starts
         XCTAssertEqual(pids, [100])
-        pids = LogSession.accumulatePIDs(pids, with: [])      // crash → keep, don't hide logs
+        pids = LogStreamEngine.accumulatePIDs(pids, with: [])      // crash → keep, don't hide logs
         XCTAssertEqual(pids, [100])
-        pids = LogSession.accumulatePIDs(pids, with: [200])   // reinstall → new pid added
+        pids = LogStreamEngine.accumulatePIDs(pids, with: [200])   // reinstall → new pid added
         XCTAssertEqual(pids, [100, 200])
-        pids = LogSession.accumulatePIDs(pids, with: [])      // dies again → keep both
+        pids = LogStreamEngine.accumulatePIDs(pids, with: [])      // dies again → keep both
         XCTAssertEqual(pids, [100, 200])
     }
 

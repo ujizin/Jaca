@@ -16,11 +16,17 @@ final class LogBodyPrettifyStore {
     private static let key = "logPrettifyJSONBodies"
 
     var enabled: Bool {
-        didSet { UserDefaults.standard.set(enabled, forKey: Self.key) }
+        didSet { JacaDefaults.shared.set(enabled, forKey: Self.key) }
     }
 
     private init() {
         // Absent key → default ON.
-        enabled = UserDefaults.standard.object(forKey: Self.key) as? Bool ?? true
+        enabled = Self.isEnabled()
+    }
+
+    /// The persisted value, for a process without the observable store (`jacad` reads it on
+    /// every flush, so the app's toggle takes effect there too).
+    nonisolated static func isEnabled(in defaults: UserDefaults = JacaDefaults.shared) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? true
     }
 }

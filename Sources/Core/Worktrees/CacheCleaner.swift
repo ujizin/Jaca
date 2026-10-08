@@ -52,7 +52,8 @@ struct CacheCleaner: Sendable {
             guard let data = try? Data(contentsOf: info),
                   let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
                   let workspacePath = plist["WorkspacePath"] as? String,
-                  workspacePath.hasPrefix(worktree.path)
+                  // With the separator: clearing /repo/app must not match /repo/app-old.
+                  workspacePath == worktree.path || workspacePath.hasPrefix(worktree.path.hasSuffix("/") ? worktree.path : worktree.path + "/")
             else { continue }
 
             freedKB += await duKB(dir.path)

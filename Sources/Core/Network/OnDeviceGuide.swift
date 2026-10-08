@@ -9,7 +9,7 @@ enum OnDeviceGuide {
 
     /// The bundled companion APK, or the dev build output when running unbundled.
     static var apkURL: URL? {
-        if let u = Bundle.main.url(forResource: "jaca-setup-helper", withExtension: "apk",
+        if let u = JacaBundle.app.url(forResource: "jaca-setup-helper", withExtension: "apk",
                                    subdirectory: "companion") { return u }
         let dev = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("workspace/jaca/companion/out/jaca-setup-helper.apk")

@@ -58,6 +58,18 @@ Three layers, enforced by directory:
 - **`Sources/Model/`** — `@Observable @MainActor` state. `AppModel` owns the device list, open tabs, and one model instance per top-level area. Session types (`LogSession`, `NetworkSession`) conform to `WorkspaceTab`.
 - **`Sources/Features/`** — SwiftUI views, one folder per feature.
 
+### The daemon (`jacad`, experimental — branch `exp/daemon`)
+
+`Sources/Core` also compiles into a second target, `jacad` (`Sources/Daemon/main.swift`, embedded at
+`Jaca.app/Contents/MacOS/jacad`): a background daemon serving each area over newline-delimited
+JSON-RPC on `~/.jaca/jacad.sock` (`Sources/Core/Daemon/`). Areas are opt-in per area
+(`defaults write dev.srsouza.Jaca daemonAreas -array …`, or `JACA_DAEMON_AREAS=all`); off, the app
+works in-process exactly as before. Domain logic lives in Core engines (`ProjectsEngine`,
+`DevicesEngine`, `LogStreamEngine`, `CloudEngine`, `CloudStreamEngine`, `NetworkCaptureEngine`)
+that the app runs in-process or mirrors from the daemon (`Model/Daemon/`). Because `jacad` builds
+Core without Model/Features, Core must never reference them. Plan, decisions and status:
+**`docs/daemon-plan.md`**. The Herdr plugin client is `herdr-plugin/`.
+
 ### The top-level "area" pattern
 
 The left sidebar switches the main pane between **areas** via `AppModel.mode: WorkspaceMode` (`devices`, `projects`, `gradle`, `xcode`). Adding an area means touching a consistent set of files — read one existing area end-to-end (e.g. Projects or Xcode) before adding one:

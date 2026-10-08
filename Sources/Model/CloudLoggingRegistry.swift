@@ -4,20 +4,15 @@ import Observation
 /// Transient feedback for the Cloud Logging area (mirrors `ProjectsToast`).
 struct CloudLoggingToast: Equatable { var message: String; var systemFallback: String }
 
-/// gcloud detection + sign-in status.
-enum CloudAuthState: Equatable, Sendable {
-    case unknown            // not checked yet
-    case notInstalled       // no gcloud binary found
-    case notAuthenticated   // gcloud present but no active account
-    case authenticated(account: String)
-}
-
-/// THE single source of truth for Cloud Logging (per the single-source-of-truth convention,
-/// mirrors `CompanionRegistry`). One observable owner of: gcloud detection + auth state, the
-/// persisted project list, and the **global per-project** state — the selected log name, the
-/// cached available log names, and the auto-detected label keys. Every `CloudLogSession` reads
-/// this reactively, so changing the log name (or a detected label key appearing) in one tab is
-/// reflected in every tab for that project, with no per-view polling (req 7).
+/// THE single source of truth for Cloud Logging in the app (per the single-source-of-truth
+/// convention, mirrors `CompanionRegistry`): gcloud detection + auth state, the persisted project
+/// list, and the **global per-project** state — the selected log name, the cached available log
+/// names, and the auto-detected label keys. Every `CloudLogSession` reads this reactively, so
+/// changing the log name (or a detected label key appearing) in one tab is reflected in every tab
+/// for that project, with no per-view polling.
+///
+/// The domain work lives in `CloudEngine`: in-process, or in `jacad` (daemon mode), mirrored here
+/// from its retained `cloud.state` topic. This type adds the toasts.
 @Observable @MainActor
 final class CloudLoggingRegistry {
     // MARK: Detection / auth
@@ -29,170 +24,206 @@ final class CloudLoggingRegistry {
     /// True once a `gcloud` binary has been located — gates whether the Cloud Logging UI shows.
     var isAvailable: Bool { binaryURL != nil }
     var cli: GcloudCLI? { binaryURL.map { GcloudCLI(binary: $0) } }
-    /// The exact command we tell the user to run in a terminal to sign in (req 2).
+    /// The exact command we tell the user to run in a terminal to sign in.
     let authCommand = "gcloud auth login"
 
-    // MARK: Projects (single source of truth, persisted to ~/.jaca)
+    // MARK: Projects + saved templates (persisted to ~/.jaca by the engine)
 
     private(set) var projects: [CloudProject] = []
-
-    // MARK: Saved templates (global, persisted to ~/.jaca)
-
     private(set) var queryTemplates: [CloudQueryTemplate] = []
     private(set) var sqlTemplates: [CloudSqlTemplate] = []
 
     var toast: CloudLoggingToast?
     private var toastTask: Task<Void, Never>?
 
-    private let store: CloudProjectStore
-    private let templateStore: CloudTemplateStore
+    typealias AddResult = CloudAddProjectResult
 
-    init(store: CloudProjectStore = CloudProjectStore(), templateStore: CloudTemplateStore = CloudTemplateStore()) {
-        self.store = store
-        self.templateStore = templateStore
-        projects = store.load()   // synchronous load → first frame already has the project list
-        (queryTemplates, sqlTemplates) = templateStore.load()
-        detect()
+    /// The engine doing the work in-process (daemon mode off, or the daemon unreachable).
+    private(set) var localEngine: CloudEngine?
+    private let daemon: DaemonConnector
+    let usesDaemon: Bool
+    private var daemonWatch: Task<Void, Never>?
+    private let makeLocalEngine: () -> CloudEngine
+
+    init(store: CloudProjectStore = CloudProjectStore(), templateStore: CloudTemplateStore = CloudTemplateStore(),
+         daemon: DaemonConnector? = nil) {
+        let daemon = daemon ?? .shared
+        self.daemon = daemon
+        self.usesDaemon = daemon.isEnabled(.cloudLogging)
+        makeLocalEngine = { CloudEngine(store: store, templateStore: templateStore) }
+        if usesDaemon {
+            // First frame from disk (read-only); the daemon's retained state follows.
+            projects = store.load()
+            (queryTemplates, sqlTemplates) = templateStore.load()
+            watchDaemon()
+        } else {
+            startLocalEngine()
+        }
+    }
+
+    // MARK: - Engine plumbing
+
+    @discardableResult
+    private func startLocalEngine() -> CloudEngine {
+        if let localEngine { return localEngine }
+        let engine = makeLocalEngine()
+        engine.onChange = { [weak self] in self?.apply($0) }
+        localEngine = engine
+        apply(engine.state)
+        return engine
+    }
+
+    private func watchDaemon() {
+        daemonWatch = daemon.watch([CloudArea.stateTopic],
+                                   onUnavailable: { [weak self] in self?.startLocalEngine() }) { [weak self] event in
+            guard let self, let state = try? event.decode(CloudState.self) else { return }
+            if let local = self.localEngine {
+                // The app wrote projects/templates while the daemon was away: have it re-read them
+                // (its reloaded state follows on this topic).
+                local.onChange = nil
+                self.localEngine = nil
+                Task { let _: RPCEmpty? = await self.daemon.call("cloud.reload", RPCEmpty()) }
+            }
+            self.apply(state)
+        }
+    }
+
+    private func apply(_ state: CloudState) {
+        binaryURL = state.binaryPath.map { URL(fileURLWithPath: $0) }
+        isDetecting = state.isDetecting
+        authState = state.authState
+        projects = state.projects
+        queryTemplates = state.queryTemplates
+        sqlTemplates = state.sqlTemplates
+    }
+
+    /// Runs `local` on the in-process engine, or `method` on the daemon's. A call that reached
+    /// the daemon and failed yields nil rather than running twice.
+    private func perform<P: Encodable & Sendable, R: Decodable & Sendable>(
+        _ method: String, _ params: P, as type: R.Type, local: (CloudEngine) async -> R
+    ) async -> R? {
+        if usesDaemon, localEngine == nil {
+            do {
+                if let value = try await daemon.request(method, params, as: type) { return value }
+            } catch {
+                return nil
+            }
+        }
+        return await local(startLocalEngine())
+    }
+
+    /// Fire-and-forget form for mutations whose only result is the next state.
+    /// In-process it runs synchronously, as the registry always did.
+    private func send<P: Encodable & Sendable>(_ method: String, _ params: P, local: @escaping (CloudEngine) -> Void) {
+        guard usesDaemon, localEngine == nil else {
+            local(startLocalEngine())
+            return
+        }
+        Task { _ = await perform(method, params, as: RPCEmpty.self) { local($0); return RPCEmpty() } }
     }
 
     // MARK: - Templates
 
     func saveQueryTemplate(name: String, query: CloudLogQuery, rawFilter: String?) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        queryTemplates.append(CloudQueryTemplate(name: trimmed, query: query, rawFilter: rawFilter))
-        templateStore.save(queries: queryTemplates, sql: sqlTemplates)
-        flash("Saved query template")
+        Task {
+            let saved = await perform("cloud.saveQueryTemplate",
+                                      CloudArea.QueryTemplateParams(name: name, query: query, rawFilter: rawFilter),
+                                      as: Bool.self) { $0.saveQueryTemplate(name: name, query: query, rawFilter: rawFilter) }
+            if saved == true { flash("Saved query template") }
+        }
     }
 
     func deleteQueryTemplate(_ id: UUID) {
-        queryTemplates.removeAll { $0.id == id }
-        templateStore.save(queries: queryTemplates, sql: sqlTemplates)
+        send("cloud.deleteQueryTemplate", CloudArea.TemplateIDParams(id: id)) { $0.deleteQueryTemplate(id) }
     }
 
     func saveSqlTemplate(name: String, sql: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        sqlTemplates.append(CloudSqlTemplate(name: trimmed, sql: sql))
-        templateStore.save(queries: queryTemplates, sql: sqlTemplates)
-        flash("Saved SQL template")
+        Task {
+            let saved = await perform("cloud.saveSqlTemplate", CloudArea.SqlTemplateParams(name: name, sql: sql),
+                                      as: Bool.self) { $0.saveSqlTemplate(name: name, sql: sql) }
+            if saved == true { flash("Saved SQL template") }
+        }
     }
 
     func deleteSqlTemplate(_ id: UUID) {
-        sqlTemplates.removeAll { $0.id == id }
-        templateStore.save(queries: queryTemplates, sql: sqlTemplates)
+        send("cloud.deleteSqlTemplate", CloudArea.TemplateIDParams(id: id)) { $0.deleteSqlTemplate(id) }
     }
 
     // MARK: - Detection & auth
 
     /// (Re)detects gcloud, then refreshes the auth state. Safe to call repeatedly.
     func detect() {
-        isDetecting = true
-        Task { @MainActor in
-            let url = await GcloudToolchain.resolveBinaryURL()
-            self.binaryURL = url
-            self.isDetecting = false
-            if url == nil { self.authState = .notInstalled; return }
-            await self.refreshAuth()
-        }
+        send("cloud.detect", RPCEmpty()) { $0.detect() }
     }
 
     func refreshAuth() async {
-        guard let cli else { authState = .notInstalled; return }
-        if let account = await cli.activeAccount() {
-            authState = .authenticated(account: account)
-        } else {
-            authState = .notAuthenticated
-        }
+        _ = await perform("cloud.refreshAuth", RPCEmpty(), as: RPCEmpty.self) { await $0.refreshAuth(); return RPCEmpty() }
     }
 
     /// Flips to "not signed in" when a session's gcloud call reports an auth failure.
-    func markUnauthenticated() { authState = .notAuthenticated }
+    func markUnauthenticated() {
+        authState = .notAuthenticated
+        send("cloud.markUnauthenticated", RPCEmpty()) { $0.markUnauthenticated() }
+    }
 
     // MARK: - Lookup
 
     func project(_ id: String) -> CloudProject? { projects.first { $0.projectID == id } }
 
-    // MARK: - Mutations (persist + notify reactively via @Observable)
+    // MARK: - Mutations
 
-    enum AddResult: Equatable { case added, alreadyExists, failure(String) }
-
-    /// Validates the project id via `gcloud projects describe`, then stores it (req 3).
+    /// Validates the project id via `gcloud projects describe`, then stores it.
     func addProject(id: String, displayName: String) async -> AddResult {
-        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return .failure("Enter a project id.") }
-        if projects.contains(where: { $0.projectID == trimmed }) { return .alreadyExists }
-        guard let cli else { return .failure("gcloud isn't installed.") }
-        do {
-            try await cli.describeProject(trimmed)
-        } catch let error as GcloudCLI.CLIError {
-            if case .notAuthenticated = error { authState = .notAuthenticated }
-            return .failure(error.errorDescription ?? "Couldn't validate the project.")
-        } catch {
-            return .failure(error.localizedDescription)
+        let result = await perform("cloud.addProject", CloudArea.AddProjectParams(id: id, displayName: displayName),
+                                   as: AddResult.self) { await $0.addProject(id: id, displayName: displayName) }
+            ?? .failure("Couldn't validate the project.")
+        if result == .added {
+            let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+            var shown = CloudProject(projectID: trimmed)
+            shown.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            flash("Added \(project(trimmed)?.title ?? shown.title)")
         }
-        var project = CloudProject(projectID: trimmed)
-        project.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        projects.append(project)
-        persist()
-        flash("Added \(project.title)")
-        return .added
+        return result
     }
 
     func setDisplayName(_ name: String, for id: String) {
-        update(id) { $0.displayName = name.trimmingCharacters(in: .whitespacesAndNewlines) }
+        send("cloud.setDisplayName", CloudArea.ProjectNameParams(id: id, name: name)) { $0.setDisplayName(name, for: id) }
         flash("Renamed")
     }
 
     func removeProject(_ id: String) {
         let title = project(id)?.title ?? id
-        projects.removeAll { $0.projectID == id }
-        persist()
+        send("cloud.removeProject", CloudArea.ProjectIDParams(id: id)) { _ = $0.removeProject(id) }
         flash("Removed \(title)", fallback: "eraser")
     }
 
-    /// Sets the GLOBAL selected log name for a project — shared by every open session (req 7).
+    /// Sets the GLOBAL selected log name for a project — shared by every open session.
     func setSelectedLogName(_ logName: String?, for id: String) {
-        update(id) { $0.selectedLogName = logName }
-    }
-
-    func setLogNames(_ names: [String], for id: String) {
-        update(id) { $0.logNames = names }
-    }
-
-    /// Refreshes the available log names from gcloud and caches them (req 7).
-    func refreshLogNames(for id: String) async {
-        guard let cli else { return }
-        do {
-            let names = try await cli.listLogNames(project: id)
-            setLogNames(names, for: id)
-        } catch let error as GcloudCLI.CLIError {
-            if case .notAuthenticated = error { authState = .notAuthenticated }
-            flash(error.errorDescription ?? "Couldn't list logs.", fallback: "warn")
-        } catch {
-            flash("Couldn't list logs.", fallback: "warn")
+        if let index = projects.firstIndex(where: { $0.projectID == id }) {
+            projects[index].selectedLogName = logName   // optimistic; the engine's state follows
+        }
+        send("cloud.setSelectedLogName", CloudArea.LogNameParams(id: id, logName: logName)) {
+            $0.setSelectedLogName(logName, for: id)
         }
     }
 
-    /// Merges auto-detected label keys for a (project, log name). Only persists on a real
-    /// change, so the hot streaming path doesn't thrash the disk (req 9.3).
-    func recordLabelKeys(_ keys: Set<String>, project id: String, logName: String) {
-        guard !keys.isEmpty, let index = projects.firstIndex(where: { $0.projectID == id }) else { return }
-        let existing = projects[index].labelKeysByLogName[logName] ?? []
-        let (merged, changed) = LabelDetector.merge(existing, with: keys)
-        guard changed else { return }
-        projects[index].labelKeysByLogName[logName] = merged
-        persist()
+    func setLogNames(_ names: [String], for id: String) {
+        send("cloud.setLogNames", CloudArea.LogNamesParams(id: id, names: names)) { $0.setLogNames(names, for: id) }
     }
 
-    /// Toggles a label key as a favorite for a (project, log name) — favorites pin to the top of
-    /// the label-key list. Persisted to ~/.jaca.
+    /// Refreshes the available log names from gcloud and caches them.
+    func refreshLogNames(for id: String) async {
+        let error = await perform("cloud.refreshLogNames", CloudArea.ProjectIDParams(id: id), as: String?.self) {
+            await $0.refreshLogNames(for: id)
+        }
+        if let message = error ?? nil { flash(message, fallback: "warn") }
+    }
+
+    /// Toggles a label key as a favorite for a (project, log name).
     func toggleFavoriteLabel(_ key: String, project id: String, logName: String) {
-        guard !key.isEmpty, let index = projects.firstIndex(where: { $0.projectID == id }) else { return }
-        var favorites = projects[index].favoriteLabelKeysByLogName[logName] ?? []
-        if let at = favorites.firstIndex(of: key) { favorites.remove(at: at) } else { favorites.append(key) }
-        projects[index].favoriteLabelKeysByLogName[logName] = favorites
-        persist()
+        send("cloud.toggleFavoriteLabel", CloudArea.LabelKeyParams(project: id, logName: logName, key: key)) {
+            $0.toggleFavoriteLabel(key, project: id, logName: logName)
+        }
     }
 
     /// The configured example-count rules for a (project, log name), keyed by label key. Missing
@@ -201,9 +232,11 @@ final class CloudLoggingRegistry {
         project(id)?.labelExampleRulesByLogName[logName] ?? [:]
     }
 
-    /// Replaces the whole rule map for a (project, log name). Persisted to ~/.jaca.
+    /// Replaces the whole rule map for a (project, log name).
     func setLabelExampleRules(_ rules: [String: LabelExampleRule], project id: String, logName: String) {
-        update(id) { $0.labelExampleRulesByLogName[logName] = rules }
+        send("cloud.setLabelExampleRules", CloudArea.LabelRulesParams(project: id, logName: logName, rules: rules)) {
+            $0.setLabelExampleRules(rules, project: id, logName: logName)
+        }
     }
 
     // MARK: - Toast
@@ -217,13 +250,21 @@ final class CloudLoggingRegistry {
         }
     }
 
-    // MARK: - Internals
+    // MARK: - Session plumbing
 
-    private func update(_ id: String, _ change: (inout CloudProject) -> Void) {
-        guard let index = projects.firstIndex(where: { $0.projectID == id }) else { return }
-        change(&projects[index])
-        persist()
+    /// A feed for a Cloud Logging tab: a daemon session in daemon mode, otherwise an in-process
+    /// engine reporting label keys and auth failures to this registry's engine.
+    func makeFeed(id: UUID, config: CloudStreamConfig, autoStart: Bool) -> CloudFeed {
+        if usesDaemon {
+            return RemoteCloudFeed(id: id, config: config, autoStart: autoStart, daemon: daemon)
+        }
+        let engine = startLocalEngine()
+        return CloudStreamEngine(
+            id: id,
+            cli: { [weak engine] in engine?.cli },
+            recordLabels: { [weak engine] keys, project, logName in
+                engine?.recordLabelKeys(keys, project: project, logName: logName)
+            },
+            markUnauthenticated: { [weak engine] in engine?.markUnauthenticated() })
     }
-
-    private func persist() { store.save(projects) }
 }

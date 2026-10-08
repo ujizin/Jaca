@@ -51,9 +51,15 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Sources
+        excludes:
+          - Daemon/**
       - path: Resources
         buildPhase: resources
     dependencies:
+      - target: jacad
+        copy:
+          destination: executables
+        codeSign: false
       - package: Lemonade
       - package: swift-nio
         product: NIOCore
@@ -63,6 +69,9 @@ targets:
         product: NIOHTTP1
       - package: swift-nio
         product: NIOFoundationCompat
+      # EmbeddedChannel for the daemon transport tests (hosted by the app, so linked here).
+      - package: swift-nio
+        product: NIOEmbedded
       - package: swift-nio-ssl
         product: NIOSSL
       - package: swift-certificates
@@ -126,6 +135,46 @@ targets:
           mkdir -p "$DIR"
           COMMIT=$(cd "$SRCROOT" && git rev-parse HEAD 2>/dev/null || echo "")
           printf '{"repoPath": "%s", "buildCommit": "%s"}\n' "$SRCROOT" "$COMMIT" > "$DIR/build-info.json"
+
+  # The background daemon. Compiles Sources/Core directly (same sources as the app, so no
+  # `public` API surface is needed) plus its entry point in Sources/Daemon. Because it builds
+  # Core without Model/Features, it also enforces at compile time that Core never depends on
+  # them. Embedded in the app at Contents/MacOS/jacad. See docs/daemon-plan.md.
+  jacad:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/Core
+      - path: Sources/Daemon
+    dependencies:
+      - package: swift-nio
+        product: NIOCore
+      - package: swift-nio
+        product: NIOPosix
+      - package: swift-nio
+        product: NIOHTTP1
+      - package: swift-nio
+        product: NIOFoundationCompat
+      - package: swift-nio-ssl
+        product: NIOSSL
+      - package: swift-certificates
+        product: X509
+      - package: swift-crypto
+        product: Crypto
+      - package: swift-asn1
+        product: SwiftASN1
+      - package: grpc-swift
+        product: GRPC
+      - package: swift-protobuf
+        product: SwiftProtobuf
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.srsouza.jacad
+        PRODUCT_NAME: jacad
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Jaca-Bridging-Header.h
+        CLANG_ENABLE_OBJC_ARC: YES
+        SKIP_INSTALL: YES
 
   JacaTests:
     type: bundle.unit-test
@@ -194,3 +243,9 @@ schemes:
         - JacaTests
         - JacaAgentTests
         - JacaUITests
+  jacad:
+    build:
+      targets:
+        jacad: all
+    run:
+      config: Debug

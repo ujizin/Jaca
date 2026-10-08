@@ -25,7 +25,10 @@ final class AppModel {
             guard networkInspectionMode != oldValue else { return }
             // Persisted first: both reconfigurations read the flags back.
             FeatureFlags.networkInspectionMode = networkInspectionMode
-            if (oldValue == .mitmHTTPSDebugging) != httpsDecryptionEnabled { reconfigureCompanion() }
+            if (oldValue == .mitmHTTPSDebugging) != httpsDecryptionEnabled {
+                reconfigureCompanion()
+                reconfigureNetworkRuntime()
+            }
             if (oldValue == .agentHTTPSDebugging) != responseOverridesEnabled { reconfigureOverrides() }
         }
     }
@@ -71,9 +74,13 @@ final class AppModel {
         return sessions.first { $0.id == selectedSessionID }
     }
 
-    private var providers: [DeviceProvider] = []
-    private var discoveryTasks: [Task<Void, Never>] = []
-    private var devicesByPlatform: [DevicePlatform: [Device]] = [:]
+    /// Discovered adb/simulator/iOS devices, platform-ordered, before companions are merged
+    /// in. Fed by the in-process `DevicesEngine`, or by `jacad`'s `devices.list` in daemon mode.
+    private var discovered: [Device] = []
+    private var deviceEngine: DevicesEngine?
+    private var deviceWatch: Task<Void, Never>?
+    private var discoveryStarted = false
+    private let daemon = DaemonConnector.shared
 
     /// The single source of truth for companion devices — mDNS discovery, the gRPC control
     /// links, CA push, capture heartbeats, and the blocked-network hint. Every flow reads this
@@ -108,7 +115,7 @@ final class AppModel {
         if !uiTestMode {
             pendingRestores = Self.loadPersistedTabs()
         }
-        buildProviders()
+        resolveADB()
         companions = CompanionRegistry(ca: { [weak self] in self?.ensureCA() },
                                        adbURL: { [weak self] in self?.adbURL },
                                        uiTestMode: uiTestMode)
@@ -134,47 +141,52 @@ final class AppModel {
         Task { await store?.prune(olderThan: cutoff) }
     }
 
-    private func buildProviders() {
-        adbURL = AndroidToolchain.adbURL(override: UserDefaults.standard.string(forKey: "adbPath"))
-        providers = []
-        if let adbURL {
-            providers.append(AndroidDeviceProvider(adbURL: adbURL))
-        }
-        providers.append(SimulatorDeviceProvider())   // self-guards when no Xcode
-        providers.append(IOSDeviceProvider())          // self-guards when no devicectl
+    /// adb for this process's own sessions (log streams, CA install). Discovery resolves its
+    /// own through `DevicesEngine` from the same setting.
+    private func resolveADB() {
+        adbURL = AndroidToolchain.adbURL(override: UserDefaults.standard.string(forKey: DevicesEngine.adbPathKey))
     }
 
     /// Re-resolves the toolchain (e.g. after the adb path changes in Settings)
     /// and restarts discovery.
     func reloadProviders() {
-        discoveryTasks.forEach { $0.cancel() }
-        discoveryTasks.removeAll()
-        devicesByPlatform.removeAll()
-        devices = []
-        buildProviders()
-        startDiscovery()
+        resolveADB()
+        discovered = []
+        recomputeDevices()
+        guard daemon.isEnabled(.devices), deviceEngine == nil else {
+            deviceEngine?.reload()
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                if try await self.daemon.request("devices.reload", RPCEmpty(), as: RPCEmpty.self) != nil { return }
+            } catch {
+                return   // reached the daemon and failed; its discovery keeps running
+            }
+            self.startLocalDiscovery()   // daemon unreachable: discover in-process
+        }
     }
 
     // MARK: - Discovery
 
     func startDiscovery() {
-        guard discoveryTasks.isEmpty else { return }
-        for provider in providers {
-            let platform = provider.platform
-            let task = Task { [weak self] in
-                for await list in provider.deviceStream() {
-                    guard let self else { return }
-                    self.devicesByPlatform[platform] = list
-                    // Feed adb-connected Android devices to the registry (only when the
-                    // experimental feature is on) so it can discover their companion IP.
-                    if platform == .android, !self.uiTestMode, self.httpsDecryptionEnabled {
-                        self.companions.setADBCompanionDevices(
-                            list.filter { $0.state.isReady }.map { (serial: $0.id, model: $0.model) })
-                    }
-                    self.recomputeDevices()
+        guard !discoveryStarted else { return }
+        discoveryStarted = true
+        if daemon.isEnabled(.devices) {
+            // The daemon's shared discovery; while it's unreachable, discover in-process.
+            deviceWatch = daemon.watch([DevicesArea.listTopic],
+                                       onUnavailable: { [weak self] in self?.startLocalDiscovery() }) { [weak self] event in
+                guard let self, let list = try? event.decode([Device].self) else { return }
+                if let local = self.deviceEngine {
+                    local.stop()
+                    local.onChange = nil
+                    self.deviceEngine = nil
                 }
+                self.applyDiscovered(list)
             }
-            discoveryTasks.append(task)
+        } else {
+            startLocalDiscovery()
         }
         // Companion discovery is owned by `companions` (the single source of truth). It folds
         // its devices into the list via the `onChange` wired in init. Started only when the
@@ -183,14 +195,74 @@ final class AppModel {
         if !uiTestMode && httpsDecryptionEnabled { companions.start() }
     }
 
+    @discardableResult
+    private func startLocalDiscovery() -> DevicesEngine? {
+        if let deviceEngine { return deviceEngine }
+        let engine = DevicesEngine(defaults: .standard)
+        engine.onChange = { [weak self] in self?.applyDiscovered($0) }
+        engine.start()
+        deviceEngine = engine
+        return engine
+    }
+
+    private func applyDiscovered(_ list: [Device]) {
+        discovered = list
+        // Feed adb-connected Android devices to the registry (only when the experimental
+        // feature is on) so it can discover their companion IP.
+        if !uiTestMode, httpsDecryptionEnabled {
+            companions.setADBCompanionDevices(
+                list.filter { $0.platform == .android && $0.state.isReady }.map { (serial: $0.id, model: $0.model) })
+        }
+        recomputeDevices()
+    }
+
+    /// The inspection mode also decides where network capture runs (see
+    /// `DaemonConnector.networkRunsInDaemon`). When that changes, the override runtime moves, and
+    /// every network tab on the wrong side is replaced by one on the right side, in place, with its
+    /// chosen source restored but stopped — restarting it could relaunch the user's app.
+    private func reconfigureNetworkRuntime() {
+        let inDaemon = daemon.networkRunsInDaemon(httpsDecryption: httpsDecryptionEnabled)
+        overrides.setRuntime(inDaemon: inDaemon)
+        // Built as a new list: dropping a tab mid-walk would shift the indices of the rest.
+        var rebuilt: [any WorkspaceTab] = []
+        for tab in sessions {
+            // Companion-only devices always capture in-process (`makeNetworkSession`).
+            guard let old = tab as? NetworkSession, old.isRemote != (inDaemon && !old.device.isCompanion) else {
+                rebuilt.append(tab)
+                continue
+            }
+            let wasSelected = selectedSessionID == old.id
+            let kind = old.hasSelectedMode ? old.currentDescriptor?.kind : nil
+            let package = old.targetPackage
+            let rows = old.transactions, selectedRow = old.selectedID
+            old.close()
+            // Only fails without a CA, which a network tab already needed: the tab is dropped.
+            guard let fresh = makeNetworkSession(for: old.device, name: old.displayName) else { continue }
+            // Toggling HTTPS decryption changes what's offered (companion capture needs it): a
+            // mode the rebuilt tab doesn't offer returns it to the chooser.
+            if let kind, fresh.availableSources.contains(where: { $0.kind == kind }) {
+                fresh.restoreMode(kind, package: package)
+            }
+            // The capture itself stops (the other process can't take over a live attach), but its
+            // rows stay. Bodies evicted to the other process's cache don't come along: those rows
+            // keep their metadata and read as evicted.
+            fresh.adoptRows(rows, selectedID: selectedRow)
+            rebuilt.append(fresh)
+            if wasSelected { selectedSessionID = fresh.id }
+        }
+        sessions = rebuilt
+        if let selected = selectedSessionID, !sessions.contains(where: { $0.id == selected }) {
+            selectedSessionID = sessions.last?.id
+        }
+        persistTabs()
+    }
+
     /// Start or tear down the companion subsystem when the feature flag toggles at runtime.
     private func reconfigureCompanion() {
         if httpsDecryptionEnabled {
             companions.start()
-            if let android = devicesByPlatform[.android] {
-                companions.setADBCompanionDevices(
-                    android.filter { $0.state.isReady }.map { (serial: $0.id, model: $0.model) })
-            }
+            companions.setADBCompanionDevices(
+                discovered.filter { $0.platform == .android && $0.state.isReady }.map { (serial: $0.id, model: $0.model) })
         } else {
             companions.stop()
         }
@@ -218,9 +290,7 @@ final class AppModel {
     }
 
     private func recomputeDevices() {
-        var merged = devicesByPlatform
-            .sorted { $0.key.rawValue < $1.key.rawValue }
-            .flatMap { $0.value }
+        var merged = discovered
 
         // Companion is just another device source (owned by `companions`), but only when the
         // experimental HTTPS-decryption feature is on. Off (the default) → no companion devices
@@ -288,7 +358,7 @@ final class AppModel {
                         projectID: projectID, autoStart: false, displayName: descriptor.displayName,
                         query: descriptor.cloudQuery ?? CloudLogQuery(),
                         timeRange: descriptor.cloudTimeRange ?? .last(minutes: 15),
-                        rawFilter: descriptor.cloudRawFilter)
+                        rawFilter: descriptor.cloudRawFilter, sessionID: descriptor.sessionID)
                 } else {
                     stillPending.append(descriptor)
                 }
@@ -308,10 +378,13 @@ final class AppModel {
                 filter.minLevel = LogLevel(rawValue: descriptor.minLevel) ?? .verbose
                 filter.query = descriptor.query
                 filter.isRegex = descriptor.isRegex
-                let session = startSession(for: device, filter: filter, name: descriptor.displayName, autoStart: false)
-                if !descriptor.packageLabel.isEmpty { session?.setPackage(descriptor.packageLabel) }
+                filter.packageLabel = descriptor.packageLabel
+                // Same id as before, so a daemon session still running is reattached.
+                startSession(for: device, filter: filter, name: descriptor.displayName, autoStart: false,
+                             sessionID: descriptor.sessionID)
             case .network:
-                let session = startNetworkSession(for: device, name: descriptor.displayName, autoStart: false)
+                let session = startNetworkSession(for: device, name: descriptor.displayName, autoStart: false,
+                                                  sessionID: descriptor.sessionID)
                 // Pre-configure the chosen mode so the tab restores ready-to-run:
                 // the user just presses play (no re-picking from the chooser).
                 let pkg = descriptor.packageLabel.isEmpty ? nil : descriptor.packageLabel
@@ -344,20 +417,21 @@ final class AppModel {
             return TabDescriptor(kind: .log, platform: log.device.platform, deviceID: log.device.id,
                                  displayName: log.displayName, minLevel: log.filter.minLevel.rawValue,
                                  query: log.filter.query, isRegex: log.filter.isRegex,
-                                 packageLabel: log.filter.packageLabel)
+                                 packageLabel: log.filter.packageLabel, sessionID: log.id)
         }
         if let net = tab as? NetworkSession {
             return TabDescriptor(kind: .network, platform: net.device.platform, deviceID: net.device.id,
                                  displayName: net.displayName, minLevel: 0, query: "",
                                  isRegex: false, packageLabel: net.targetPackage ?? "",
-                                 captureMode: net.currentDescriptor?.id ?? "proxy")
+                                 captureMode: net.currentDescriptor?.id ?? "proxy", sessionID: net.id)
         }
         if let cloud = tab as? CloudLogSession {
             return TabDescriptor(kind: .cloud, platform: .android, deviceID: "",
                                  displayName: cloud.displayName, minLevel: 0, query: "",
                                  isRegex: false, packageLabel: "",
                                  projectID: cloud.projectID, cloudQuery: cloud.query,
-                                 cloudTimeRange: cloud.timeRange, cloudRawFilter: cloud.rawFilter)
+                                 cloudTimeRange: cloud.timeRange, cloudRawFilter: cloud.rawFilter,
+                                 sessionID: cloud.id)
         }
         return nil
     }
@@ -391,64 +465,72 @@ final class AppModel {
 
     @discardableResult
     func startSession(for device: Device, filter: LogFilter = LogFilter(),
-                      name: String? = nil, autoStart: Bool = true) -> LogSession? {
+                      name: String? = nil, autoStart: Bool = true, sessionID: UUID? = nil) -> LogSession? {
         mode = .devices   // opening a device session returns to the devices/sessions view
-        guard makeLogSource(for: device) != nil else { return nil }   // device has a usable source
+        guard LogSources.isSupported(device, adbURL: adbURL) else { return nil }   // device has a usable source
         var filter = filter
         filter.exclusions = LogExclusionStore.shared.rules            // global hidden-message rules
-        let store = history
+        // A restored id only matters in daemon mode, where it reattaches to a still-running
+        // session. In-process each run is new, and reusing the id would merge history runs.
+        let id = (daemon.isEnabled(.logs) ? sessionID : nil) ?? UUID()
         // adbURL is only used by the Android pid/clear helpers; a placeholder is
         // fine for iOS sessions (they never call those paths).
         let toolURL = adbURL ?? AppleToolchain.xcrun
-        // A factory (not a fixed instance) so the session can re-spawn the tool to
-        // auto-reconnect after a device/stream drop.
-        let adb = adbURL
-        let makeSource: @Sendable (String) -> LogSource? = { bundleID in
-            switch device.platform {
-            case .android: return adb.map { AndroidLogSource(adbURL: $0, serial: device.id) }
-            case .iosSimulator: return SimulatorLogSource(udid: device.id)
-            case .iosDevice:
-                // Structured logs (level · subsystem · category) via Apple's private
-                // LoggingSupport engine (OSActivityStream) — the Xcode/Console-grade
-                // stream. `bundleID` here is the selected app's process/display name and
-                // narrows the whole-device stream to that app (empty = whole device).
-                // Falls back to idevicesyslog internally if the private API is unavailable.
-                return IOSDeviceOSLogSource(udid: device.id, processFilter: bundleID)
+        let session: LogSession
+        if daemon.isEnabled(.logs) {
+            // The stream runs in jacad (which records history); this tab attaches to it by id,
+            // so a relaunch reattaches to a session that is still running. If jacad can't be
+            // reached the tab streams in-process instead, recording history here.
+            let store = history, adb = adbURL
+            let feed = RemoteLogFeed(id: id, device: device, package: filter.packageLabel,
+                                     displayName: name ?? device.displayModel, autoStart: autoStart,
+                                     daemon: daemon, makeLocal: { seqStart, currentName in
+                let historyID = UUID()
+                let engine = LogStreamEngine(
+                    device: device, adbURL: adb, seqStart: seqStart,
+                    onPersist: { _, lines in Task { await store?.appendLines(sessionID: historyID, lines) } },
+                    prettifyEnabled: { LogBodyPrettifyStore.shared.enabled })
+                engine.onStarted = { [weak engine] in
+                    let pkg = engine?.state.package ?? ""
+                    let name = currentName()   // the tab's name now: it may have been renamed
+                    Task {
+                        await store?.upsertDevice(device)
+                        await store?.beginSession(id: historyID, device: device, package: pkg,
+                                                  displayName: name)
+                    }
+                }
+                engine.onClosed = { Task { await store?.endSession(id: historyID) } }
+                return engine
+            })
+            session = LogSession(id: id, device: device, feed: feed, adbURL: toolURL, filter: filter,
+                                 displayName: name, isRemote: true)
+        } else {
+            let store = history
+            session = LogSession(
+                id: id, device: device,
+                makeSource: LogSources.primary(for: device, adbURL: adbURL),
+                adbURL: toolURL, filter: filter, displayName: name,
+                makeConsoleSource: LogSources.console(for: device),
+                onPersist: { sid, lines in
+                    Task { await store?.appendLines(sessionID: sid, lines) }
+                }
+            )
+            // Record history on each (re)start, whether auto-started or started later.
+            session.onStarted = { [weak session] in
+                guard let session else { return }
+                let pkg = session.filter.packageLabel
+                let displayName = session.displayName
+                Task {
+                    await store?.upsertDevice(device)
+                    await store?.beginSession(id: id, device: device, package: pkg, displayName: displayName)
+                }
             }
+            if autoStart { session.start() }
         }
-        // Simulators can additionally stream the targeted app's stdout (`print()`),
-        // which OSLog can't see, by launching it under a PTY. Other platforms have
-        // no stdout tap, so they get no console source.
-        let simulatorConsole: @Sendable (String) -> LogSource? = { bundleID -> LogSource? in
-            guard !bundleID.isEmpty else { return nil }
-            return SimulatorConsoleLogSource(udid: device.id, bundleID: bundleID)
-        }
-        let makeConsoleSource: (@Sendable (String) -> LogSource?)? =
-            device.platform == .iosSimulator ? simulatorConsole : nil
-        let session = LogSession(
-            device: device, makeSource: makeSource, adbURL: toolURL,
-            filter: filter, displayName: name,
-            makeConsoleSource: makeConsoleSource,
-            onPersist: { sid, lines in
-                Task { await store?.appendLines(sessionID: sid, lines) }
-            }
-        )
-        let id = session.id
         session.deviceContext = context(for: device)
         session.onStateChanged = { [weak self] in self?.persistTabs() }
-        // Record history on each (re)start, whether auto-started or started later.
-        session.onStarted = { [weak session] in
-            guard let session else { return }
-            let pkg = session.filter.packageLabel
-            let displayName = session.displayName
-            Task {
-                await store?.upsertDevice(device)
-                await store?.beginSession(id: id, device: device, package: pkg, displayName: displayName)
-            }
-        }
         sessions.append(session)
         selectedSessionID = session.id
-        if autoStart { session.start() }
         persistTabs()
         return session
     }
@@ -485,11 +567,16 @@ final class AppModel {
                               displayName: String? = nil,
                               query: CloudLogQuery = CloudLogQuery(),
                               timeRange: CloudTimeRange = .last(minutes: 15),
-                              rawFilter: String? = nil) -> CloudLogSession {
+                              rawFilter: String? = nil,
+                              sessionID: UUID? = nil) -> CloudLogSession {
         mode = .devices   // opening a session returns to the shared session view
-        let session = CloudLogSession(projectID: projectID, registry: cloudLogging,
+        // Same id as before on restore, so a daemon-mode tab reattaches to its stream.
+        // The persisted id reattaches to the daemon's session. In-process a relaunch starts
+        // fresh: the id names the per-session database, which would mix in the last run's rows.
+        let id = (daemon.isEnabled(.cloudLogging) ? sessionID : nil) ?? UUID()
+        let session = CloudLogSession(id: id, projectID: projectID, registry: cloudLogging,
                                       displayName: displayName, query: query, timeRange: timeRange,
-                                      rawFilter: rawFilter)
+                                      rawFilter: rawFilter, autoStart: autoStart)
         session.onStateChanged = { [weak self] in self?.persistTabs() }
         sessions.append(session)
         selectedSessionID = session.id
@@ -499,21 +586,40 @@ final class AppModel {
     }
 
     @discardableResult
-    func startNetworkSession(for device: Device, name: String? = nil, autoStart: Bool = true) -> NetworkSession? {
+    func startNetworkSession(for device: Device, name: String? = nil, autoStart: Bool = true,
+                             sessionID: UUID? = nil) -> NetworkSession? {
         mode = .devices   // opening a session returns to the devices/sessions view
+        guard let session = makeNetworkSession(for: device, name: name, sessionID: sessionID) else { return nil }
+        sessions.append(session)
+        selectedSessionID = session.id
+        if autoStart { session.start() }
+        persistTabs()
+        return session
+    }
+
+    /// Builds a network tab on the side network capture runs on (not yet in the tab strip).
+    private func makeNetworkSession(for device: Device, name: String?, sessionID: UUID? = nil) -> NetworkSession? {
         guard let authority = ensureCA() else { return nil }
-        let session = NetworkSession(device: device, ca: authority, adbURL: adbURL,
+        let id = sessionID ?? UUID()
+        let session: NetworkSession
+        // Agent capture runs in jacad unless the inspection mode is HTTPS debugging (then everything
+        // network runs in-process: the companion links and the CA live in the app). A companion-only
+        // device has no agent path, so it always captures in-process.
+        if daemon.networkRunsInDaemon(httpsDecryption: httpsDecryptionEnabled), !device.isCompanion {
+            let feed = RemoteNetworkFeed(id: id, device: device, autoStart: false, daemon: daemon)
+            session = NetworkSession(id: id, device: device, feed: feed, ca: authority, adbURL: adbURL,
+                                     displayName: name, companions: companions, overrides: overrides,
+                                     isRemote: true)
+        } else {
+            session = NetworkSession(id: id, device: device, ca: authority, adbURL: adbURL,
                                      displayName: name, bodyCache: bodyCache, companions: companions,
                                      overrides: overrides)
+        }
         session.deviceContext = context(for: device)
         session.onStateChanged = { [weak self] in self?.persistTabs() }
         // Companion-only devices have no proxy/agent path — pre-select companion so the
         // tab is ready to stream (the network inspection "just knows").
         if device.isCompanion { session.restoreMode(.companion, package: nil) }
-        sessions.append(session)
-        selectedSessionID = session.id
-        if autoStart { session.start() }
-        persistTabs()
         return session
     }
 
@@ -550,27 +656,20 @@ final class AppModel {
         await ProxyConfigurator.clearAndroidProxy(adbURL: adbURL, serial: device.id)
     }
 
-    private func makeLogSource(for device: Device) -> LogSource? {
-        switch device.platform {
-        case .android:
-            guard let adbURL else { return nil }
-            return AndroidLogSource(adbURL: adbURL, serial: device.id)
-        case .iosSimulator:
-            return SimulatorLogSource(udid: device.id)
-        case .iosDevice:
-            return IOSDeviceLogSource(udid: device.id)
-        }
-    }
-
     func closeSession(_ id: UUID) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
         sessions[index].stop()
-        if sessions[index] is LogSession {
-            let store = history
-            Task { await store?.endSession(id: id) }
+        if let log = sessions[index] as? LogSession {
+            log.close()
+            // A daemon session records its own end in history when it closes.
+            if !log.isRemote {
+                let store = history
+                Task { await store?.endSession(id: id) }
+            }
         }
         // Cloud Logging tabs own a per-session SQLite file; delete it on close.
         if let cloud = sessions[index] as? CloudLogSession { cloud.dispose() }
+        if let net = sessions[index] as? NetworkSession { net.close() }
         let deviceID = (sessions[index] as? LogSession)?.device.id
             ?? (sessions[index] as? NetworkSession)?.device.id
         sessions.remove(at: index)
@@ -623,6 +722,8 @@ struct TabDescriptor: Codable {
     var cloudQuery: CloudLogQuery?
     var cloudTimeRange: CloudTimeRange?
     var cloudRawFilter: String?
+    /// The tab's session id, so a daemon-mode tab reattaches to its still-running stream.
+    var sessionID: UUID?
 
     func matches(_ other: TabDescriptor) -> Bool {
         kind == other.kind && deviceID == other.deviceID && displayName == other.displayName
@@ -630,7 +731,7 @@ struct TabDescriptor: Codable {
 
     enum CodingKeys: String, CodingKey {
         case kind, platform, deviceID, displayName, minLevel, query, isRegex, packageLabel,
-             captureMode, projectID, cloudQuery, cloudTimeRange, cloudRawFilter
+             captureMode, projectID, cloudQuery, cloudTimeRange, cloudRawFilter, sessionID
     }
 }
 
@@ -653,6 +754,7 @@ extension TabDescriptor {
         cloudQuery = try c.decodeIfPresent(CloudLogQuery.self, forKey: .cloudQuery)
         cloudTimeRange = try c.decodeIfPresent(CloudTimeRange.self, forKey: .cloudTimeRange)
         cloudRawFilter = try c.decodeIfPresent(String.self, forKey: .cloudRawFilter)
+        sessionID = try? c.decodeIfPresent(UUID.self, forKey: .sessionID)
     }
 }
 
