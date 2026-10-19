@@ -15,6 +15,7 @@ type overridesUI struct {
 	selected int
 	menu     *popupMenu
 	draft    *ruleDraft
+	fromList bool        // the editor was opened from the list popup, which it goes back to
 	ruleRows map[int]int // list popup: box row -> the rule drawn on it
 	hidden   bool        // the pane is too small to draw the popup: only Esc acts on it
 
@@ -560,6 +561,7 @@ func (v *netViewer) openEditor(rule overrideRule, isNew bool, warning string) {
 		d.body.set("")
 	}
 	d.openedRespond, d.openedStatus, d.openedHeaders = d.respond, d.status.String(), headersKey(d.headers)
+	v.ovui.fromList = v.focus == netOverrides
 	v.ovui.draft, v.focus = d, netEditor
 }
 
@@ -827,9 +829,15 @@ func (v *netViewer) saveDraft() {
 	v.closeEditor()
 }
 
-// closeEditor goes back to where the editor was opened from: the request list.
+// closeEditor goes back to where the editor was opened from: the overrides list or the request
+// list.
 func (v *netViewer) closeEditor() {
-	v.ovui.draft, v.focus = nil, netList
+	v.ovui.draft = nil
+	if v.ovui.fromList {
+		v.openOverridesList()
+		return
+	}
+	v.focus = netList
 }
 
 // editorKey: Tab and Shift-Tab move between fields, Ctrl-S saves, Esc closes without saving. In

@@ -92,12 +92,11 @@ overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network
   its right or `Esc` clears the range. It shows in panes of 24 rows or more.
 - **Detail**: `Enter` (or `→`) opens the request beside the list, with the app's tabs
   (Overview, Headers, Request, Response, Timing), and gives it the keys: the arrows and `j`/`k`
-  scroll it, `PgUp`/`PgDn` page it, `←`/`→`, `Tab` or `1`–`5` switch tabs. `Esc` goes back to
-  the list and leaves the detail open beside it, following the selected request; `Esc` again
-  closes it. A click on a request opens its detail with the keys on the list; a click in the
-  detail gives it the keys. The side that has the keys has its headings in the accent, and the
-  selected request is quieter while the detail has them. In a pane too narrow for both, `Esc`
-  closes the detail. In the Request tab `C` copies the request body. Any text in the
+  scroll it, `PgUp`/`PgDn` page it, `←`/`→`, `Tab` or `1`–`5` switch tabs. `Esc` closes the
+  detail and gives the keys back to the list, which keeps the selection. A click on a request
+  opens its detail with the keys on the list; a click in the detail gives it the keys. The side
+  that has the keys has its headings in the accent, and the selected request is quieter while
+  the detail has them. In the Request tab `C` copies the request body. Any text in the
   detail can be copied with the mouse: a drag selects it and copies on release (a value that
   wrapped over several lines comes back in one piece), a double click copies the whole value
   under the pointer, and a right click offers `Copy` for it. The `Copy` buttons of the bodies
@@ -111,7 +110,8 @@ overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network
 - **Override a request**: `O` on a selected request opens the editor filled from it (its URL as
   the pattern, its method, and the response it got), or on the rule that already answers it.
 - **Editor**: `Tab`/`Shift+Tab` move between fields, the arrows move inside a group of chips and
-  `space` picks, `Ctrl+S` (or `⌘S`) saves, `Esc` closes without saving. In the body `Tab` indents two
+  `space` picks, `Ctrl+S` (or `⌘S`) saves, `Esc` closes without saving. Closing goes back to
+  where the editor was opened from: the rules list, or the requests. In the body `Tab` indents two
   spaces (every selected line, when several are) and `Shift+Tab` takes a level off, so `Esc`
   first hands the keys back to moving between fields (then `Tab` and `Shift+Tab` move again),
   and a second `Esc` closes. The body is a multi-line editor:

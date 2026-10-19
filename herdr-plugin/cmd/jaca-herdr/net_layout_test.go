@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// Enter gives the detail the keys; Esc goes back to the list with the detail still open, and
-// Esc again closes it.
+// Enter opens the detail with the keys; Esc closes it and leaves the list as it was.
 func TestNetDetailFocusAndEscape(t *testing.T) {
 	v := testNetViewer(t)
 	setTermSize(t, 30, 150)
@@ -26,47 +25,19 @@ func TestNetDetailFocusAndEscape(t *testing.T) {
 		t.Errorf("Right in the detail went to tab %d", v.tab)
 	}
 	v.handleKey([]byte{0x1b})
-	if !v.detail || v.detailFocus {
-		t.Fatalf("first Esc: detail %v, focus %v; want the detail open and the list focused", v.detail, v.detailFocus)
+	if v.detail || v.detailFocus || v.selectedID != "A" {
+		t.Fatalf("Esc: detail %v, focus %v, selected %q; want the detail closed and the list as it was",
+			v.detail, v.detailFocus, v.selectedID)
 	}
-	// With the list focused, Down selects the next request and the detail follows it.
+	// Back on the list, Down selects the next request.
 	v.handleKey([]byte("\x1b[B"))
-	if v.selectedID != "B" || !v.detail {
-		t.Errorf("Down on the list selected %q, detail %v", v.selectedID, v.detail)
-	}
-	v.handleKey([]byte("\x1b[C"))
-	if !v.detailFocus {
-		t.Error("Right on the list didn't give the detail the keys")
-	}
-	v.handleKey([]byte{0x1b})
-	v.handleKey([]byte{0x1b})
-	if v.detail {
-		t.Error("second Esc didn't close the detail")
-	}
 	if v.selectedID != "B" {
-		t.Errorf("closing the detail dropped the selection: %q", v.selectedID)
+		t.Errorf("Down on the list selected %q", v.selectedID)
 	}
 }
 
-// In a pane too narrow to show the list beside the detail, Esc closes the detail at once.
-func TestNetDetailEscapeWhenNarrow(t *testing.T) {
-	v := testNetViewer(t)
-	setTermSize(t, 30, 60)
-	v.handleKey([]byte("j"))
-	v.handleKey([]byte{'\r'})
-	v.draw()
-	if v.listW != 0 {
-		t.Fatalf("a 60-cell pane drew the list %d cells wide beside the detail", v.listW)
-	}
-	v.handleKey([]byte{0x1b})
-	if v.detail {
-		t.Error("Esc left the detail open with no list beside it")
-	}
-}
-
-// A click on a request opens its detail with the keys on the list; a click in the detail gives
-// it the keys, and the button at its top does what Esc does.
-func TestNetDetailClickFocus(t *testing.T) {
+// A detail opened with a click closes on one Esc too.
+func TestNetDetailEscapeAfterAClick(t *testing.T) {
 	v := testNetViewer(t)
 	setTermSize(t, 30, 150)
 	v.draw()
@@ -75,14 +46,51 @@ func TestNetDetailClickFocus(t *testing.T) {
 	if !v.detail || v.detailFocus {
 		t.Fatalf("a click on a row: detail %v, focus %v", v.detail, v.detailFocus)
 	}
+	v.handleKey([]byte{0x1b})
+	if v.detail || v.selectedID == "" {
+		t.Errorf("Esc: detail %v, selected %q", v.detail, v.selectedID)
+	}
+}
+
+// A click in the detail gives it the keys, and the button at its top closes it.
+func TestNetDetailClickFocus(t *testing.T) {
+	v := testNetViewer(t)
+	setTermSize(t, 30, 150)
+	v.draw()
+	v.mouse(mouseEvent{button: 0, x: 5, y: v.listTop, press: true})
+	v.draw()
 	v.mouse(mouseEvent{button: 0, x: v.detailX + 2, y: v.detailFirst + 3, press: true})
 	v.draw()
 	if !v.detailFocus {
 		t.Fatal("a click in the detail didn't give it the keys")
 	}
 	v.mouse(mouseEvent{button: 0, x: v.closeX0, y: v.listTop - 1, press: true})
-	if !v.detail || v.detailFocus {
-		t.Errorf("the back button: detail %v, focus %v", v.detail, v.detailFocus)
+	if v.detail || v.detailFocus {
+		t.Errorf("the close button: detail %v, focus %v", v.detail, v.detailFocus)
+	}
+}
+
+// Esc in the rule editor goes back to where it was opened from: the overrides list, or the
+// request list.
+func TestEditorEscapeGoesBack(t *testing.T) {
+	v := testNetViewer(t)
+	v.openOverridesList()
+	v.handleKey([]byte{'\r'})
+	if v.focus != netEditor {
+		t.Fatalf("Enter on a rule: focus %d", v.focus)
+	}
+	v.handleKey([]byte{0x1b})
+	if v.focus != netOverrides || v.ovui.draft != nil {
+		t.Errorf("Esc in an editor opened from the list: focus %d, want the list", v.focus)
+	}
+	v.handleKey([]byte{0x1b})
+	if v.focus != netList {
+		t.Errorf("Esc on the overrides list: focus %d", v.focus)
+	}
+	v.openEditor(blankRule("example.com"), true, "")
+	v.handleKey([]byte{0x1b})
+	if v.focus != netList {
+		t.Errorf("Esc in an editor opened from a request: focus %d, want the request list", v.focus)
 	}
 }
 

@@ -582,13 +582,9 @@ func (v *netViewer) openDetail(focus bool) {
 	v.fetchBodies(t, false, nil)
 }
 
-// detailBack is Esc on the detail: from the detail back to the list, which stays beside it, or
-// closed when the list has the keys or there is no room to show it beside the detail.
-func (v *netViewer) detailBack() {
-	if v.detailFocus && v.listW > 0 {
-		v.detailFocus = false
-		return
-	}
+// closeDetail is Esc on the detail: it closes the detail and gives the keys back to the list,
+// which keeps the selection.
+func (v *netViewer) closeDetail() {
 	v.detail, v.detailFocus = false, false
 }
 
@@ -935,7 +931,7 @@ func (v *netViewer) handleKey(k []byte) bool {
 	case isEsc(k):
 		switch {
 		case v.detail:
-			v.detailBack()
+			v.closeDetail()
 		case v.rangeSet:
 			v.rangeSet = false
 			v.refilter()
@@ -1347,7 +1343,7 @@ func (v *netViewer) mouse(m mouseEvent) {
 	case inDetail && m.button == 0:
 		v.focus = netList
 		if m.y == v.listTop-1 && m.x >= v.closeX0 && m.x <= v.closeX1 {
-			v.detailBack()
+			v.closeDetail()
 			return
 		}
 		v.detailFocus = true
@@ -2065,13 +2061,10 @@ func (v *netViewer) detailColumn(w, n int) []string {
 	if ok {
 		title = t.Method + " " + sanitize(t.path())
 	}
-	// The title is in the accent while the detail has the keys; the button says what Esc does.
+	// The title is in the accent while the detail has the keys.
 	label, titleStyle := escClose, sgrBold
 	if v.detailFocus {
 		titleStyle = sectionStyle
-		if v.listW > 0 {
-			label = escBack
-		}
 	}
 	titleW := w - len(label) - 2
 	v.closeX0, v.closeX1 = x+1+titleW, x+titleW+len(label)
