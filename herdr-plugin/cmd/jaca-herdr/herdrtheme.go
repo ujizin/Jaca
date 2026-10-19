@@ -177,6 +177,15 @@ func themePanel(theme map[string]string) string {
 	return "\x1b[" + strings.Join(params, ";") + "m"
 }
 
+// themeStyle is a theme token as a foreground (or a background when bg), or fallback where the
+// theme has no color for it.
+func themeStyle(theme map[string]string, token string, bg bool, fallback string) string {
+	if params, ok := colorParams(theme[token], bg); ok {
+		return "\x1b[" + params + "m"
+	}
+	return fallback
+}
+
 // themeAccent is the style of a popup's border, the theme's accent as Herdr uses it, or none.
 func themeAccent(theme map[string]string) string {
 	if params, ok := colorParams(theme["accent"], false); ok {

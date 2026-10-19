@@ -54,7 +54,7 @@ func (b *popupBox) hit(x0, x1 int, act func(col int)) {
 // button appends text to a row being built and makes it clickable; it returns the row so far.
 func (b *popupBox) button(row *string, label, style string, act func()) {
 	x := cellWidth(stripSGR(*row))
-	b.hit(x, x+cellWidth(label)-1, func(int) { act() })
+	b.hit(x, x+cellWidth(stripSGR(label))-1, func(int) { act() })
 	*row += style + label + sgrReset
 }
 
@@ -349,12 +349,12 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 	ui.ruleRows = map[int]int{}
 
 	// The master switch, labelled with what toggling it does (the app's switch has only this tooltip).
-	master, masterStyle := "● Pause all overrides — rules stay saved", sgrGreen
+	master, masterStyle := "Pause all overrides — rules stay saved", ""
 	if !v.overrides.MasterEnabled {
-		master, masterStyle = "○ Resume overrides", sgrYellow
+		master, masterStyle = "Resume overrides", sgrYellow
 	}
-	b.hit(0, cellWidth(master)-1, func(int) { v.toggleMaster() })
-	b.add(masterStyle + clip(master, b.inner) + sgrReset)
+	b.hit(0, toggleCells+cellWidth(master), func(int) { v.toggleMaster() })
+	b.add(toggleSwitch(v.overrides.MasterEnabled, false) + " " + masterStyle + clip(master, b.inner-toggleCells-1) + sgrReset)
 	b.add("")
 
 	rules := v.overrides.Rules
@@ -386,31 +386,34 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		case v.overrides.HitCounts[r.ID] > 0:
 			trailing = fmt.Sprintf("%d×", v.overrides.HitCounts[r.ID])
 		}
-		toggle := "○"
-		if r.Enabled {
-			toggle = "●"
-		}
-		nameW := b.inner - cellWidth(trailing) - 7 // the indent, the gaps and the switch
+		// The switch sits at the right of both of the rule's rows, so it is a big target, and a
+		// rule that is off reads as off: dim, with the switch's knob at the left on grey.
+		const switchW = toggleCells + 2                      // the switch and a cell either side
+		nameW := b.inner - cellWidth(trailing) - 4 - switchW // the indent, the gaps and the switch
 		n := i
 		ui.ruleRows[len(b.rows)], ui.ruleRows[len(b.rows)+1] = n, n
-		b.hit(0, b.inner-4, func(int) { ui.selected = n; v.openEditor(r, false, "") })
-		b.hit(b.inner-3, b.inner-1, func(int) { ui.selected = n; v.toggleRule(n) })
-		line := fit(name, nameW) + " " + trailing + "  " + toggle + " "
-		switch {
-		case i == ui.selected:
-			b.add(sgrRev + sgrBold + "  " + line + sgrReset)
-		case dim:
-			b.add(sgrDim + "  " + line + sgrReset)
-		default:
-			toggleStyle := sgrGreen
-			b.add("  " + sgrBold + fit(name, nameW) + sgrReset + " " + sgrYellow + trailing + sgrReset + "  " + toggleStyle + toggle + sgrReset + " ")
+		toggle := func() { ui.selected = n; v.toggleRule(n) }
+		edit := func(int) { ui.selected = n; v.openEditor(r, false, "") }
+		nameStyle, trailingStyle := sgrBold, sgrYellow
+		if dim {
+			nameStyle, trailingStyle = tertiaryStyle, tertiaryStyle
 		}
+		sw := toggleSwitch(r.Enabled, !v.overrides.MasterEnabled)
+		line := "  " + nameStyle + fit(name, nameW) + sgrReset + " " + trailingStyle + trailing + sgrReset + "  " + sw + " "
 		pattern := sanitize(r.Matcher.Pattern)
 		if pattern == "" {
 			pattern = "No pattern"
 		}
-		b.hit(0, b.inner-1, func(int) { ui.selected = n; v.openEditor(r, false, "") })
-		b.add("  " + sgrDim + clip(pattern, b.inner-2) + sgrReset)
+		under := "  " + tertiaryStyle + fit(pattern, b.inner-2-switchW) + sgrReset
+		if i == ui.selected {
+			line, under = onRow(line, selectedRowStyle, b.inner), onRow(under, selectedRowStyle, b.inner)
+		}
+		b.hit(0, b.inner-switchW-1, edit)
+		b.hit(b.inner-switchW, b.inner-1, func(int) { toggle() })
+		b.add(line)
+		b.hit(0, b.inner-switchW-1, edit)
+		b.hit(b.inner-switchW, b.inner-1, func(int) { toggle() })
+		b.add(under)
 	}
 	b.add("")
 	if text, style := v.overridesStatus(); text != "" {
@@ -1371,13 +1374,14 @@ func (v *netViewer) editorBox(rows, cols int) *popupBox {
 	b.add("")
 
 	// The footer: Enabled, why it can't be saved yet, and Save.
-	enabled, enabledStyle := "○ Enabled", sgrDim
+	enabledStyle := tertiaryStyle
 	if d.enabled {
-		enabled, enabledStyle = "● Enabled", sgrGreen
+		enabledStyle = sgrBold
 	}
 	if at("enabled") {
-		enabledStyle = sgrBold + sgrRev
+		enabledStyle = sgrBold + sgrUnder
 	}
+	enabled := toggleSwitch(d.enabled, false) + " " + enabledStyle + "Enabled" + sgrReset
 	const save = "  Save  "
 	reason := d.blocked()
 	saveStyle := badgeStyle(colorGreen)
@@ -1388,8 +1392,8 @@ func (v *netViewer) editorBox(rows, cols int) *popupBox {
 		saveStyle = badgeStyle(colorGreen) + sgrUnder
 	}
 	row = ""
-	b.button(&row, enabled, enabledStyle, func() { d.enabled = !d.enabled })
-	room := inner - cellWidth(enabled) - len(save)
+	b.button(&row, enabled, "", func() { d.enabled = !d.enabled })
+	room := inner - cellWidth(stripSGR(enabled)) - len(save)
 	row += sgrYellow + fit("   "+reason, room-2) + sgrReset + "  "
 	b.button(&row, save, saveStyle, v.saveDraft)
 	b.add(row)

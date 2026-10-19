@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -53,9 +54,12 @@ type netViewer struct {
 	id      string // the capture's id in jacad
 	opened  bool
 	feature bool // Agent HTTPS debugging is the app's inspection mode, so overrides apply
-	state   netState
-	err     string // why the last call failed, as jacad reported it
-	saved   string // where the last export went
+	// The app's "Re-attach to iOS Simulator apps automatically" setting, as last read or set
+	// here. jacad reads it each time it decides whether to relaunch.
+	autoReattach bool
+	state        netState
+	err          string // why the last call failed, as jacad reported it
+	saved        string // where the last export went
 
 	txns     []netTransaction
 	index    map[string]int // transaction id -> position in txns
@@ -68,13 +72,14 @@ type netViewer struct {
 	top        int    // the first visible request drawn
 	scrolled   bool   // the list was scrolled by hand, so it no longer follows new requests
 
-	detail    bool // the detail pane is open
-	tab       int
-	bodies    map[string]*netBodies // by transaction id; nil while not fetched
-	bodyFinal map[string]bool       // the bodies were fetched after the request finished
-	fetching  map[string]bool
-	clears    int             // how many times the list was cleared, to drop replies from before a clear
-	removed   map[string]bool // requests deleted from the list here (jacad still holds them)
+	detail      bool // the detail pane is open
+	detailFocus bool // and has the keys: they scroll it and switch its tabs, and Esc goes back to the list
+	tab         int
+	bodies      map[string]*netBodies // by transaction id; nil while not fetched
+	bodyFinal   map[string]bool       // the bodies were fetched after the request finished
+	fetching    map[string]bool
+	clears      int             // how many times the list was cleared, to drop replies from before a clear
+	removed     map[string]bool // requests deleted from the list here (jacad still holds them)
 
 	// The time range selected on the timeline; the list shows the requests that overlap it.
 	rangeSet           bool
@@ -97,11 +102,10 @@ type netViewer struct {
 	// The pane as last drawn, for the mouse.
 	listTop, listRows, listW int
 	detailContent
-	tabHits            []hit
-	closeX0, closeX1   int
-	bannerRow          int
-	bannerX0, bannerX1 int
-	helpX0, helpX1     int
+	tabHits          []hit
+	closeX0, closeX1 int
+	bannerHits       []boxHit // the banner's buttons: a screen row (1-based) and its columns
+	helpX0, helpX1   int
 }
 
 // runNetworkPane is the viewer for the device the picker passed in deviceEnv. Opened without
@@ -164,6 +168,7 @@ func (v *netViewer) open() {
 			_ = c.CallTimeout("overrides.state", nil, &ov, syncTimeout)
 		}
 		feature := agentDebuggingEnabled()
+		auto, _, _ := readDefault(autoReattachKey)
 		delivered := v.p.post(func() {
 			if err != nil {
 				v.err = err.Error()
@@ -173,7 +178,7 @@ func (v *netViewer) open() {
 				go v.closeRemote()
 			case created:
 				// The capture exists even if reading its requests failed: it is this pane's to close.
-				v.opened, v.feature, v.state = true, feature, info.State
+				v.opened, v.feature, v.state, v.autoReattach = true, feature, info.State, auto == "1"
 				v.p.setLive("network.close", id)
 				v.setOverrides(ov)
 				v.upsert(txns)
@@ -567,14 +572,28 @@ func (v *netViewer) selection() (first, last int, ok bool) {
 	return min(anchor, cursor), max(anchor, cursor), true
 }
 
-func (v *netViewer) openDetail() {
+// openDetail shows the selected request's detail; focus gives the detail the keys.
+func (v *netViewer) openDetail(focus bool) {
 	t, ok := v.selected()
 	if !ok {
 		return
 	}
-	v.detail = true
+	v.detail, v.detailFocus = true, focus
 	v.fetchBodies(t, false, nil)
 }
+
+// detailBack is Esc on the detail: from the detail back to the list, which stays beside it, or
+// closed when the list has the keys or there is no room to show it beside the detail.
+func (v *netViewer) detailBack() {
+	if v.detailFocus && v.listW > 0 {
+		v.detailFocus = false
+		return
+	}
+	v.detail, v.detailFocus = false, false
+}
+
+func isArrowLeft(k []byte) bool  { return string(k) == "\x1b[D" || string(k) == "\x1bOD" }
+func isArrowRight(k []byte) bool { return string(k) == "\x1b[C" || string(k) == "\x1bOC" }
 
 // fetchBodies loads a request's bodies, which list and update events leave out, and runs then
 // with them (nil when there are none to have). Bodies fetched while the request was still in
@@ -881,6 +900,9 @@ func (v *netViewer) handleKey(k []byte) bool {
 		return false
 	}
 	row := v.selectedRow()
+	if v.detail && v.detailFocus && v.detailKey(k) {
+		return false
+	}
 	switch {
 	case string(k) == "\x1b[1;2A": // Shift+Up, Down, PgUp and PgDn extend the selection
 		v.extendTo(max(0, row-1))
@@ -894,6 +916,8 @@ func (v *netViewer) handleKey(k []byte) bool {
 		v.page(-1)
 	case isPageDown(k):
 		v.page(1)
+	case isArrowRight(k) && v.detail:
+		v.detailFocus = true
 	case isUp(k):
 		v.selectRow(max(0, row-1))
 	case isDown(k):
@@ -904,14 +928,14 @@ func (v *netViewer) handleKey(k []byte) bool {
 			v.openApps()
 		case row < 0:
 			v.selectRow(len(v.visible) - 1)
-			v.openDetail()
+			v.openDetail(true)
 		default:
-			v.openDetail()
+			v.openDetail(true)
 		}
 	case isEsc(k):
 		switch {
 		case v.detail:
-			v.detail = false
+			v.detailBack()
 		case v.rangeSet:
 			v.rangeSet = false
 			v.refilter()
@@ -955,9 +979,7 @@ func (v *netViewer) handleKey(k []byte) bool {
 	case k[0] == 0x7f || k[0] == 0x08: // Backspace
 		v.removeSelected()
 	case k[0] == 'R':
-		if v.arming().State == "detached" {
-			v.call("network.relaunchToAttach", map[string]any{"id": v.id})
-		}
+		v.relaunch()
 	case k[0] == '?':
 		v.focus = netHelp
 	}
@@ -1184,12 +1206,33 @@ func (d *detailContent) detailRows(lines []string, meta []detailLine, w, room in
 }
 
 // page scrolls the detail pane when it is open, else moves the selection a page.
+// page moves the selection a page.
 func (v *netViewer) page(dir int) {
-	if v.detail {
-		v.detailTop = max(0, v.detailTop+dir*max(1, v.listRows-4))
-		return
-	}
 	v.selectRow(max(0, v.selectedRow()+dir*max(1, v.listRows)))
+}
+
+// detailKey handles a key while the detail has the keys: the arrows and j, k scroll it, Page Up
+// and Down page it, and Left and Right switch its tabs. It reports whether the key was one of
+// those; the others act as they do on the list.
+func (v *netViewer) detailKey(k []byte) bool {
+	switch {
+	case isPageUp(k):
+		v.detailTop = max(0, v.detailTop-max(1, v.listRows-4))
+	case isPageDown(k):
+		v.detailTop += max(1, v.listRows-4)
+	case isUp(k):
+		v.detailTop = max(0, v.detailTop-1)
+	case isDown(k):
+		v.detailTop++
+	case isArrowLeft(k):
+		v.setTab(v.tab - 1)
+	case isArrowRight(k):
+		v.setTab(v.tab + 1)
+	case isEnter(k):
+	default:
+		return false
+	}
+	return true
 }
 
 func (v *netViewer) setTab(tab int) {
@@ -1298,15 +1341,17 @@ func (v *netViewer) mouse(m mouseEvent) {
 			return
 		}
 		v.timelineMouse(m, false)
-	case m.button == 0 && m.y == v.bannerRow && m.x >= v.bannerX0 && m.x <= v.bannerX1:
-		v.call("network.relaunchToAttach", map[string]any{"id": v.id})
+	case m.button == 0 && v.bannerHit(m):
 	case m.button == 0 && m.y == rows && v.helpX0 > 0 && m.x >= v.helpX0 && m.x <= v.helpX1:
 		v.focus = netHelp
 	case inDetail && m.button == 0:
 		v.focus = netList
+		if m.y == v.listTop-1 && m.x >= v.closeX0 && m.x <= v.closeX1 {
+			v.detailBack()
+			return
+		}
+		v.detailFocus = true
 		switch {
-		case m.y == v.listTop-1 && m.x >= v.closeX0 && m.x <= v.closeX1:
-			v.detail = false
 		case m.y == v.listTop:
 			for _, h := range v.tabHits {
 				if m.x >= h.x0 && m.x <= h.x1 {
@@ -1333,7 +1378,7 @@ func (v *netViewer) mouse(m mouseEvent) {
 			}
 			return
 		}
-		v.openDetail()
+		v.openDetail(false)
 	}
 }
 
@@ -1347,8 +1392,9 @@ func (v *netViewer) helpKeys() [][2]string {
 		{"O", "Override response…"},
 		{"S", "Export HAR"},
 		{"j  k", "Select request"},
-		{"Enter", "Inspect request"},
-		{"Tab  1-5", "Switch tab"},
+		{"Enter  →", "Inspect request"},
+		{"Esc", "Back"},
+		{"Tab  ←  →  1-5", "Switch tab"},
 		{"PgUp  PgDn", "Scroll"},
 		{"C", "Copy response body"},
 		{"Shift+↑ ↓ PgUp PgDn", "Select requests"},
@@ -1387,10 +1433,11 @@ func (v *netViewer) draw() {
 	case v.saved != "":
 		line(sgrGreen + fit("↓ "+sanitize(v.saved), cols) + sgrReset)
 	}
-	v.bannerRow = 0
+	v.bannerHits = v.bannerHits[:0]
 	if v.showsBanner() {
-		v.bannerRow = len(frame) + 1
-		line(v.banner(cols))
+		for _, row := range v.banner(cols, rows >= 24, len(frame)+1) {
+			line(row)
+		}
 	}
 
 	// The timeline, in a pane tall enough to spare it the rows.
@@ -1570,23 +1617,99 @@ func (v *netViewer) toolbar(cols, height int) []string {
 	return b.rows()
 }
 
-// banner is the app's attach banner: why capture paused, and for an app that came back without
-// the agent, the action that brings it back.
-func (v *netViewer) banner(cols int) string {
-	const action = "Relaunch & re-attach"
+// autoReattachKey is the app's setting for relaunching a simulator app without asking
+// (FeatureFlags.simulatorAutoReattachKey).
+const autoReattachKey = "simulatorAutoReattachEnabled"
+
+// writeBoolDefault stores one of the app's settings as a boolean. Replaced in tests.
+var writeBoolDefault = func(key string, value bool) error {
+	out, err := exec.Command("defaults", "write", jacaDefaultsDomain, key, "-bool", fmt.Sprint(value)).CombinedOutput()
+	if err != nil {
+		if text := firstLine(out); text != "" {
+			return errors.New(text)
+		}
+	}
+	return err
+}
+
+// relaunch is the banner's action: relaunch the app with the agent injected.
+func (v *netViewer) relaunch() {
+	if v.arming().State == "detached" {
+		v.call("network.relaunchToAttach", map[string]any{"id": v.id})
+	}
+}
+
+// offersAutoReattach is whether the banner shows the app's setting for relaunching without
+// asking: it exists for the iOS Simulator, and only in Agent HTTPS debugging.
+func (v *netViewer) offersAutoReattach() bool {
+	return v.device.Platform == "iosSimulator" && v.feature && v.arming().State == "detached"
+}
+
+// toggleAutoReattach flips the app's setting. It shows the new value at once and goes back if
+// the write fails.
+func (v *netViewer) toggleAutoReattach() {
+	on := !v.autoReattach
+	v.autoReattach, v.err = on, ""
+	go func() {
+		if err := writeBoolDefault(autoReattachKey, on); err != nil {
+			v.p.post(func() { v.autoReattach, v.err = !on, err.Error() })
+		}
+	}()
+}
+
+// bannerHit runs the banner button under a click, if there is one.
+func (v *netViewer) bannerHit(m mouseEvent) bool {
+	for _, h := range v.bannerHits {
+		if m.y == h.row && m.x >= h.x0 && m.x <= h.x1 {
+			h.act(0)
+			return true
+		}
+	}
+	return false
+}
+
+// bannerNotice is the banner's text in w cells: the title in bold yellow, then why.
+func bannerNotice(title, message string, w int) string {
+	text := clip(title+"  "+message, max(0, w-2))
+	head, rest := text, ""
+	if len(text) > len(title) {
+		head, rest = text[:len(title)], text[len(title):]
+	}
+	return padStyled(sgrYellow+"▌"+sgrReset+" "+sgrYellow+sgrBold+head+sgrReset+rest, w)
+}
+
+// banner is the app's attach banner (a warning notice): why capture paused, and for an app that
+// came back without the agent, the button that brings it back. Tall, it takes two rows, the
+// second holding the button and, on the iOS Simulator, the app's setting to do it without
+// asking. top is the screen row it starts on.
+func (v *netViewer) banner(cols int, tall bool, top int) []string {
+	const action, auto = " R  Relaunch & re-attach ", "Re-attach to iOS Simulator apps automatically"
 	arming := v.arming()
 	title := "Capture detached"
 	if arming.State == "waitingForApp" {
 		title = "Capture paused"
 	}
-	text := title + "  " + sanitize(arming.blockedMessage())
-	v.bannerX0, v.bannerX1 = 0, 0
+	message := sanitize(arming.blockedMessage())
+	button := badgeStyle(colorYellow) + action + sgrReset
 	if arming.State != "detached" || cols < len(action)+12 {
-		return sgrYellow + sgrBold + fit(text, cols) + sgrReset
+		return []string{bannerNotice(title, message, cols)}
 	}
-	w := cols - len(action) - 3
-	v.bannerX0, v.bannerX1 = w+2, w+1+len(action)
-	return sgrYellow + sgrBold + fit(text, w) + sgrReset + " " + sgrUnder + action + sgrReset + "  "
+	if !tall {
+		// One row: the notice, and the button at the right.
+		w := cols - len(action) - 1
+		v.bannerHits = append(v.bannerHits, boxHit{row: top, x0: w + 2, x1: w + 1 + len(action), act: func(int) { v.relaunch() }})
+		return []string{bannerNotice(title, message, w) + " " + button}
+	}
+	v.bannerHits = append(v.bannerHits, boxHit{row: top + 1, x0: 3, x1: 2 + len(action), act: func(int) { v.relaunch() }})
+	second := sgrYellow + "▌" + sgrReset + " " + button
+	if v.offersAutoReattach() {
+		x := 2 + len(action) + 4
+		if x+toggleCells+len(auto) <= cols {
+			second += "   " + toggleSwitch(v.autoReattach, false) + " " + auto
+			v.bannerHits = append(v.bannerHits, boxHit{row: top + 1, x0: x, x1: x + toggleCells + len(auto), act: func(int) { v.toggleAutoReattach() }})
+		}
+	}
+	return []string{bannerNotice(title, message, cols), padStyled(second, cols)}
 }
 
 // statusColor is NetworkFormatting.statusColor on the theme's colors.
@@ -1616,32 +1739,57 @@ func (v *netViewer) listColumn(w, n int) []string {
 		}
 		return out
 	}
-	// Columns: the override mark, Status, Method, Host, Path (what is left), Size and Time. The
-	// narrower the list, the fewer it shows.
-	const markW, statusW, methodW, sizeW, timeW = 2, 7, 8, 10, 9
-	hostW, showSize := min(30, w/4), w >= 70
-	if w < 56 {
-		hostW = 0
+	// Columns: the override mark, Status, Method, Host, Path (what is left), Size and Time. Path
+	// is what tells requests apart, so the narrower the list, the more of the others it leaves
+	// out to keep it readable: Size first, then Host, then Time.
+	const markW, statusW, methodW, sizeW, timeW, pathMin = 2, 7, 8, 10, 9, 28
+	pathW := w - markW - statusW - methodW
+	hostW, showTime, showSize := 0, false, false
+	if pathW-timeW >= pathMin {
+		showTime, pathW = true, pathW-timeW
 	}
-	pathW := w - markW - statusW - methodW - hostW
-	if hostW > 0 {
-		pathW--
+	if h := min(30, max(20, w/5)); pathW-h-1 >= pathMin+8 {
+		hostW, pathW = h, pathW-h-1
 	}
-	if showSize {
-		pathW -= sizeW + timeW
+	if pathW-sizeW >= pathMin+16 {
+		showSize, pathW = true, pathW-sizeW
 	}
-	cells := func(mark, status, method, host, path, size, elapsed string) string {
-		s := fit(mark, markW) + fit(status, statusW) + fit(method, methodW)
-		if hostW > 0 {
-			s += fit(host, hostW) + " "
+	pathW = max(0, pathW)
+	// cells lays a row out; style colors each cell (it gets the column's index).
+	cells := func(style func(col int) string, values ...string) string {
+		if pathW < 4 { // too narrow for columns: the status, method and path in a row
+			return style(1) + fit(values[1]+" "+values[2]+" "+values[4], w) + sgrReset
 		}
-		s += fit(path, max(0, pathW))
-		if showSize {
-			s += fit(size, sizeW) + fit(elapsed, timeW)
+		widths := []int{markW, statusW, methodW, hostW, pathW, sizeW, timeW}
+		shown := []bool{true, true, true, hostW > 0, true, showSize, showTime}
+		var s strings.Builder
+		for i, value := range values {
+			if !shown[i] {
+				continue
+			}
+			text := fit(value, widths[i])
+			switch i {
+			case 3:
+				text = fit(value, widths[i]) + " "
+			case 4:
+				text = fit(clipMiddle(value, widths[i]), widths[i])
+			}
+			if st := style(i); st != "" {
+				text = st + text + sgrReset
+			}
+			s.WriteString(text)
 		}
-		return fit(s, w)
+		return padStyled(s.String(), w)
 	}
-	out = append(out, sgrDim+cells("", "STATUS", "METHOD", "HOST", "PATH", " SIZE", " TIME")+sgrReset)
+	// The headers are quiet, and in the accent while the list has the keys beside an open detail.
+	headerStyle := sgrBold + tertiaryStyle
+	switch {
+	case v.detail && v.detailFocus:
+		headerStyle = tertiaryStyle
+	case v.detail:
+		headerStyle = sectionStyle
+	}
+	out = append(out, cells(func(int) string { return headerStyle }, "", "STATUS", "METHOD", "HOST", "PATH", " SIZE", " TIME"))
 
 	room := n - 1
 	switch {
@@ -1698,33 +1846,37 @@ func (v *netViewer) listColumn(w, n int) []string {
 			case "blocked":
 				mark, markStyle = "!", sgrYellow
 			}
-			if selected && i >= first && i <= last {
-				// Every selected request is a reversed bar; the cursor's is bold.
-				style := sgrRev
-				if t.ID == v.selectedID {
-					style += sgrBold
-				}
-				out = append(out, style+cells(mark, t.statusText(), t.Method, sanitize(t.Host), sanitize(t.path()), " "+size, " "+elapsed)+sgrReset)
-				continue
-			}
 			status := statusColor(t)
 			if badge.kind == "applied" {
 				status = sgrYellow
 			}
-			if pathW < 4 { // too narrow for columns: the status, method and path in a row
-				out = append(out, status+fit(t.statusText()+" "+t.Method+" "+sanitize(t.path()), w)+sgrReset)
-				continue
+			row := cells(func(col int) string {
+				switch col {
+				case 0:
+					return markStyle
+				case 1:
+					return status + sgrBold
+				case 2, 3:
+					return secondaryStyle
+				case 5, 6:
+					return tertiaryStyle
+				}
+				return ""
+			}, mark, t.statusText(), t.Method, sanitize(t.Host), sanitize(t.path()), " "+size, " "+elapsed)
+			if selected && i >= first && i <= last {
+				// Every selected request is on the selection color, the cursor's in bold; the
+				// colors of its cells stay, so its status still reads. Quieter while the detail
+				// has the keys.
+				style := selectedRowStyle
+				if v.detail && v.detailFocus {
+					style = inactiveRowStyle
+				}
+				if t.ID == v.selectedID {
+					style += sgrBold
+				}
+				row = onRow(row, style, w)
 			}
-			s := markStyle + fit(mark, markW) + sgrReset + status + sgrBold + fit(t.statusText(), statusW) + sgrReset +
-				sgrDim + fit(t.Method, methodW) + sgrReset
-			if hostW > 0 {
-				s += fit(sanitize(t.Host), hostW) + " "
-			}
-			s += fit(sanitize(t.path()), max(0, pathW))
-			if showSize {
-				s += sgrDim + fit(" "+size, sizeW) + fit(" "+elapsed, timeW) + sgrReset
-			}
-			out = append(out, s)
+			out = append(out, row)
 		}
 	}
 	for len(out) < n {
@@ -1913,9 +2065,17 @@ func (v *netViewer) detailColumn(w, n int) []string {
 	if ok {
 		title = t.Method + " " + sanitize(t.path())
 	}
-	titleW := w - len(escClose) - 2
-	v.closeX0, v.closeX1 = x+1+titleW, x+titleW+len(escClose)
-	out = append(out, " "+sgrBold+fit(title, titleW)+sgrReset+closeButton(escClose)+" ")
+	// The title is in the accent while the detail has the keys; the button says what Esc does.
+	label, titleStyle := escClose, sgrBold
+	if v.detailFocus {
+		titleStyle = sectionStyle
+		if v.listW > 0 {
+			label = escBack
+		}
+	}
+	titleW := w - len(label) - 2
+	v.closeX0, v.closeX1 = x+1+titleW, x+titleW+len(label)
+	out = append(out, " "+titleStyle+fit(title, titleW)+sgrReset+closeButton(label)+" ")
 
 	var tabs strings.Builder
 	used := 1

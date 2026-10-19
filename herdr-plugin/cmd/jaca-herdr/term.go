@@ -262,7 +262,51 @@ var (
 	sgrYellow  = "\x1b[" + colorYellow + "m"
 	sgrMagenta = "\x1b[" + colorMagenta + "m"
 	sgrCyan    = "\x1b[" + colorCyan + "m"
+
+	// Text a step and two steps quieter than the body text (the app's contentSecondary and
+	// contentTertiary). Dim where the theme has no color for them.
+	secondaryStyle = themeStyle(herdrTheme, "subtext0", false, "")
+	tertiaryStyle  = themeStyle(herdrTheme, "overlay1", false, sgrDim)
+
+	// The rows of a list: the selected one where the list has the keys, and where it doesn't
+	// (another column has them). Herdr's own selection colors, or reversed and dim reversed.
+	selectedRowStyle = themeStyle(herdrTheme, "selection_bg", true, sgrRev)
+	inactiveRowStyle = themeStyle(herdrTheme, "active_row_bg", true, sgrDim+sgrRev)
 )
+
+// onRow draws a list row on a background style: the style comes back after every reset inside
+// the row, and the row is filled out to w cells.
+func onRow(row, style string, w int) string {
+	fill := strings.Repeat(" ", max(0, w-cellWidth(stripSGR(row))))
+	return style + strings.ReplaceAll(row, sgrReset, sgrReset+style) + fill + sgrReset
+}
+
+// toggleCells is the width of a switch.
+const toggleCells = 5
+
+// toggleSwitch draws an on/off switch: the knob at the right on the accent green when on, at the
+// left on grey when off. Inactive (it can't be changed now) draws it grey either way.
+func toggleSwitch(on, inactive bool) string {
+	track, knob := themeStyle(herdrTheme, "surface1", true, "\x1b[100m"), themeStyle(herdrTheme, "overlay1", false, "\x1b[37m")
+	if on && !inactive {
+		track, knob = "\x1b["+colorBg(colorGreen)+"m", themeStyle(herdrTheme, "panel_bg", false, "\x1b[30m")
+	}
+	if on {
+		return track + knob + sgrBold + "   ● " + sgrReset
+	}
+	return track + knob + " ●   " + sgrReset
+}
+
+// colorBg turns foreground SGR parameters (a palette code or 38;2;r;g;b) into the background ones.
+func colorBg(fg string) string {
+	if strings.HasPrefix(fg, "38;") {
+		return "48;" + fg[3:]
+	}
+	if n, err := strconv.Atoi(fg); err == nil && (n >= 30 && n <= 37 || n >= 90 && n <= 97) {
+		return strconv.Itoa(n + 10)
+	}
+	return fg
+}
 
 // fit pads or truncates s (plain text, no escapes) to exactly w display cells.
 func fit(s string, w int) string {

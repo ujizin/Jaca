@@ -74,7 +74,15 @@ overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network
 
 - **Start**: `a` (or the app button) lists the installed apps; choosing one starts the capture.
   `p` or `space` stops and starts it. On the iOS Simulator starting relaunches the app.
-- **List**: `j`/`k` select, `Shift` with `↑`, `↓`, `PgUp` or `PgDn` selects a run of requests,
+- **Attach banner**: when the app came back without the agent (the user reopened it), a
+  warning block under the toolbar says so, with a ` R  Relaunch & re-attach ` button (`R`). On
+  the iOS Simulator, in Agent HTTPS debugging, a switch beside it turns on the app's
+  `Re-attach to iOS Simulator apps automatically` setting (written with `defaults`; jacad reads
+  it each time it decides), so jacad relaunches the app without asking. It is off by default, as
+  in the app: a relaunch throws away where the user was in their app.
+- **List**: the path is cut in the middle, as in the app, so the end of an endpoint stays
+  readable; a narrow list leaves out Size, then Host, then Time before it cuts the path short.
+  `j`/`k` select, `Shift` with `↑`, `↓`, `PgUp` or `PgDn` selects a run of requests,
   `Backspace` deletes the selected ones from the list (here only; jacad keeps them, so they
   are still in an exported HAR), `/` filters by URL, host or method, `c` clears, `S` exports a
   HAR through the macOS save dialog, `C` copies the selected request's response body, `G` goes
@@ -82,9 +90,14 @@ overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network
 - **Timeline**: the strip above the list draws each request from its start to its end.
   Dragging across it shows only the requests in that time range; a click on it, the `×` at
   its right or `Esc` clears the range. It shows in panes of 24 rows or more.
-- **Detail**: `Enter` or a click opens the request beside the list, with the app's tabs
-  (Overview, Headers, Request, Response, Timing). `Tab` or `1`–`5` switch tabs, `PgUp`/`PgDn`
-  scroll, `Esc` closes it. In the Request tab `C` copies the request body. Any text in the
+- **Detail**: `Enter` (or `→`) opens the request beside the list, with the app's tabs
+  (Overview, Headers, Request, Response, Timing), and gives it the keys: the arrows and `j`/`k`
+  scroll it, `PgUp`/`PgDn` page it, `←`/`→`, `Tab` or `1`–`5` switch tabs. `Esc` goes back to
+  the list and leaves the detail open beside it, following the selected request; `Esc` again
+  closes it. A click on a request opens its detail with the keys on the list; a click in the
+  detail gives it the keys. The side that has the keys has its headings in the accent, and the
+  selected request is quieter while the detail has them. In a pane too narrow for both, `Esc`
+  closes the detail. In the Request tab `C` copies the request body. Any text in the
   detail can be copied with the mouse: a drag selects it and copies on release (a value that
   wrapped over several lines comes back in one piece), a double click copies the whole value
   under the pointer, and a right click offers `Copy` for it. The `Copy` buttons of the bodies
@@ -93,7 +106,7 @@ overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network
   `Edit override “…”` and `Add another override…` when a rule already answers it), `Copy URL`,
   `Copy response body`, `Filter by this host`.
 - **Overrides**: `o` (or the Overrides button) opens the rules: `Enter` edits, `n` is New
-  override, `space` enables or disables, `d` duplicates, `x` or `Backspace` deletes, `K`/`J` move a rule up
+  override, `space` (or a click on a rule's switch) enables or disables, `d` duplicates, `x` or `Backspace` deletes, `K`/`J` move a rule up
   or down (the first enabled match wins), `m` pauses or resumes all of them.
 - **Override a request**: `O` on a selected request opens the editor filled from it (its URL as
   the pattern, its method, and the response it got), or on the rule that already answers it.
@@ -363,6 +376,6 @@ lines the client itself produces when Herdr or jacad returns something it can't 
 SQL bar's `⌘↩ to run · …` hint, where the key that always works is `Ctrl+R`. The ` esc close `
 and ` esc back ` buttons stand where the app's sheets have `Cancel`. The client's own error
 lines (`<method>: no reply from jacad after <time>`, `jacad closed the connection`) have no
-app copy either. The log toolbar's field placeholders are the app's with a capital first letter. In the network pane's `?` popup, `Delete request`, `Select requests`, `Select request`, `Inspect request`, `Switch tab`, `Request menu` and `Follow new requests` are placeholders too, as is the `network` pane title. In the database pane's `?` popup, `Row details` is a placeholder (the other labels are the app's, or placeholders the other panes use), as are the `database` pane title and the tab name `Jaca database - <device>`. In the Gradle and Xcode panes' `?` popups, `Select row` is a placeholder (the other labels are the app's buttons and tooltips, or the placeholders the log viewer already uses), as is the `tools` pane title, `Jaca`. Those two panes show nothing while a refresh the user asked for is running, because the app has no text for it. The `?` popup's labels are the app's where it has one; `Minimum level`, `Filter text`, `Regex`, `Package id`, `Pause / unpause`, `Scroll`, `Help` (also the popup's title and the status bar button) and `Quit` are placeholders that need specified copy. In the projects pane's `?` popup, `Expand / collapse`, `Row menu` and `Tree / List` are placeholders, as are the tab name `Projects - Jaca` and the `jaca: ` prefix in front of an error the app would swallow. The pane uses three of the app's strings where the app does not: `Herdr settings` (the button's accessibility label; its tooltip is longer), `Confirm?` as the row menu's label while Remove is armed, and the relative ages jacad does not send, which are approximated. The two action titles
+app copy either. The log toolbar's field placeholders are the app's with a capital first letter. In the network pane's `?` popup, `Delete request`, `Select requests`, `Select request`, `Inspect request`, `Switch tab`, `Request menu`, `Follow new requests` and `Back` are placeholders too, as is the `network` pane title. The `R` in the attach banner's ` R  Relaunch & re-attach ` button is the key, like `esc` in ` esc close `; the label after it is the app's. The switch beside it is labelled with the app's Settings title for the same setting, `Re-attach to iOS Simulator apps automatically`. In the database pane's `?` popup, `Row details` is a placeholder (the other labels are the app's, or placeholders the other panes use), as are the `database` pane title and the tab name `Jaca database - <device>`. In the Gradle and Xcode panes' `?` popups, `Select row` is a placeholder (the other labels are the app's buttons and tooltips, or the placeholders the log viewer already uses), as is the `tools` pane title, `Jaca`. Those two panes show nothing while a refresh the user asked for is running, because the app has no text for it. The `?` popup's labels are the app's where it has one; `Minimum level`, `Filter text`, `Regex`, `Package id`, `Pause / unpause`, `Scroll`, `Help` (also the popup's title and the status bar button) and `Quit` are placeholders that need specified copy. In the projects pane's `?` popup, `Expand / collapse`, `Row menu` and `Tree / List` are placeholders, as are the tab name `Projects - Jaca` and the `jaca: ` prefix in front of an error the app would swallow. The pane uses three of the app's strings where the app does not: `Herdr settings` (the button's accessibility label; its tooltip is longer), `Confirm?` as the row menu's label while Remove is armed, and the relative ages jacad does not send, which are approximated. The two action titles
 and the `logs` pane title in `herdr-plugin.toml` are placeholders written for this prototype and
 need specified copy.
