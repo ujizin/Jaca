@@ -27,6 +27,10 @@ final class AgentHTTPCoordinator: @unchecked Sendable {
     /// The port `AgentHTTPServer` bound. The tunnel maps it 1:1, so it's the device-side port too.
     private var serverPort: Int?
     private var desiredHosts: Set<String> = []
+    /// False until the overrides engine has said which hosts to route. Until then an empty
+    /// `desiredHosts` means "not told", not "route nothing", and sending it would disarm an app
+    /// that another capture armed.
+    private var hostsKnown = false
     private var agentSupportsOverride = false
     /// Sticky: once this agent has advertised `override/1`, reconnects are the same build and
     /// re-arm without waiting for a hello we might miss.
@@ -257,8 +261,9 @@ final class AgentHTTPCoordinator: @unchecked Sendable {
     /// Updates which hosts the device should route. Takes effect on the app's next request.
     func updateHosts(_ hosts: Set<String>) {
         let changed = withLock {
-            guard hosts != desiredHosts else { return false }
+            guard !hostsKnown || hosts != desiredHosts else { return false }
             desiredHosts = hosts
+            hostsKnown = true
             refreshStateLocked()
             return true
         }
@@ -299,13 +304,13 @@ final class AgentHTTPCoordinator: @unchecked Sendable {
     }
 
     /// Sends the endpoint the current state implies, or stays silent until the agent has proven
-    /// it understands control frames.
+    /// it understands control frames and the engine has named the hosts.
     private func pushCurrentEndpoint() {
-        let (port, hosts, supported) = withLock { (serverPort, desiredHosts, agentSupportsOverride) }
+        let (port, hosts, supported, known) = withLock { (serverPort, desiredHosts, agentSupportsOverride, hostsKnown) }
 
-        guard supported, let port else {
+        guard supported, known, let port else {
             JacaLog.debug("override",
-                "endpoint not pushed (agentSupportsOverride=\(supported), port=\(String(describing: port)))")
+                "endpoint not pushed (agentSupportsOverride=\(supported), hostsKnown=\(known), port=\(String(describing: port)))")
             return
         }
         // `AgentHTTPRoute`'s init clears origin and hosts together, so an empty host set here

@@ -126,6 +126,22 @@ final class AgentHTTPCoordinatorTests: XCTestCase {
         XCTAssertTrue(writer.events.isEmpty, "got \(writer.events)")
     }
 
+    /// A coordinator the overrides engine hasn't given hosts yet says nothing, even after a hello:
+    /// an empty route there would disarm an app that another capture of it armed.
+    func test_aHelloBeforeTheHostsAreKnownPushesNothing() async {
+        let writer = RecordingWriter()
+        let coordinator = makeCoordinator(writer)
+        await coordinator.start(pipeline: .passthrough)
+        coordinator.agentDidAdvertiseOverrideSupport()
+        coordinator.agentDidReconnect()
+        XCTAssertTrue(writer.frames.isEmpty, "got \(writer.frames)")
+
+        // Told "route nothing", it says so.
+        coordinator.updateHosts([])
+        XCTAssertEqual(writer.frames, [AgentHTTPRoute.routeFrame(AgentHTTPRoute(origin: nil, hosts: []))])
+        await coordinator.stop()
+    }
+
     func test_reconnectBeforeAnyHelloPushesNothing() {
         let writer = RecordingWriter()
         let coordinator = makeCoordinator(writer)

@@ -23,6 +23,22 @@ final class DaemonNetworkTests: XCTestCase {
         return t
     }
 
+    /// A capture starting on an app stops the other running captures of that app on that device:
+    /// the app's agent serves one at a time, and two take its connection from each other.
+    func test_aNewCaptureStopsTheOthersOfTheSameApp() {
+        let new = UUID(), sameApp = UUID(), stopped = UUID(), otherApp = UUID(), otherDevice = UUID()
+        let sessions: [(id: UUID, deviceID: String, package: String?, isRunning: Bool)] = [
+            (new, "emu-1", "com.example.app", false),
+            (sameApp, "emu-1", "com.example.app", true),
+            (stopped, "emu-1", "com.example.app", false),
+            (otherApp, "emu-1", "com.example.other", true),
+            (otherDevice, "emu-2", "com.example.app", true),
+        ]
+        XCTAssertEqual(NetworkArea.capturesToStop(sessions, starting: new, package: "com.example.app", on: "emu-1"), [sameApp])
+        XCTAssertEqual(NetworkArea.capturesToStop(sessions, starting: new, package: nil, on: "emu-1"), [],
+                       "a capture with no app chosen replaced another")
+    }
+
     func test_transaction_roundTripsAndStripsBodies() throws {
         let t = txn(1, body: "{\"ok\":true}")
         let back = try JSONDecoder.daemon.decode(NetworkTransaction.self, from: JSONEncoder.daemon.encode(t))

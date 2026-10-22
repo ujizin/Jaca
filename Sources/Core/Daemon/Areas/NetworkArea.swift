@@ -23,6 +23,15 @@ enum NetworkArea {
         var existed: Bool
     }
 
+    /// The running captures a new capture of `package` on `deviceID` replaces: every other one
+    /// of the same app on the same device. A capture with no app chosen replaces none.
+    static func capturesToStop(_ sessions: [(id: UUID, deviceID: String, package: String?, isRunning: Bool)],
+                               starting id: UUID, package: String?, on deviceID: String) -> [UUID] {
+        guard let package else { return [] }
+        return sessions.filter { $0.id != id && $0.isRunning && $0.deviceID == deviceID && $0.package == package }
+            .map(\.id)
+    }
+
     static func transactionsTopic(_ id: UUID) -> String { "net.txns.\(id.uuidString)" }
     static func stateTopic(_ id: UUID) -> String { "net.state.\(id.uuidString)" }
 
@@ -89,8 +98,31 @@ enum NetworkArea {
             let sourceID = p.sourceID.flatMap { CaptureSourceRegistry.descriptor(id: $0)?.kind == .companion ? nil : $0 }
             engine.restoreMode(sourceID: sourceID, package: p.package)
             bus.publish(NetworkArea.stateTopic(id), engine.state, retain: true)
-            if p.autoStart == true { engine.resume() }
+            if p.autoStart == true {
+                stopOthers(capturing: engine.state.targetPackage, on: p.device.id, except: id)
+                engine.resume()
+            }
             return SessionInfo(id: id, state: engine.state, existed: false)
+        }
+
+        /// Starts a capture: first stops every other capture of the same app on the same device.
+        /// The app's agent serves one capture at a time, so two of them take its connection from
+        /// each other, and the control frames that route overridden hosts get lost. The newest
+        /// one wins; the stopped ones keep what they recorded.
+        func select(_ id: UUID, sourceID: String, package: String?) throws {
+            let hosted = try session(id)
+            stopOthers(capturing: package, on: hosted.device.id, except: id)
+            hosted.engine.select(sourceID: sourceID, package: package)
+        }
+
+        private func stopOthers(capturing package: String?, on deviceID: String, except id: UUID) {
+            let running = sessions.map { (id: $0.key, deviceID: $0.value.device.id,
+                                          package: $0.value.engine.state.targetPackage,
+                                          isRunning: $0.value.engine.state.isRunning) }
+            for other in NetworkArea.capturesToStop(running, starting: id, package: package, on: deviceID) {
+                DaemonLog.info("stopping network capture \(other): capture \(id) starts on \(package ?? "")")
+                sessions[other]?.engine.stop()
+            }
         }
 
         private func context(for device: Device, adbURL: URL?) -> DeviceContext {
@@ -249,7 +281,7 @@ enum NetworkArea {
                 if CaptureSourceRegistry.descriptor(id: p.sourceID)?.kind == .companion {
                     throw RPCError.invalidParams("Companion capture runs in the app, not in jacad.")
                 }
-                try captures.session(p.id).engine.select(sourceID: p.sourceID, package: p.package)
+                try captures.select(p.id, sourceID: p.sourceID, package: p.package)
             }
             return RPCEmpty()
         }

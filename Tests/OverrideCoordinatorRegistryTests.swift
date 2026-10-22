@@ -36,6 +36,14 @@ final class OverrideCoordinatorRegistryTests: XCTestCase {
         func flush(timeout: Duration) async {}
     }
 
+    private final class RecordingWriter: AgentControlWriter, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _frames: [String] = []
+        func write(_ json: String) { lock.lock(); _frames.append(json); lock.unlock() }
+        func flush(timeout: Duration) async {}
+        var frames: [String] { lock.lock(); defer { lock.unlock() }; return _frames }
+    }
+
     private final class NoopTunnel: AgentHTTPTunnel, @unchecked Sendable {
         func origin(forLocalPort port: Int) -> String { "http://stub:\(port)" }
         func open(localPort port: Int) async throws {}
@@ -45,13 +53,14 @@ final class OverrideCoordinatorRegistryTests: XCTestCase {
 
     private let target = InterceptTarget(deviceID: "sim-1", package: "com.example.app")
 
-    private func makeCoordinator(_ services: InterceptServices) -> AgentHTTPCoordinator {
+    private func makeCoordinator(_ services: InterceptServices,
+                                 writer: AgentControlWriter = SilentWriter()) -> AgentHTTPCoordinator {
         AgentHTTPCoordinator(transport: .iosSimulatorAgent(bundleID: "com.example.app"),
                           deviceID: target.deviceID,
                           appID: target.package,
                           capabilities: .desktopTerminated,
                           tunnel: NoopTunnel(),
-                          writer: SilentWriter(),
+                          writer: writer,
                           onStateChange: { services.reportArming(target: self.target,
                                                                  coordinator: $0, state: $1) })
     }
@@ -134,5 +143,47 @@ final class OverrideCoordinatorRegistryTests: XCTestCase {
         await settle()
         XCTAssertEqual(model.arming(for: target), .waitingForAgent,
                        "a late teardown clobbered the coordinator that replaced it")
+    }
+
+    /// Two captures of one app, both live: the app talks to whichever reached it last, so both
+    /// get the hosts. The registry used to keep the older one only, and the newer one's agent
+    /// was told to route nothing.
+    func test_everyLiveCoordinatorOfATargetGetsTheHosts() async throws {
+        let model = makeModel()
+        let services = model.services()
+        let olderWriter = RecordingWriter(), newerWriter = RecordingWriter()
+        let older = makeCoordinator(services, writer: olderWriter)
+        let newer = makeCoordinator(services, writer: newerWriter)
+        for coordinator in [older, newer] {
+            await coordinator.start(pipeline: .passthrough)
+            coordinator.agentDidAdvertiseOverrideSupport()
+            services.register(target: target, coordinator: coordinator)
+        }
+        await settle()
+
+        var rule = OverrideRule()
+        rule.name = "Stub"
+        rule.matcher = OverrideMatcher(pattern: "https://api.example.com/**", kind: .glob, methods: ["GET"])
+        rule.action = .respond(OverrideResponseSpec(statusCode: 418, headers: [], body: .inline("{}")))
+        model.save(rule)
+        await settle()
+
+        for (name, writer) in [("older", olderWriter), ("newer", newerWriter)] {
+            let last = try XCTUnwrap(writer.frames.last, "the \(name) capture was told nothing")
+            XCTAssertTrue(last.contains("api.example.com"), "the \(name) capture got \(last)")
+        }
+
+        // The toolbar shows the armed one, whichever registered first.
+        services.reportArming(target: target, coordinator: older, state: .waitingForAgent)
+        services.reportArming(target: target, coordinator: newer, state: .active(port: 1, hosts: ["api.example.com"]))
+        await settle()
+        XCTAssertEqual(model.arming(for: target), .active(port: 1, hosts: ["api.example.com"]))
+
+        // Closing the armed one leaves the other's state, not nothing.
+        services.deregister(target: target, coordinator: newer)
+        await settle()
+        XCTAssertEqual(model.arming(for: target), .waitingForAgent)
+        await older.stop()
+        await newer.stop()
     }
 }

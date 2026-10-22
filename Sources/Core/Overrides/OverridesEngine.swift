@@ -52,7 +52,15 @@ final class OverridesEngine {
     var onChange: ((OverridesState) -> Void)?
 
     private let resolver = OverrideResolver()
-    private var coordinators: [InterceptTarget: AgentHTTPCoordinator] = [:]
+    /// Every live coordinator per target, oldest first, each with the arming state it last
+    /// reported. Two captures of one app each run their own server and tunnel, and the app talks
+    /// to whichever one it reached last, so every one of them gets the hosts.
+    private var coordinators: [InterceptTarget: [Registered]] = [:]
+
+    private struct Registered {
+        let coordinator: AgentHTTPCoordinator
+        var state: InterceptArmingState = .idle
+    }
 
     init() {
         // Synchronous so the first frame already has the user's rules — the cache-first rule.
@@ -110,32 +118,49 @@ final class OverridesEngine {
             onArmingChange: { [weak self] target, coordinator, armingState in
                 Task { @MainActor in
                     guard let self else { return }
+                    guard let coordinator else {
+                        self.setArming(armingState, for: target)
+                        return
+                    }
                     // On a restart the old teardown publishes `.idle` ~300 ms after the new
-                    // coordinator published `.active`; that stale value would win permanently.
-                    if let coordinator, self.coordinators[target] !== coordinator { return }
-                    self.setArming(armingState, for: target)
+                    // coordinator published `.active`; a coordinator no longer registered is
+                    // ignored, or that stale value would win permanently.
+                    guard var list = self.coordinators[target],
+                          let i = list.firstIndex(where: { $0.coordinator === coordinator }) else { return }
+                    list[i].state = armingState
+                    self.coordinators[target] = list
+                    self.setArming(Self.shownArming(list), for: target)
                 }
             },
             onRegisterCoordinator: { [weak self] target, coordinator in
                 Task { @MainActor in
                     guard let self else { return }
-                    // A second tab on the same simulator + app registers before it finds the app
-                    // claimed; evicting the live coordinator there orphaned it for good. A
-                    // *stopped* one is the ordinary restart: replace it.
-                    if let existing = self.coordinators[target],
-                       existing !== coordinator, !existing.isStopped { return }
-                    self.coordinators[target] = coordinator
+                    // A live coordinator is never evicted or refused: a second tab on the same app
+                    // must not orphan the first, and the first must not starve the second (the
+                    // one the app may be talking to) of hosts. A *stopped* one is the ordinary
+                    // restart, whose deregistration is still in flight: drop it now.
+                    var list = (self.coordinators[target] ?? []).filter { !$0.coordinator.isStopped }
+                    if !list.contains(where: { $0.coordinator === coordinator }) {
+                        list.append(Registered(coordinator: coordinator))
+                    }
+                    self.coordinators[target] = list
                     coordinator.updateHosts(self.routedHosts(for: target))
                 }
             },
             onDeregisterCoordinator: { [weak self] target, coordinator in
                 Task { @MainActor in
                     guard let self else { return }
-                    // A restart reuses the target, so a late teardown must not evict its
-                    // replacement.
-                    guard self.coordinators[target] === coordinator else { return }
-                    self.coordinators.removeValue(forKey: target)
-                    self.state.armings.removeAll { $0.target == target }
+                    // A restart reuses the target, so a late teardown removes only itself, never
+                    // its replacement.
+                    guard var list = self.coordinators[target] else { return }
+                    list.removeAll { $0.coordinator === coordinator }
+                    if list.isEmpty {
+                        self.coordinators.removeValue(forKey: target)
+                        self.state.armings.removeAll { $0.target == target }
+                    } else {
+                        self.coordinators[target] = list
+                        self.setArming(Self.shownArming(list), for: target)
+                    }
                 }
             }
         )
@@ -148,6 +173,24 @@ final class OverridesEngine {
         func report(requestID: UUID, appliedRuleID: UUID?, skipped: InterceptSkipReason?) {
             onApplied(requestID, appliedRuleID)
         }
+    }
+
+    /// The one arming state shown for a target with several coordinators: the most useful
+    /// report, the newest on a tie. An armed capture outranks one still waiting, and a waiting
+    /// one outranks a failure, so a second tab that couldn't claim the app doesn't hide the
+    /// first tab's working state.
+    private static func shownArming(_ list: [Registered]) -> InterceptArmingState {
+        func rank(_ s: InterceptArmingState) -> Int {
+            switch s {
+            case .active: return 3
+            case .waitingForAgent, .agentTooOld, .waitingForApp, .detached: return 2
+            case .failed: return 1
+            case .idle: return 0
+            }
+        }
+        var best: InterceptArmingState = .idle
+        for entry in list where rank(entry.state) >= rank(best) { best = entry.state }
+        return best
     }
 
     private func setArming(_ armingState: InterceptArmingState, for target: InterceptTarget) {
@@ -281,8 +324,9 @@ final class OverridesEngine {
     /// apply on the app's next request with no re-attach.
     private func republish() {
         resolver.publish(OverrideCompiler.compile(state.rules, masterEnabled: state.masterEnabled))
-        for (target, coordinator) in coordinators {
-            coordinator.updateHosts(routedHosts(for: target))
+        for (target, list) in coordinators {
+            let hosts = routedHosts(for: target)
+            for entry in list { entry.coordinator.updateHosts(hosts) }
         }
     }
 }
