@@ -117,7 +117,7 @@ func TestNetListKeepsThePathReadable(t *testing.T) {
 	}
 }
 
-// A rule's switch is a click target on both of its rows.
+// A rule's switch is a click target on each of its rows: the name, the pattern and the padding.
 func TestRuleSwitchToggles(t *testing.T) {
 	v := testNetViewer(t)
 	v.openOverridesList()
@@ -129,7 +129,7 @@ func TestRuleSwitchToggles(t *testing.T) {
 	for row := range v.ovui.ruleRows {
 		rows = append(rows, row)
 	}
-	if len(rows) != 2 {
+	if len(rows) != 3 {
 		t.Fatalf("the rule is drawn on %d rows", len(rows))
 	}
 	for _, row := range rows {

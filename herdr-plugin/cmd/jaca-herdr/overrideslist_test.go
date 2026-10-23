@@ -59,13 +59,13 @@ func listedRules(v *netViewer, rows int) []string {
 // selected rule sat at the bottom, or to the first rule).
 func TestOverridesListKeepsItsScrollWhenARuleIsToggled(t *testing.T) {
 	v := overridesListViewer(t)
-	const rows = 40 // room for five rules
+	const rows = 40 // room for six rules
 	listedRules(v, rows)
 	for i := 0; i < 9; i++ {
 		v.overridesKey([]byte("\x1b[B"))
 		listedRules(v, rows)
 	}
-	want := []string{"Rule 05", "Rule 06", "Rule 07", "Rule 08", "Rule 09"}
+	want := []string{"Rule 04", "Rule 05", "Rule 06", "Rule 07", "Rule 08", "Rule 09"}
 	if got := listedRules(v, rows); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("scrolled to the tenth rule, the list shows %v", got)
 	}
@@ -89,11 +89,14 @@ func TestOverridesListKeepsItsScrollWhenARuleIsToggled(t *testing.T) {
 	}
 }
 
-// Rules are separated by a blank row, a divider and a blank row; none after the last one.
+// A rule is its name, its pattern and a padding row; a divider row (the margin) separates it from
+// the next one, with none after the last. The selection covers the padding row, and so do clicks.
 func TestOverridesListSeparatesRules(t *testing.T) {
 	v := overridesListViewer(t)
+	v.ovui.selected = 1
+	b := v.listBox(40, 120)
 	var plain []string
-	for _, row := range v.listBox(40, 120).rows {
+	for _, row := range b.rows {
 		plain = append(plain, strings.TrimRight(strings.Trim(sgr.ReplaceAllString(row, ""), "│"), " "))
 	}
 	dividers := 0
@@ -102,15 +105,33 @@ func TestOverridesListSeparatesRules(t *testing.T) {
 			continue
 		}
 		dividers++
-		if strings.TrimSpace(plain[i-1]) != "" || strings.TrimSpace(plain[i+1]) != "" {
-			t.Errorf("divider at row %d is not between blank rows: %q / %q", i, plain[i-1], plain[i+1])
+		if strings.TrimSpace(plain[i-1]) != "" || !strings.Contains(plain[i-2], "https://api.example.com/") {
+			t.Errorf("divider at row %d does not follow a rule's pattern and padding: %q / %q", i, plain[i-2], plain[i-1])
 		}
-		if !strings.Contains(plain[i-2], "https://api.example.com/") || !strings.Contains(plain[i+2], "Rule ") {
-			t.Errorf("divider at row %d is not between a rule's pattern and the next rule: %q / %q", i, plain[i-2], plain[i+2])
+		if !strings.Contains(plain[i+1], "Rule ") {
+			t.Errorf("divider at row %d is not followed by the next rule: %q", i, plain[i+1])
 		}
 	}
-	if dividers != 4 {
-		t.Errorf("%d dividers between five drawn rules, want 4:\n%s", dividers, strings.Join(plain, "\n"))
+	if dividers != 5 {
+		t.Errorf("%d dividers between six drawn rules, want 5:\n%s", dividers, strings.Join(plain, "\n"))
+	}
+	// The second rule's rows: its name, pattern and padding all carry the selection.
+	name := -1
+	for i, row := range plain {
+		if strings.Contains(row, "Rule 01") {
+			name = i
+		}
+	}
+	for row := name; row < name+3; row++ {
+		if !strings.Contains(b.rows[row], selectedRowStyle) {
+			t.Errorf("row %d of the selected rule is not highlighted: %q", row-name, plain[row])
+		}
+		if n, ok := v.ruleAt(row); !ok || n != 1 {
+			t.Errorf("row %d of the selected rule maps to rule %d (%v)", row-name, n, ok)
+		}
+	}
+	if _, ok := v.ruleAt(name + 3); ok {
+		t.Error("the divider row belongs to a rule")
 	}
 }
 

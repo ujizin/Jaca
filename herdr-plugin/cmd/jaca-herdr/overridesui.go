@@ -377,18 +377,17 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 			}
 		}
 	}
-	// Two rows per rule, then a margin, a divider and a margin before the next one. The window
-	// moves only to keep the selection in view.
+	// A rule is its two rows and a row of padding (all three take the selection and the clicks),
+	// and a divider row is the margin before the next rule. The window moves only to keep the
+	// selection in view.
 	ui.selected = clampIndex(ui.selected, len(rules))
-	room := max(1, (rows-14+3)/5)
+	room := max(1, (rows-14+1)/4)
 	ui.start = followWindow(ui.start, ui.selected, room, len(rules))
 	start := ui.start
 	for i := start; i < len(rules) && i < start+room; i++ {
 		r := rules[i]
 		if i > start {
-			b.add("")
 			b.add(sgrDim + strings.Repeat("─", b.inner) + sgrReset)
-			b.add("")
 		}
 		dim := !r.Enabled || !v.overrides.MasterEnabled
 		name := sanitize(r.displayName())
@@ -402,12 +401,14 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		case v.overrides.HitCounts[r.ID] > 0:
 			trailing = fmt.Sprintf("%d×", v.overrides.HitCounts[r.ID])
 		}
-		// The switch sits at the right of both of the rule's rows, so it is a big target, and a
+		// The switch sits at the right of the rule's three rows, so it is a big target, and a
 		// rule that is off reads as off: dim, with the switch's knob at the left on grey.
 		const switchW = toggleCells + 2                      // the switch and a cell either side
 		nameW := b.inner - cellWidth(trailing) - 4 - switchW // the indent, the gaps and the switch
 		n := i
-		ui.ruleRows[len(b.rows)], ui.ruleRows[len(b.rows)+1] = n, n
+		for row := len(b.rows); row < len(b.rows)+3; row++ {
+			ui.ruleRows[row] = n
+		}
 		toggle := func() { ui.selected = n; v.toggleRule(n) }
 		edit := func(int) { ui.selected = n; v.openEditor(r, false, "") }
 		nameStyle, trailingStyle := sgrBold, sgrYellow
@@ -421,8 +422,10 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 			pattern = "No pattern"
 		}
 		under := "  " + tertiaryStyle + fit(pattern, b.inner-2-switchW) + sgrReset
+		padding := ""
 		if i == ui.selected {
 			line, under = onRow(line, selectedRowStyle, b.inner), onRow(under, selectedRowStyle, b.inner)
+			padding = onRow(padding, selectedRowStyle, b.inner)
 		}
 		b.hit(0, b.inner-switchW-1, edit)
 		b.hit(b.inner-switchW, b.inner-1, func(int) { toggle() })
@@ -430,8 +433,13 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		b.hit(0, b.inner-switchW-1, edit)
 		b.hit(b.inner-switchW, b.inner-1, func(int) { toggle() })
 		b.add(under)
+		b.hit(0, b.inner-switchW-1, edit)
+		b.hit(b.inner-switchW, b.inner-1, func(int) { toggle() })
+		b.add(padding)
 	}
-	b.add("")
+	if len(rules) == 0 {
+		b.add("") // a drawn rule ends in its padding row
+	}
 	if text, style := v.overridesStatus(); text != "" {
 		for _, part := range wrapWords(sanitize(text), b.inner) {
 			b.add(style + part + sgrReset)
