@@ -962,6 +962,8 @@ func (v *netViewer) handleKey(k []byte) bool {
 		v.exportHAR()
 	case k[0] == 'o':
 		v.openOverridesList()
+	case k[0] == 'P':
+		v.toggleMaster()
 	case k[0] == 'O':
 		if t, ok := v.selected(); ok {
 			v.overrideRequest(t, false)

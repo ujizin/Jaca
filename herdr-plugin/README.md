@@ -104,9 +104,10 @@ overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network
 - **Request menu**: a right click (or `m`) shows the app's menu: `Override response…` (or
   `Edit override “…”` and `Add another override…` when a rule already answers it), `Copy URL`,
   `Copy response body`, `Filter by this host`.
-- **Overrides**: `o` (or the Overrides button) opens the rules: `Enter` edits, `n` is New
+- **Overrides**: `o` (or the Overrides button) opens the rules: `Enter` edits, `n` or `c` is New
   override, `space` or `Shift+Enter` (or a click on a rule's switch) enables or disables, `d` duplicates, `x` or `Backspace` deletes, `K`/`J` move a rule up
-  or down (the first enabled match wins), `m` pauses or resumes all of them.
+  or down (the first enabled match wins), `m` or `P` pauses or resumes all of them.
+  `P` also does this from the request list and the request detail.
 - **Override a request**: `O` on a selected request opens the editor filled from it (its URL as
   the pattern, its method, and the response it got), or on the rule that already answers it.
 - **Editor**: `Tab`/`Shift+Tab` move between fields, the arrows move inside a group of chips and
