@@ -13,6 +13,7 @@ import (
 // OverridesPopover) and the rule editor (OverrideEditorSheet).
 type overridesUI struct {
 	selected int
+	start    int // list popup: the first rule drawn, kept so the list stays where it was scrolled
 	menu     *popupMenu
 	draft    *ruleDraft
 	fromList bool        // the editor was opened from the list popup, which it goes back to
@@ -179,6 +180,11 @@ func showLog() {
 	go func() { _ = exec.Command("sh", "-c", `open -R "$HOME/.jaca/logs/jaca.log"`).Run() }()
 }
 
+// takesShiftEnter: Shift+Enter toggles the selected rule in the list popup; elsewhere it is Enter.
+func (v *netViewer) takesShiftEnter() bool {
+	return v.focus == netOverrides && !v.ovui.hidden && v.ovui.menu == nil
+}
+
 // overridesKey handles a key in whichever override popup is open.
 func (v *netViewer) overridesKey(k []byte) {
 	if v.ovui.hidden {
@@ -218,6 +224,8 @@ func (v *netViewer) overridesKey(k []byte) {
 		ui.selected = clampIndex(i-1, len(rules))
 	case isDown(k):
 		ui.selected = clampIndex(i+1, len(rules))
+	case isShiftEnter(k):
+		v.toggleRule(i)
 	case isEnter(k):
 		if has {
 			v.openEditor(rules[i], false, "")
@@ -369,12 +377,19 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 			}
 		}
 	}
-	// Two rows per rule; the window follows the selection.
+	// Two rows per rule, then a margin, a divider and a margin before the next one. The window
+	// moves only to keep the selection in view.
 	ui.selected = clampIndex(ui.selected, len(rules))
-	room := max(1, (rows-14)/2)
-	start := listWindow(ui.selected, room)
+	room := max(1, (rows-14+3)/5)
+	ui.start = followWindow(ui.start, ui.selected, room, len(rules))
+	start := ui.start
 	for i := start; i < len(rules) && i < start+room; i++ {
 		r := rules[i]
+		if i > start {
+			b.add("")
+			b.add(sgrDim + strings.Repeat("─", b.inner) + sgrReset)
+			b.add("")
+		}
 		dim := !r.Enabled || !v.overrides.MasterEnabled
 		name := sanitize(r.displayName())
 		if v.rules.diagnostic(r.ID) != "" {

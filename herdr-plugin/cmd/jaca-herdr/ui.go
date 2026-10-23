@@ -107,7 +107,7 @@ func runPane(c *client, first func(p *pane) screen) int {
 			fmt.Fprintln(os.Stderr, "jaca: jacad closed the connection")
 			return 1
 		case k, ok := <-keys:
-			if !ok || p.screen.handleKey(k) {
+			if !ok || p.screen.handleKey(keyFor(p.screen, k)) {
 				return 0
 			}
 		case f := <-p.work:
@@ -130,6 +130,21 @@ func runPane(c *client, first func(p *pane) screen) int {
 // clampIndex keeps a selection inside 0..<n (0 for an empty list).
 func clampIndex(i, n int) int {
 	return max(0, min(i, n-1))
+}
+
+// followWindow is the first item to draw when the list was drawn from start before: it moves only
+// as far as it takes to keep selected inside room items, so a change that leaves the selection in
+// view (a toggle, a click on a visible row) leaves the list where it was scrolled.
+func followWindow(start, selected, room, n int) int {
+	room = max(1, room)
+	switch {
+	case selected < start:
+		start = selected
+	case selected >= start+room:
+		start = selected - room + 1
+	}
+	// A shorter list (a rule removed) shows as many items as fit.
+	return max(0, min(start, n-room))
 }
 
 // listWindow is the first row to draw so that selected stays inside room rows.
@@ -328,6 +343,25 @@ const copiedNotice = "Copied"
 
 func isEnter(k []byte) bool { return len(k) == 1 && (k[0] == '\r' || k[0] == '\n') }
 func isEsc(k []byte) bool   { return len(k) == 1 && k[0] == 0x1b }
+
+// isShiftEnter is Shift+Enter as a terminal reports it once modifyOtherKeys is on (enterRaw), or
+// under the kitty keyboard protocol. Without either it arrives as a plain Enter.
+func isShiftEnter(k []byte) bool { s := string(k); return s == "\x1b[27;2;13~" || s == "\x1b[13;2u" }
+
+// shiftEnterTaker is a screen that acts on Shift+Enter itself while takesShiftEnter is true. Every
+// other screen gets it as Enter, as before the terminal reported it apart.
+type shiftEnterTaker interface{ takesShiftEnter() bool }
+
+// keyFor is the key a screen gets for k.
+func keyFor(s screen, k []byte) []byte {
+	if !isShiftEnter(k) {
+		return k
+	}
+	if t, ok := s.(shiftEnterTaker); ok && t.takesShiftEnter() {
+		return k
+	}
+	return []byte{'\r'}
+}
 
 // isArrowUp and isArrowDown are the arrow keys alone, for lists under a text field (where j
 // and k are text).
