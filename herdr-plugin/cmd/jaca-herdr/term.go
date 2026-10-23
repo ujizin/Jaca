@@ -161,7 +161,7 @@ func enterRaw() (func(), error) {
 	if _, err := sttyRun("raw", "-echo"); err != nil {
 		return nil, err
 	}
-	fmt.Print("\x1b[?1049h\x1b[?25l\x1b[?7l")
+	fmt.Print("\x1b[?1049h\x1b[?25l\x1b[?7l" + modifyKeysOn)
 	refreshTermSize()
 	// The first caller restores; later ones wait (bounded) until it has finished, so main can't
 	// print or exit while the terminal is still half restored.
@@ -180,7 +180,7 @@ func enterRaw() (func(), error) {
 		sttyRun(saved)
 		screenMu.Lock()
 		defer screenMu.Unlock()
-		fmt.Print(mouseOff + "\x1b[?7h\x1b[?25h\x1b[?1049l")
+		fmt.Print(mouseOff + modifyKeysOff + "\x1b[?7h\x1b[?25h\x1b[?1049l")
 	}
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
@@ -564,6 +564,14 @@ func splitInput(in []byte) (keys [][]byte, rest []byte) {
 const (
 	mouseOn  = "\x1b[?1002h\x1b[?1006h"
 	mouseOff = "\x1b[?1006l\x1b[?1002l"
+)
+
+// modifyOtherKeys level 1, on for the life of the raw terminal: the terminal reports Shift+Enter
+// apart from Enter (isShiftEnter). Level 1 leaves Ctrl+letter and the other keys the panes read
+// as they were.
+const (
+	modifyKeysOn  = "\x1b[>4;1m"
+	modifyKeysOff = "\x1b[>4m"
 )
 
 // mouseDrag is set in a report's button while the pointer moves with a button held.
