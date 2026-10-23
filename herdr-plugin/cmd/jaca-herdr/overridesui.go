@@ -357,10 +357,10 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 	b.closeRow(v.closeOverrides)
 	ui.ruleRows = map[int]int{}
 
-	// The master switch, labelled with what toggling it does (the app's switch has only this tooltip).
-	master, masterStyle := "Pause all overrides — rules stay saved", ""
+	// The master switch, labelled with its state.
+	master, masterStyle := "Overrides: ON", ""
 	if !v.overrides.MasterEnabled {
-		master, masterStyle = "Resume overrides", sgrYellow
+		master, masterStyle = "Overrides: OFF", sgrYellow
 	}
 	b.hit(0, toggleCells+cellWidth(master), func(int) { v.toggleMaster() })
 	b.add(toggleSwitch(v.overrides.MasterEnabled, false) + " " + masterStyle + clip(master, b.inner-toggleCells-1) + sgrReset)

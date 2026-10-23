@@ -1388,6 +1388,7 @@ func (v *netViewer) helpKeys() [][2]string {
 		{"/", "Filter by URL, host, method…"},
 		{"o", "Overrides"},
 		{"O", "Override response…"},
+		{"P", "Pause all overrides"},
 		{"S", "Export HAR"},
 		{"j  k", "Select request"},
 		{"Enter  →", "Inspect request"},
