@@ -233,9 +233,9 @@ func (v *netViewer) overridesKey(k []byte) {
 			v.newOverride()
 		}
 	case len(k) != 1:
-	case k[0] == 'n' || k[0] == 'c':
+	case k[0] == 'n':
 		v.newOverride()
-	case k[0] == 'm' || k[0] == 'P':
+	case k[0] == 'm':
 		v.toggleMaster()
 	case k[0] == 'L':
 		showLog()

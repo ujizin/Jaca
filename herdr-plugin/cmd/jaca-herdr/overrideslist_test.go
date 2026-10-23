@@ -221,24 +221,20 @@ func TestShiftEnterIsEnterElsewhere(t *testing.T) {
 	}
 }
 
-// P pauses or resumes all overrides from the request list, its detail and the rules popup; c in
-// the rules popup is New override.
+// P pauses or resumes all overrides from the request list and its detail.
 func TestOverridesShortcuts(t *testing.T) {
 	v := overridesListViewer(t)
 	c, calls := pipeClient(t)
 	v.p.c = c
-	wait := func(n int) []map[string]any {
-		deadline := time.Now().Add(2 * time.Second)
-		for len(calls()) < n && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
-		return calls()
-	}
-
-	v.overridesKey([]byte("P"))
-	v.focus, v.detail, v.detailFocus = netList, true, true
+	v.focus = netList
 	v.handleKey([]byte("P"))
-	got := wait(2)
+	v.detail, v.detailFocus = true, true
+	v.handleKey([]byte("P"))
+	deadline := time.Now().Add(2 * time.Second)
+	for len(calls()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := calls()
 	if len(got) != 2 {
 		t.Fatalf("calls: %v", got)
 	}
@@ -246,11 +242,5 @@ func TestOverridesShortcuts(t *testing.T) {
 		if call["method"] != "overrides.setMaster" {
 			t.Errorf("P sent %v, want overrides.setMaster", call["method"])
 		}
-	}
-
-	v.focus, v.detail = netOverrides, false
-	v.overridesKey([]byte("c"))
-	if v.focus != netEditor || v.ovui.draft == nil || !v.ovui.draft.isNew {
-		t.Error("c didn't open the editor on a new rule")
 	}
 }
