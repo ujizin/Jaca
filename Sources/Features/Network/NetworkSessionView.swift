@@ -39,7 +39,7 @@ struct NetworkSessionView: View {
                 HSplitView {
                     transactionList
                         .frame(minWidth: 420, idealWidth: 560)
-                    NetworkDetailView(transaction: session.selected)
+                    NetworkDetailView(session: session)
                         .frame(minWidth: 320)
                 }
             }
@@ -322,6 +322,19 @@ struct NetworkSessionView: View {
                                     : "Capturing via the MITM proxy"))
     }
 
+    private func copyCurl(_ txn: NetworkTransaction) {
+        Task { @MainActor in
+            // The session rehydrates an evicted request body from the cache before rendering.
+            guard let command = await session.curlCommand(for: txn.id) else { return }
+            copyToPasteboard(command)
+        }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
     private func exportHAR() {
         Task { @MainActor in
             // From the daemon in daemon mode, where the bodies are.
@@ -389,6 +402,7 @@ struct NetworkSessionView: View {
 
         Divider()
 
+        Button("Copy as cURL") { copyCurl(txn) }
         Button("Copy URL") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(txn.url, forType: .string)
