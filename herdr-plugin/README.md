@@ -102,8 +102,11 @@ overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network
   under the pointer, and a right click offers `Copy` for it. The `Copy` buttons of the bodies
   and header sections sit at the right of their line, drawn like the popups' close button.
 - **Request menu**: a right click (or `m`) shows the app's menu: `Override response…` (or
-  `Edit override “…”` and `Add another override…` when a rule already answers it), `Copy URL`,
-  `Copy response body`, `Filter by this host`.
+  `Edit override “…”` and `Add another override…` when a rule already answers it), `Copy as cURL`,
+  `Copy URL`, `Copy response body`, `Filter by this host`.
+- **Copy as cURL**: `u`, the menu item, or the detail's `Copy cURL` button (at the right of the
+  tabs) copies the request as a curl command that runs as-is, as the app's `CurlExport` builds it.
+  The pane fetches the request body first when it doesn't hold it.
 - **Overrides**: `o` (or the Overrides button) opens the rules: `Enter` edits, `n` is New
   override, `space` or `Shift+Enter` (or a click on a rule's switch) enables or disables, `d` duplicates, `x` or `Backspace` deletes, `K`/`J` move a rule up
   or down (the first enabled match wins), `m` pauses or resumes all of them.

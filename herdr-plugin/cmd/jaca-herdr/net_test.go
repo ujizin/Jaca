@@ -153,11 +153,11 @@ func TestNetRowMenu(t *testing.T) {
 		}
 		return out
 	}
-	want := []string{"Override response…", "", "Copy URL", "Copy response body", "", "Filter by this host"}
+	want := []string{"Override response…", "", "Copy as cURL", "Copy URL", "Copy response body", "", "Filter by this host"}
 	if got := labels("A"); !reflect.DeepEqual(got, want) {
 		t.Errorf("menu for an unmatched request: %q", got)
 	}
-	want = []string{"Edit override “Login stub”", "Add another override…", "", "Copy URL", "Copy response body", "", "Filter by this host"}
+	want = []string{"Edit override “Login stub”", "Add another override…", "", "Copy as cURL", "Copy URL", "Copy response body", "", "Filter by this host"}
 	if got := labels("B"); !reflect.DeepEqual(got, want) {
 		t.Errorf("menu for a matched request: %q", got)
 	}

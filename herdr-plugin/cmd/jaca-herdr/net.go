@@ -834,6 +834,7 @@ func (v *netViewer) openRowMenu(t netTransaction, x, y int) {
 	}
 	items = append(items,
 		menuItem{},
+		menuItem{"Copy as cURL", func() { v.copyCurl(t) }},
 		menuItem{"Copy URL", func() { v.copy(t.URL) }},
 		menuItem{"Copy response body", func() {
 			v.fetchBodies(t, false, func(b *netBodies) {
@@ -974,6 +975,10 @@ func (v *netViewer) handleKey(k []byte) bool {
 		}
 	case k[0] == 'C' || k[0] == 'y':
 		v.copyBody()
+	case k[0] == 'u':
+		if t, ok := v.selected(); ok {
+			v.copyCurl(t)
+		}
 	case k[0] == 0x7f || k[0] == 0x08: // Backspace
 		v.removeSelected()
 	case k[0] == 'R':
@@ -1251,6 +1256,17 @@ func (v *netViewer) copyBody() {
 	v.fetchBodies(t, false, func(*netBodies) { v.copy(v.bodyText(t, request)) })
 }
 
+// copyCurl copies the request as a curl command, with its body fetched first when it isn't held.
+func (v *netViewer) copyCurl(t netTransaction) {
+	v.fetchBodies(t, false, func(b *netBodies) {
+		var body []byte
+		if b != nil {
+			body = b.Request
+		}
+		v.copy(curlCommand(t, body))
+	})
+}
+
 func (v *netViewer) menuKey(k []byte) {
 	switch {
 	case isEsc(k) || (len(k) == 1 && k[0] == 'q'):
@@ -1396,6 +1412,7 @@ func (v *netViewer) helpKeys() [][2]string {
 		{"Tab  ←  →  1-5", "Switch tab"},
 		{"PgUp  PgDn", "Scroll"},
 		{"C", "Copy response body"},
+		{"u", "Copy as cURL"},
 		{"Shift+↑ ↓ PgUp PgDn", "Select requests"},
 		{"Backspace", "Delete request"},
 		{"m", "Request menu"},
@@ -2087,6 +2104,13 @@ func (v *netViewer) detailColumn(w, n int) []string {
 		tabs.WriteString(style + " " + name + " " + sgrReset + " ")
 		v.tabHits = append(v.tabHits, hit{x0: x + used, x1: x + used + len(name) + 1, act: func() { v.setTab(i) }})
 		used += len(name) + 3
+	}
+	// Copy cURL sits at the row's right end, as in the app, when the tabs leave it room.
+	if curl := " Copy cURL "; ok && used+len(curl)+1 <= w {
+		gap := w - used - len(curl) - 1
+		tabs.WriteString(strings.Repeat(" ", gap) + closeButton(curl) + " ")
+		v.tabHits = append(v.tabHits, hit{x0: x + used + gap, x1: x + used + gap + len(curl) - 1, act: func() { v.copyCurl(t) }})
+		used = w
 	}
 	out = append(out, tabs.String()+strings.Repeat(" ", max(0, w-used)), strings.Repeat(" ", w))
 
