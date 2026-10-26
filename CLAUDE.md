@@ -34,7 +34,7 @@ If `defaults read dev.srsouza.Jaca daemonAreas` is set on the machine, add
 app, which otherwise connects to the real `~/.jaca/jacad.sock` and replaces a running daemon that
 is older than the build under test.
 
-`JacaTests` includes **live** tests (`LiveAndroidTests`, `LiveSimulatorTests`, `LiveAgentCaptureTests`) that need a real device/emulator/agent and **fail** when absent — skip them with `-skip-testing:JacaTests/LiveAgentCaptureTests` etc. when verifying logic locally.
+`JacaTests` includes **live** tests (`LiveAndroidTests`, `LiveSimulatorTests`, `LiveAgentCaptureTests`) that need a real device/emulator/agent and **fail** when absent — skip them with `-skip-testing:JacaTests/LiveAgentCaptureTests` etc. when verifying logic locally. `LiveChromeOverrideTests` starts a headless Google Chrome (skipped when Chrome isn't installed).
 
 ### Building from a `.claude/worktrees/` worktree
 
