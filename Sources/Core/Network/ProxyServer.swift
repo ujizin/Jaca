@@ -7,8 +7,8 @@ import NIOTLS
 
 /// A man-in-the-middle HTTP(S) proxy. Clients point their device proxy at it;
 /// for `CONNECT` it terminates TLS with a per-host leaf cert (signed by our CA),
-/// reads the plaintext HTTP, and forwards upstream via `UpstreamClient`,
-/// emitting a `NetworkTransaction` per request/response.
+/// reads the plaintext HTTP, and runs it through an `InterceptPipeline` (the override rules,
+/// then the origin), emitting a `NetworkTransaction` per request/response.
 final class ProxyServer: @unchecked Sendable {
     let port: Int
     private let ca: CertificateAuthority
@@ -16,18 +16,30 @@ final class ProxyServer: @unchecked Sendable {
     /// (host, success) per MITM TLS handshake — success means the client trusted our leaf
     /// (CA installed → decryption works); failure means it rejected it (CA not trusted).
     private let onHandshake: (@Sendable (String, Bool) -> Void)?
-    private let upstream = UpstreamClient()
+    private let pipeline: InterceptPipeline
+    private let target: ProxyInterceptTarget
+    private let bindHost: String
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
     private var channel: Channel?
 
     /// The actually-bound port (useful when constructed with port 0).
     var boundPort: Int { channel?.localAddress?.port ?? port }
 
+    /// `pipeline` defaults to no rules: every request goes to the origin, redirects unfollowed
+    /// so the client re-requests each hop through the proxy. `bindHost` is every interface by
+    /// default, for a device on the LAN; a proxy only this Mac uses binds loopback.
     init(port: Int, ca: CertificateAuthority,
+         pipeline: InterceptPipeline? = nil,
+         target: ProxyInterceptTarget = ProxyInterceptTarget(),
+         bindHost: String = "0.0.0.0",
          onTransaction: @escaping @Sendable (NetworkTransaction) -> Void,
          onHandshake: (@Sendable (String, Bool) -> Void)? = nil) {
         self.port = port
         self.ca = ca
+        self.pipeline = pipeline
+            ?? InterceptPipeline(origin: OriginClient(upstream: UpstreamClient(), policy: .doNotFollow))
+        self.target = target
+        self.bindHost = bindHost
         self.onTransaction = onTransaction
         self.onHandshake = onHandshake
     }
@@ -36,7 +48,7 @@ final class ProxyServer: @unchecked Sendable {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 256)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .childChannelInitializer { [ca, upstream, onTransaction, onHandshake] channel in
+            .childChannelInitializer { [ca, pipeline, target, onTransaction, onHandshake] channel in
                 channel.pipeline.addHandler(HTTPResponseEncoder(), name: "encoder").flatMap {
                     channel.pipeline.addHandler(
                         ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)),
@@ -44,7 +56,7 @@ final class ProxyServer: @unchecked Sendable {
                     )
                 }.flatMap {
                     channel.pipeline.addHandler(
-                        ProxyHandler(ca: ca, upstream: upstream, onTransaction: onTransaction,
+                        ProxyHandler(ca: ca, pipeline: pipeline, target: target, onTransaction: onTransaction,
                                      onHandshake: onHandshake, mode: .initial),
                         name: "proxy"
                     )
@@ -56,7 +68,7 @@ final class ProxyServer: @unchecked Sendable {
         // proxy over the LAN at this Mac's IP, so 127.0.0.1 would be unreachable and
         // (because the device proxy is set) break all of its web traffic. Emulators
         // still work — 10.0.2.2 maps to the host loopback, which 0.0.0.0 includes.
-        channel = try bootstrap.bind(host: "0.0.0.0", port: port).wait()
+        channel = try bootstrap.bind(host: bindHost, port: port).wait()
     }
 
     /// Terminal — the owner drops the instance right after — and non-blocking: `close().wait()`
@@ -68,6 +80,12 @@ final class ProxyServer: @unchecked Sendable {
         channel = nil
         DispatchQueue.global(qos: .utility).async { try? group.syncShutdownGracefully() }
     }
+}
+
+/// Who a proxy's requests come from, for rules scoped to a device or an app.
+struct ProxyInterceptTarget: Sendable, Equatable {
+    var deviceID: String?
+    var appID: String?
 }
 
 // MARK: - Handler
@@ -82,7 +100,8 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
     }
 
     private let ca: CertificateAuthority
-    private let upstream: UpstreamClient
+    private let pipeline: InterceptPipeline
+    private let target: ProxyInterceptTarget
     private let onTransaction: @Sendable (NetworkTransaction) -> Void
     private let onHandshake: (@Sendable (String, Bool) -> Void)?
     private let mode: Mode
@@ -90,11 +109,12 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
     private var requestHead: HTTPRequestHead?
     private var bodyBuffer = Data()
 
-    init(ca: CertificateAuthority, upstream: UpstreamClient,
+    init(ca: CertificateAuthority, pipeline: InterceptPipeline, target: ProxyInterceptTarget,
          onTransaction: @escaping @Sendable (NetworkTransaction) -> Void,
          onHandshake: (@Sendable (String, Bool) -> Void)?, mode: Mode) {
         self.ca = ca
-        self.upstream = upstream
+        self.pipeline = pipeline
+        self.target = target
         self.onTransaction = onTransaction
         self.onHandshake = onHandshake
         self.mode = mode
@@ -148,7 +168,7 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
 
         let sslHandler = NIOSSLServerHandler(context: sslContext)
         let observer = HandshakeObserver(host: host, report: onHandshake)
-        let newProxy = ProxyHandler(ca: ca, upstream: upstream, onTransaction: onTransaction,
+        let newProxy = ProxyHandler(ca: ca, pipeline: self.pipeline, target: target, onTransaction: onTransaction,
                                     onHandshake: onHandshake, mode: .tls(host: host))
 
         pipeline.removeHandler(name: "decoder")
@@ -190,64 +210,44 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
             host = URL(string: head.uri)?.host ?? head.headers.first(name: "Host") ?? ""
         }
 
-        guard let url = URL(string: urlString) else {
+        guard URL(string: urlString) != nil else {
             writeError(context: context, message: "Invalid URL: \(urlString)")
             return
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = head.method.rawValue
-        var requestHeaders: [HeaderPair] = []
-        for header in head.headers {
-            requestHeaders.append(HeaderPair(name: header.name, value: header.value))
-            if !Self.isHopByHop(header.name) {
-                request.setValue(header.value, forHTTPHeaderField: header.name)
-            }
-        }
-        if !body.isEmpty { request.httpBody = body }
-
+        let requestHeaders = head.headers.map { HeaderPair(name: $0.name, value: $0.value) }
         var txn = NetworkTransaction(
             method: head.method.rawValue, url: urlString, host: host, scheme: scheme,
             requestHeaders: requestHeaders, requestBody: body.isEmpty ? nil : body
         )
         onTransaction(txn)   // in-flight
 
+        // The pipeline drops hop-by-hop and X-Jaca-* headers before the origin sees them.
+        let request = InterceptedRequest(
+            id: txn.id, method: head.method.rawValue, url: urlString, headers: requestHeaders,
+            body: body.isEmpty ? nil : body, transport: .mitmProxy,
+            deviceID: target.deviceID, appID: target.appID, startedAt: txn.startedAt
+        )
         let channel = context.channel
         let emit = onTransaction
-        Task { [upstream] in
-            let response = await upstream.send(request)
+        Task { [pipeline] in
+            let result = await pipeline.run(request, capabilities: .desktopTerminated,
+                                            unmatched: .fetchFromOrigin)
+            let response = result.response
             channel.eventLoop.execute {
-                Self.writeResponse(channel: channel, response: response)
+                HTTPWireFormat.writeResponse(channel: channel, response: response)
             }
             txn.statusCode = response.error == nil ? response.statusCode : nil
-            txn.responseHeaders = response.headers.map { HeaderPair(name: $0.0, value: $0.1) }
+            txn.responseHeaders = response.headers
             txn.responseBody = response.body.isEmpty ? nil : response.body
             txn.responseBytes = response.body.count
-            txn.responseContentType = response.headers.first { $0.0.lowercased() == "content-type" }?.1
+            txn.responseContentType = response.headers.first { $0.name.lowercased() == "content-type" }?.value
             txn.responseReceivedAt = response.responseStart
             txn.finishedAt = response.responseEnd ?? Date()
             txn.error = response.error
+            txn.overriddenByRuleID = result.appliedRuleID
             emit(txn)            // completed
         }
-    }
-
-    private static func writeResponse(channel: Channel, response: UpstreamClient.Response) {
-        var headers = HTTPHeaders()
-        for (name, value) in response.headers {
-            let lower = name.lowercased()
-            if isHopByHop(name) || lower == "content-length" || lower == "content-encoding" { continue }
-            headers.add(name: name, value: value)
-        }
-        headers.replaceOrAdd(name: "Content-Length", value: String(response.body.count))
-        headers.replaceOrAdd(name: "Connection", value: "keep-alive")
-
-        let status = HTTPResponseStatus(statusCode: response.statusCode == 0 ? 502 : response.statusCode)
-        let head = HTTPResponseHead(version: .http1_1, status: status, headers: headers)
-        channel.write(NIOAny(HTTPServerResponsePart.head(head)), promise: nil)
-        var buffer = channel.allocator.buffer(capacity: response.body.count)
-        buffer.writeBytes(response.body)
-        channel.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
-        channel.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil)), promise: nil)
     }
 
     private func writeError(context: ChannelHandlerContext, message: String) {
@@ -265,14 +265,6 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         context.close(promise: nil)
-    }
-
-    private static func isHopByHop(_ name: String) -> Bool {
-        let hop: Set<String> = [
-            "connection", "proxy-connection", "keep-alive", "transfer-encoding",
-            "te", "trailer", "upgrade", "proxy-authorization", "proxy-authenticate",
-        ]
-        return hop.contains(name.lowercased())
     }
 }
 
