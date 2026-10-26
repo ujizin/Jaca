@@ -64,6 +64,7 @@ struct DeviceSidebarView: View {
 
             if model.devices.isEmpty {
                 emptyState
+                macSection
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing300) {
@@ -73,6 +74,7 @@ struct DeviceSidebarView: View {
                         }
                         // Devices reachable only over the companion link (no USB/ADB).
                         deviceSection("COMPANION", model.devices.filter { $0.isCompanion })
+                        macSection
                     }
                 }
             }
@@ -98,6 +100,11 @@ struct DeviceSidebarView: View {
             seen.append(device.platform)
         }
         return seen
+    }
+
+    /// This Mac, always listed: its Chrome window is captured whatever devices are connected.
+    private var macSection: some View {
+        deviceSection(DevicePlatform.mac.displayName.uppercased(), [Device.thisMac])
     }
 
     /// A titled group of device rows (a platform, or the companion-only section).
@@ -231,16 +238,24 @@ private struct DeviceRow: View {
 
     /// A companion device (network only) or a ready adb/ios device can be acted on:
     /// companions open Network inspection directly, adb/ios open the logcat/network menu.
-    private var actionable: Bool { device.isCompanion || device.state.isReady }
+    private var actionable: Bool { networkOnly || device.state.isReady }
+
+    /// A companion-only device or this Mac: network is all it has, so a click starts capture.
+    private var networkOnly: Bool { device.isCompanion || device.platform == .mac }
+
+    private var subtitle: String {
+        if device.platform == .mac { return "Chrome (network only)" }
+        return device.isCompanion ? "Companion (network only)" : device.id
+    }
 
     private var deviceButton: some View {
         Button(action: {
-            if device.isCompanion { onStartCompanion() }
+            if networkOnly { onStartCompanion() }
             else if device.state.isReady { showOptions = true }
         }) {
             HStack(spacing: LemonadeTheme.spaces.spacing200) {
                 LemonadeUi.Icon(
-                    icon: .smartphone, contentDescription: nil, size: .medium,
+                    icon: device.platform == .mac ? .laptop : .smartphone, contentDescription: nil, size: .medium,
                     tint: LemonadeTheme.colors.content.contentSecondary
                 )
                 VStack(alignment: .leading, spacing: 1) {
@@ -255,7 +270,7 @@ private struct DeviceRow: View {
                         if device.companionUpdateAvailable { updateChip }
                     }
                     LemonadeUi.Text(
-                        device.isCompanion ? "Companion (network only)" : device.id,
+                        subtitle,
                         textStyle: LemonadeTypography.shared.bodyXSmallRegular,
                         color: LemonadeTheme.colors.content.contentTertiary,
                         maxLines: 1
@@ -264,7 +279,7 @@ private struct DeviceRow: View {
                 Spacer(minLength: 0)
                 if actionable {
                     // Companion: direct play (network only). adb/ios: chevron opens the logcat/network menu.
-                    Image(systemName: device.isCompanion ? "play.fill" : "chevron.down")
+                    Image(systemName: networkOnly ? "play.fill" : "chevron.down")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
                         .rotationEffect(.degrees(showOptions ? 180 : 0))
@@ -288,7 +303,8 @@ private struct DeviceRow: View {
         .disabled(!actionable)
         .accessibilityIdentifier("deviceRow")
         .onHover { hovering = $0 }
-        .help(device.isCompanion ? "Inspect network (companion)"
+        .help(device.platform == .mac ? "Inspect network (Chrome)"
+              : device.isCompanion ? "Inspect network (companion)"
               : (device.state.isReady ? "Logcat or network capture" : device.state.label))
         .popover(isPresented: $showOptions, arrowEdge: .bottom) {
             inspectMenu

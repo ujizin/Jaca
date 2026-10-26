@@ -23,6 +23,8 @@ enum LogSources {
                 // narrows the whole-device stream to that app (empty = whole device).
                 // Falls back to idevicesyslog internally if the private API is unavailable.
                 return IOSDeviceOSLogSource(udid: device.id, processFilter: bundleID)
+            case .mac:
+                return nil   // no device logs for this Mac
             }
         }
     }

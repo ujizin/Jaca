@@ -110,11 +110,18 @@ you type* so you're warned before a request ever fails.
 |---|---|---|---|
 | `.androidAgent` | `AgentHTTPServer` on `127.0.0.1:P`, `adb reverse tcp:P tcp:P` | `.desktopTerminated` | **shipped** |
 | `.iosSimulatorAgent` | the same server, plain loopback, no tunnel | `.desktopTerminated` | **shipped** — see the [iOS doc](agent-https-debugging-ios.md) |
-| `.mitmProxy` (HTTPS decryption) | would be `ProxyHandler.forward` | `.desktopTerminated` | **not wired** — no pipeline yet |
+| `.mitmProxy` (HTTPS decryption) | `ProxyHandler.forward`, a pipeline per `ProxyServer` | `.desktopTerminated` | **shipped for This Mac's Chrome** (`MacBrowserCaptureSource`); companion capture still passes none |
 | `.companionMetadata` | gRPC `StreamFlows` | `.observeOnly` | degrades, explains why |
 
-Adding HTTPS decryption means calling `pipeline.run(_:capabilities:)` from that transport and
-declaring what it supports — not reimplementing matching or precedence.
+`ProxyServer` runs every request through its pipeline with `unmatched: .fetchFromOrigin`. Without
+override services it gets a pipeline with no resolver, which only fetches from the origin. A
+source that passes a resolver gets rules on its traffic. This Mac's Chrome source does: it binds
+the proxy on loopback and launches Chrome with its own profile, `--proxy-server` and
+`--ignore-certificate-errors-spki-list` set to the hash of Jaca's CA key (`CertificateAuthority.rootSPKIHash`).
+Nothing is added to the Keychain or the system proxy. Its rules scope as device `mac`.
+
+Limits of the proxy that a website hits: HTTP/1.1 only, no WebSockets (`Upgrade` is dropped as
+hop-by-hop), and bodies are buffered whole, so a streamed response arrives at its end.
 
 ### The arming half
 
@@ -272,7 +279,7 @@ persistence and UI are transport-neutral and shared by both.
 |---|---|---|
 | `.androidAgent` (Android) | yes | **yes — shipping** |
 | `.iosSimulatorAgent` | yes | **yes — shipping**, see [`agent-https-debugging-ios.md`](agent-https-debugging-ios.md) |
-| `.mitmProxy` (HTTPS decryption) | yes | no — `ProxyServer` has no pipeline |
+| `.mitmProxy` (HTTPS decryption) | yes | **yes for This Mac's Chrome**; companion capture passes no pipeline yet |
 | `.companionMetadata` | yes | n/a — `.observeOnly`, flow metadata can't be overridden |
 
 The iOS Simulator turned out to be structurally simpler than Android (no tunnel, no CA, no pinning

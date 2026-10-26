@@ -86,6 +86,8 @@ protocol NetworkFeed: AnyObject {
     func restartForInterceptChange()
     /// iOS Simulator: relaunch the app to put the agent back (the attach banner's action).
     func relaunchToAttach()
+    /// This Mac: open the Chrome window again after the user closed it.
+    func openBrowser()
     /// Ends the capture for good (the tab closed).
     func close()
 }
@@ -133,7 +135,7 @@ final class NetworkCaptureEngine: NetworkFeed, CaptureSink {
 
     /// The facts about the running source the toolbar and banner need.
     private func publishSourceFacts() {
-        state.interceptWired = current?.arming != nil
+        state.interceptWired = current?.interceptWired ?? false
         state.interceptCapabilities = current?.interceptCapabilities.rawValue ?? 0
         state.hasRunningSource = current != nil
     }
@@ -213,6 +215,10 @@ final class NetworkCaptureEngine: NetworkFeed, CaptureSink {
 
     func relaunchToAttach() {
         (current as? IOSSimulatorAgentCaptureSource)?.relaunchToAttach()
+    }
+
+    func openBrowser() {
+        (current as? MacBrowserCaptureSource)?.openBrowser()
     }
 
     func stop() {

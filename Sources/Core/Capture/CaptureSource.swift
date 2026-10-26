@@ -53,6 +53,10 @@ protocol CaptureSource: AnyObject {
     /// The coordinator arming this source's device, when overrides were actually wired up.
     /// Nil means nothing is armed — the UI must not claim overrides are active.
     var arming: AgentHTTPCoordinator? { get }
+
+    /// Whether the rules run on this source's traffic now. An agent source is wired once its
+    /// coordinator arms; a proxy source as soon as it listens with override services.
+    var interceptWired: Bool { get }
 }
 
 extension CaptureSink {
@@ -62,6 +66,7 @@ extension CaptureSink {
 extension CaptureSource {
     var interceptCapabilities: InterceptCapabilities { [] }
     var arming: AgentHTTPCoordinator? { nil }
+    var interceptWired: Bool { arming != nil }
 }
 
 /// Static, selectable description of a capture option for a device. Drives the chooser

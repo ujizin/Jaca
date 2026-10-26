@@ -14,7 +14,7 @@ struct DatabaseService: Sendable {
         switch device.platform {
         case .android:      return try await androidList(serial: device.id, pkg: appID)
         case .iosSimulator: return try await simulatorList(udid: device.id, bundle: appID)
-        case .iosDevice:    throw DBError.unsupportedPlatform
+        case .iosDevice, .mac: throw DBError.unsupportedPlatform
         }
     }
 
@@ -88,7 +88,7 @@ struct DatabaseService: Sendable {
             for suffix in ["", "-wal", "-shm"] where FileManager.default.fileExists(atPath: db.path + suffix) {
                 try? FileManager.default.copyItem(atPath: db.path + suffix, toPath: local.path + suffix)
             }
-        case .iosDevice:
+        case .iosDevice, .mac:
             throw DBError.unsupportedPlatform
         }
 

@@ -120,6 +120,8 @@ final class NetworkSession: WorkspaceTab {
             return AgentArtifacts.iosNetworkAgentAvailable ? nil : AgentArtifacts.iosMissingMessage
         case .iosDevice:
             return nil                                            // no in-process attach on a real device
+        case .mac:
+            return nil                                            // this Mac captures through its browser
         }
     }
 
@@ -402,6 +404,9 @@ final class NetworkSession: WorkspaceTab {
     /// by relaunching the user's app — hence explicit, never automatic.
     func relaunchToAttach() { feed.relaunchToAttach() }
 
+    /// This Mac: open the Chrome window again after the user closed it.
+    func openBrowser() { feed.openBrowser() }
+
     /// The interception point this tab is currently capturing through.
     var interceptTransport: InterceptTransportID {
         switch captureMode {
@@ -411,7 +416,7 @@ final class NetworkSession: WorkspaceTab {
             switch device.platform {
             case .android:      return .androidAgent(package: targetPackage ?? "")
             case .iosSimulator: return .iosSimulatorAgent(bundleID: targetPackage ?? "")
-            case .iosDevice:    return .mitmProxy
+            case .iosDevice, .mac: return .mitmProxy
             }
         case .companion:
             return .companionMetadata

@@ -77,6 +77,8 @@ final class AgentCaptureSource: CaptureSource {
         case .iosDevice:
             let r = try? await CommandRunner.run(AppleToolchain.xcrun, ["devicectl", "list", "devices"], timeout: 12)
             return r?.stdout.contains(device.id) ?? false
+        case .mac:
+            return false   // the agent isn't offered for this Mac
         }
     }
 
@@ -91,6 +93,7 @@ final class AgentCaptureSource: CaptureSource {
         case .android: return "\(device.displayModel) isn’t connected — plug it in and authorize USB debugging."
         case .iosSimulator: return "\(device.displayModel) isn’t booted — start the simulator and try again."
         case .iosDevice: return "\(device.displayModel) isn’t connected — plug it in and trust this Mac."
+        case .mac: return "\(device.displayModel) captures through Chrome, not the in-process agent."
         }
     }
 }

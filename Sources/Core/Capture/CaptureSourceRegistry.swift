@@ -7,7 +7,7 @@ import Foundation
 enum CaptureSourceRegistry {
     // Proxy was dropped: only the on-device companion VPN can attribute traffic per app,
     // so companion is the device-wide source. Agent stays for per-app deep-inspection.
-    static let all: [CaptureSourceDescriptor] = [companion, agent]
+    static let all: [CaptureSourceDescriptor] = [companion, agent, browser]
 
     static let agent = CaptureSourceDescriptor(
         id: "agent", kind: .agent,
@@ -54,12 +54,28 @@ enum CaptureSourceRegistry {
         },
     )
 
+    static let browser = CaptureSourceDescriptor(
+        id: "browser", kind: .browser,
+        title: "Chrome browser",
+        detail: "Opens a separate Chrome window. Jaca captures its traffic and can override responses.",
+        isAvailable: { device, _ in device.platform == .mac },
+        needsPackage: false,
+        make: { ctx in
+            guard let ca = ctx.ca else {
+                // Unreachable by construction: a Mac browser tab always captures in the app.
+                DaemonLog.error("browser capture requested without a CA; not starting")
+                return InertCaptureSource()
+            }
+            return MacBrowserCaptureSource(ca: ca, intercept: ctx.intercept)
+        },
+    )
+
     /// Options offered for a device, in display order. The companion (device-wide HTTPS
     /// decryption) source is gated behind the experimental feature flag — off by default, so
     /// network inspection offers only the in-process Agent.
     static func options(for device: Device, context: DeviceContext?) -> [CaptureSourceDescriptor] {
         let decryption = FeatureFlags.httpsDecryptionEnabled
-        return all.filter { $0.isAvailable(device, context) && (decryption || $0.kind == .agent) }
+        return all.filter { $0.isAvailable(device, context) && (decryption || $0.kind != .companion) }
     }
 
     static func descriptor(id: String) -> CaptureSourceDescriptor? { all.first { $0.id == id } }

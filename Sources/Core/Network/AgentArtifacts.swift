@@ -6,12 +6,15 @@ enum CaptureMode: Sendable, Equatable {
     case proxy
     case agent
     case companion
+    /// A Chrome window on this Mac, launched through a loopback proxy.
+    case browser
 
     var label: String {
         switch self {
         case .agent: return "in-process"
         case .companion: return "companion"
         case .proxy: return "proxy"
+        case .browser: return "browser"
         }
     }
 
@@ -20,7 +23,7 @@ enum CaptureMode: Sendable, Equatable {
     /// phone tunnels TLS to `ProxyServer`); `.agent` doesn't, as it reads in-process buffers.
     var decryptsWithOurCA: Bool {
         switch self {
-        case .proxy, .companion: return true
+        case .proxy, .companion, .browser: return true
         case .agent: return false
         }
     }

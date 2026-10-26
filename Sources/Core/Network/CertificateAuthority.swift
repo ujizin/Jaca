@@ -107,6 +107,12 @@ final class CertificateAuthority: @unchecked Sendable {
         return context
     }
 
+    /// The base64 SHA-256 of the root's SubjectPublicKeyInfo, the form Chrome's
+    /// `--ignore-certificate-errors-spki-list` takes. The root is in every chain the proxy sends.
+    var rootSPKIHash: String {
+        Data(SHA256.hash(data: caKey.publicKey.derRepresentation)).base64EncodedString()
+    }
+
     func exportRootCertificate(to url: URL) throws {
         try rootCertificatePEM.write(to: url, atomically: true, encoding: .utf8)
     }

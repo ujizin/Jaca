@@ -34,6 +34,7 @@ enum InstalledApps {
         case .android:      return await android(adbURL: adbURL, serial: device.id)
         case .iosSimulator: return await simulator(udid: device.id)
         case .iosDevice:    return await iosDevice(udid: device.id)
+        case .mac:          return []   // this Mac captures a browser, not an app
         }
     }
 

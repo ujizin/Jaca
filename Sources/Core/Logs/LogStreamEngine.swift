@@ -312,6 +312,8 @@ final class LogStreamEngine: LogFeed {
             return "\(device.displayModel) isn’t booted — start the simulator and try again."
         case .iosDevice:
             return "\(device.displayModel) isn’t connected — plug it in and trust this Mac."
+        case .mac:
+            return "\(device.displayModel) has no device logs."
         }
     }
 
@@ -327,6 +329,8 @@ final class LogStreamEngine: LogFeed {
         case .iosDevice:
             let r = try? await CommandRunner.run(AppleToolchain.xcrun, ["devicectl", "list", "devices"], timeout: 12)
             return r?.stdout.contains(device.id) ?? false
+        case .mac:
+            return false   // the sidebar offers this Mac network capture only
         }
     }
 
@@ -365,7 +369,7 @@ final class LogStreamEngine: LogFeed {
             // Both filter by PID — the bundle id never appears as the process name on iOS,
             // but the unified log carries the process id (resolved by polling).
             state.pids = package.isEmpty ? nil : []
-        case .iosDevice:
+        case .iosDevice, .mac:
             // The structured (LoggingSupport) source narrows to the targeted app's process
             // itself, so no per-line PID filter is needed.
             state.pids = nil
@@ -442,7 +446,7 @@ final class LogStreamEngine: LogFeed {
             resolve = { await AndroidLogSource.resolvePIDs(adbURL: url, serial: serial, package: package) }
         case .iosSimulator:
             resolve = { await SimulatorLogSource.resolvePIDs(udid: serial, bundleID: package) }
-        case .iosDevice:
+        case .iosDevice, .mac:
             return   // physical iOS scopes the source itself, no pid polling
         }
         pidTask = Task { [weak self] in

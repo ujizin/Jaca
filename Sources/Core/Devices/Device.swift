@@ -6,12 +6,15 @@ enum DevicePlatform: String, Sendable, Hashable, Codable {
     case android
     case iosSimulator
     case iosDevice
+    /// This Mac: a Chrome window Jaca launches through its proxy. Network only.
+    case mac
 
     var displayName: String {
         switch self {
         case .android: return "Android"
         case .iosSimulator: return "iOS Simulator"
         case .iosDevice: return "iOS Device"
+        case .mac: return "macOS"
         }
     }
 }
@@ -70,6 +73,9 @@ struct Device: Identifiable, Hashable, Sendable, Codable {
 }
 
 extension Device {
+    /// The one entry for this Mac. It isn't discovered: the sidebar always shows it.
+    static let thisMac = Device(id: "mac", platform: .mac, model: "This Mac", state: .connected)
+
     /// Tolerant decode (history rows, the daemon socket): only the id is required; an unknown
     /// platform or state from a newer build reads as Android / unknown rather than failing.
     init(from decoder: Decoder) throws {

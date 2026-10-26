@@ -297,6 +297,12 @@ struct NetworkSessionView: View {
                 LemonadeUi.Button(label: "Setup", onClick: { showSetup = true },
                                   leadingIcon: .circleInfo, variant: .neutral, type: .subtle, size: .small)
             }
+            // This Mac: bring the Chrome window back after it was closed.
+            if session.captureMode == .browser && session.isRunning {
+                LemonadeUi.Button(label: "Open Chrome", onClick: { session.openBrowser() },
+                                  leadingIcon: .globe, variant: .neutral, type: .subtle, size: .small)
+                    .transition(.opacity)
+            }
         }
         .padding(.horizontal, LemonadeTheme.spaces.spacing300)
         .padding(.vertical, LemonadeTheme.spaces.spacing200)

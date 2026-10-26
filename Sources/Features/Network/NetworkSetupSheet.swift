@@ -79,6 +79,8 @@ struct NetworkSetupSheet: View {
                 "Export and AirDrop/email the CA to the device, install the profile, then enable full trust in Settings → General → About → Certificate Trust Settings.",
                 "ATS and cert pinning may block capture; there is no system-level per-app network inspector on iOS.",
             ])
+        case .mac:
+            EmptyView()   // the Chrome window needs no proxy setup
         }
     }
 
