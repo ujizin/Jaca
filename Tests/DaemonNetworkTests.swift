@@ -39,6 +39,25 @@ final class DaemonNetworkTests: XCTestCase {
                        "a capture with no app chosen replaced another")
     }
 
+    /// jacad reads the CA for This Mac's capture only, once. Without one, the capture says so
+    /// and opens no Chrome.
+    func test_macCapture_readsTheCAOnce_andReportsAMissingOne() throws {
+        let daemon = try TestDaemon()
+        let captures = NetworkArea.Captures(bus: daemon.server.bus, bodyCache: nil)
+        var reads = 0
+        captures.loadCA = { reads += 1; return nil }
+        _ = captures.open(NetworkArea.OpenParams(id: UUID(), device: device, sourceID: nil, package: nil, autoStart: false))
+        XCTAssertEqual(reads, 0, "an agent capture read the CA")
+
+        let id = UUID()
+        _ = captures.open(NetworkArea.OpenParams(id: id, device: .thisMac, sourceID: "browser", package: nil, autoStart: true))
+        XCTAssertEqual(reads, 1)
+        let state = try XCTUnwrap(captures.sessions[id]?.engine.state)
+        XCTAssertEqual(state.selectedSourceID, "browser")
+        XCTAssertEqual(state.statusMessage, "Couldn’t read Jaca’s certificate. Check ~/.jaca/jacad.log.")
+        try captures.session(id).engine.stop()
+    }
+
     func test_transaction_roundTripsAndStripsBodies() throws {
         let t = txn(1, body: "{\"ok\":true}")
         let back = try JSONDecoder.daemon.decode(NetworkTransaction.self, from: JSONEncoder.daemon.encode(t))

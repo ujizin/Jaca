@@ -39,6 +39,8 @@ func (d device) platformName() string {
 		return "iOS Simulator"
 	case "iosDevice":
 		return "iOS Device"
+	case "mac":
+		return "macOS"
 	}
 	return d.Platform
 }
@@ -61,6 +63,9 @@ func (d device) stateLabel() string {
 
 func (d device) isReady() bool { return d.State == "connected" || d.State == "booted" }
 
+// thisMac is Device.thisMac: the app lists it on its own, after the devices jacad finds.
+var thisMac = device{ID: "mac", Platform: "mac", Model: "This Mac", State: "connected"}
+
 const devicesTopic = "devices.list"
 
 // syncTimeout bounds the calls the UI loop waits on, so a stalled jacad can't freeze the keys
@@ -79,8 +84,11 @@ type deviceOption struct {
 }
 
 // optionsFor are the options of a device. Network inspection runs the in-process agent, which
-// exists for Android and the iOS Simulator only.
+// exists for Android and the iOS Simulator only. This Mac has one option: its Chrome window.
 func optionsFor(d device) []deviceOption {
+	if d.Platform == "mac" {
+		return []deviceOption{{"Inspect Network (Chrome)", "network", "Jaca network - "}}
+	}
 	options := []deviceOption{{"Start Logcat", "logs", "Jaca log - "}}
 	if d.Platform == "android" || d.Platform == "iosSimulator" {
 		// Named for how it captures: an inspector without the agent may sit beside it later.
@@ -152,7 +160,7 @@ func (d *devicePicker) fetch() {
 }
 
 func (d *devicePicker) setDevices(list []device) {
-	d.devices, d.loaded = list, true
+	d.devices, d.loaded = append(list[:len(list):len(list)], thisMac), true
 	d.selected = clampIndex(d.selected, len(list))
 }
 
@@ -420,3 +428,5 @@ func focusTabWhenGone(tab string, pid int) int {
 	}
 	return 0
 }
+
+func (d device) isMac() bool { return d.Platform == "mac" }

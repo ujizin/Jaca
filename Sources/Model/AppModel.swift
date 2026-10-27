@@ -604,9 +604,8 @@ final class AppModel {
         let session: NetworkSession
         // Agent capture runs in jacad unless the inspection mode is HTTPS debugging (then everything
         // network runs in-process: the companion links and the CA live in the app). A companion-only
-        // device has no agent path, so it always captures in-process, and so does this Mac's browser.
-        if daemon.networkRunsInDaemon(httpsDecryption: httpsDecryptionEnabled), !device.isCompanion,
-           device.platform != .mac {
+        // device has no agent path, so it always captures in-process.
+        if daemon.networkRunsInDaemon(httpsDecryption: httpsDecryptionEnabled), !device.isCompanion {
             let feed = RemoteNetworkFeed(id: id, device: device, autoStart: false, daemon: daemon)
             session = NetworkSession(id: id, device: device, feed: feed, ca: authority, adbURL: adbURL,
                                      displayName: name, companions: companions, overrides: overrides,

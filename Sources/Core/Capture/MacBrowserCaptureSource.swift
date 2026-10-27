@@ -5,13 +5,13 @@ import Foundation
 /// the rules, as the agent does on a device.
 @MainActor
 final class MacBrowserCaptureSource: CaptureSource {
-    private let ca: CertificateAuthority
+    private let ca: CertificateAuthority?
     private let intercept: InterceptServices?
     private var proxy: ProxyServer?
     private var chrome: Process?
     private weak var sink: CaptureSink?
 
-    init(ca: CertificateAuthority, intercept: InterceptServices?) {
+    init(ca: CertificateAuthority?, intercept: InterceptServices?) {
         self.ca = ca
         self.intercept = intercept
     }
@@ -22,6 +22,10 @@ final class MacBrowserCaptureSource: CaptureSource {
 
     func start(into sink: CaptureSink) {
         self.sink = sink
+        guard let ca else {
+            sink.capture(didChangeStatus: "Couldn’t read Jaca’s certificate. Check ~/.jaca/jacad.log.")
+            return
+        }
         let pipeline = intercept?.pipeline(for: .mitmProxy, deviceID: Device.thisMac.id, appID: nil)
         let server = ProxyServer(port: 0, ca: ca, pipeline: pipeline,
                                  target: ProxyInterceptTarget(deviceID: Device.thisMac.id),
@@ -42,7 +46,7 @@ final class MacBrowserCaptureSource: CaptureSource {
 
     /// Opens the Chrome window, or a new one after the user closed it.
     func openBrowser() {
-        guard let proxy else { return }
+        guard let proxy, let ca else { return }
         if let chrome, chrome.isRunning { return }
         switch ChromeBrowser.launch(proxyPort: proxy.boundPort, spkiHash: ca.rootSPKIHash) {
         case .success(let process):

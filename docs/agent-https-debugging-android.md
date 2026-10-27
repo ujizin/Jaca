@@ -119,6 +119,9 @@ source that passes a resolver gets rules on its traffic. This Mac's Chrome sourc
 the proxy on loopback and launches Chrome with its own profile, `--proxy-server` and
 `--ignore-certificate-errors-spki-list` set to the hash of Jaca's CA key (`CertificateAuthority.rootSPKIHash`).
 Nothing is added to the Keychain or the system proxy. Its rules scope as device `mac`.
+The capture runs where the agent captures run: in jacad when the network area is on there
+(jacad reads the CA from `Application Support/Jaca/ca` when the first Mac capture opens), so
+`jaca net` and the Herdr plugin see it. `network.openBrowser` opens the window again.
 
 Limits of the proxy that a website hits: HTTP/1.1 only, no WebSockets (`Upgrade` is dropped as
 hop-by-hop), and bodies are buffered whole, so a streamed response arrives at its end.

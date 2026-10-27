@@ -60,14 +60,8 @@ enum CaptureSourceRegistry {
         detail: "Opens a separate Chrome window. Jaca captures its traffic and can override responses.",
         isAvailable: { device, _ in device.platform == .mac },
         needsPackage: false,
-        make: { ctx in
-            guard let ca = ctx.ca else {
-                // Unreachable by construction: a Mac browser tab always captures in the app.
-                DaemonLog.error("browser capture requested without a CA; not starting")
-                return InertCaptureSource()
-            }
-            return MacBrowserCaptureSource(ca: ca, intercept: ctx.intercept)
-        },
+        // The app always has its CA; jacad reads it when the capture opens and can fail to.
+        make: { ctx in MacBrowserCaptureSource(ca: ctx.ca, intercept: ctx.intercept) },
     )
 
     /// Options offered for a device, in display order. The companion (device-wide HTTPS

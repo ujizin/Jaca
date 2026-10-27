@@ -12,7 +12,7 @@ extension DaemonSchema {
     // MARK: Devices
 
     static let device = DaemonSchema.object(["id": .string], optional: [
-        "platform": .enumeration(["android", "iosSimulator", "iosDevice"]),
+        "platform": .enumeration(["android", "iosSimulator", "iosDevice", "mac"]),
         "model": .string,
         "state": .enumeration(["connected", "unauthorized", "offline", "booted", "shutdown", "unknown"]),
     ])

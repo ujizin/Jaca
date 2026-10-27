@@ -156,8 +156,7 @@ final class RemoteNetworkFeed: NetworkFeed {
     func clearProxyNeedsSetup() { send("network.clearProxyNeedsSetup") }
     func restartForInterceptChange() { send("network.restartForInterceptChange") }
     func relaunchToAttach() { send("network.relaunchToAttach") }
-    /// A Mac browser tab always captures in the app (the CA lives there), so it never gets here.
-    func openBrowser() {}
+    func openBrowser() { send("network.openBrowser") }
     func clear() {
         clearsPending += 1
         clearGeneration += 1

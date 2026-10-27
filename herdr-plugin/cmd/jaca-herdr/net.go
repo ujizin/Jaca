@@ -160,7 +160,12 @@ func (v *netViewer) open() {
 		if err == nil {
 			// The app may have edited the rule library in its own process meanwhile.
 			_ = c.CallTimeout("overrides.reload", nil, nil, syncTimeout)
-			err = c.Call("network.open", map[string]any{"id": id, "device": d, "autoStart": false}, &info)
+			params := map[string]any{"id": id, "device": d, "autoStart": false}
+			if d.isMac() {
+				// This Mac has nothing to choose: its capture opens the Chrome window at once.
+				params["sourceID"], params["autoStart"] = "browser", true
+			}
+			err = c.Call("network.open", params, &info)
 			created = err == nil
 		}
 		if created {
@@ -670,6 +675,9 @@ func (v *netViewer) toggle() {
 	switch {
 	case v.state.IsRunning:
 		v.call("network.stop", map[string]any{"id": v.id})
+	case v.device.isMac():
+		v.err = ""
+		v.call("network.select", map[string]any{"id": v.id, "sourceID": "browser"})
 	case v.state.TargetPackage != "":
 		v.setTarget(v.state.TargetPackage)
 	default:
@@ -851,7 +859,17 @@ func (v *netViewer) openRowMenu(t netTransaction, x, y int) {
 	v.menu, v.focus = &popupMenu{x: x, y: y, items: items}, netMenu
 }
 
+// openBrowser opens This Mac's Chrome window again after it was closed.
+func (v *netViewer) openBrowser() {
+	if v.device.isMac() && v.state.IsRunning {
+		v.call("network.openBrowser", map[string]any{"id": v.id})
+	}
+}
+
 func (v *netViewer) openApps() {
+	if v.device.isMac() {
+		return // no apps: the capture is the Chrome window
+	}
 	v.focus = netApps
 	v.apps.open(v.p, v.device.ID)
 }
@@ -957,6 +975,8 @@ func (v *netViewer) handleKey(k []byte) bool {
 		v.clear()
 	case k[0] == 'a':
 		v.openApps()
+	case k[0] == 'b':
+		v.openBrowser()
 	case k[0] == '/':
 		v.focus = netSearch
 	case k[0] == 'S' || k[0] == 'e':
@@ -1421,6 +1441,9 @@ func (v *netViewer) helpKeys() [][2]string {
 	if v.state.IsRunning {
 		keys[0][1] = "Stop capture"
 	}
+	if v.device.isMac() {
+		keys[2] = [2]string{"b", "Open Chrome"}
+	}
 	if v.device.Platform == "iosSimulator" {
 		keys = append(keys, [2]string{"R", "Relaunch & re-attach"})
 	}
@@ -1607,18 +1630,27 @@ func (v *netViewer) toolbar(cols, height int) []string {
 		b.chip("▶", badgeStyle(colorGreen), v.toggle)
 	}
 	b.chip("Clear", "", v.clear)
-	app := "Inspect app"
-	if pkg := v.state.TargetPackage; pkg != "" {
-		app = pkg[strings.LastIndex(pkg, ".")+1:]
+	mode := "in-process"
+	switch {
+	case v.device.isMac():
+		mode = "browser"
+		if v.state.IsRunning {
+			b.chip("Open Chrome", sgrBold, v.openBrowser)
+		}
+	default:
+		app := "Inspect app"
+		if pkg := v.state.TargetPackage; pkg != "" {
+			app = pkg[strings.LastIndex(pkg, ".")+1:]
+		}
+		b.chip(app+" ▼", sgrBold, v.openApps)
 	}
-	b.chip(app+" ▼", sgrBold, v.openApps)
 
 	overrides := "Overrides"
 	badge, tint := v.overridesBadge()
 	if badge != "" {
 		overrides += " " + badge
 	}
-	const export, mode = "Export HAR", "in-process"
+	const export = "Export HAR"
 	trailing := b.chipWidth(overrides) + 1 + b.chipWidth(export) + 1
 	if w := min(64, cols-b.used-1-trailing); w >= 16 {
 		b.field(&v.filter, "Filter by URL, host, method…", v.focus == netSearch, w, func() { v.focus = netSearch })

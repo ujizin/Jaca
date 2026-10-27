@@ -1,7 +1,7 @@
 import Foundation
 
-/// Network captures in the daemon (in-process agent capture; companion capture stays in the
-/// app). Each capture keeps its transactions, with bodies beyond the newest `bodiesInMemory`
+/// Network captures in the daemon (in-process agent capture and this Mac's Chrome window;
+/// companion capture stays in the app). Each capture keeps its transactions, with bodies beyond the newest `bodiesInMemory`
 /// spilled to `NetworkBodyCache`. Clients get upserts **without bodies** on `net.txns.<id>` and
 /// fetch a transaction's bodies with `network.body` when they show it.
 enum NetworkArea {
@@ -119,6 +119,15 @@ enum NetworkArea {
         private var spillGeneration = 0
         /// Override services for a new capture source (nil when overrides are off).
         var interceptServices: () -> InterceptServices? = { nil }
+        /// The app's CA, read when the first capture of this Mac's browser opens. Only that
+        /// capture terminates TLS here; the agent captures don't need it.
+        var loadCA: () -> CertificateAuthority? = {
+            do { return try CertificateAuthority() } catch {
+                DaemonLog.error("couldn't read the CA: \(error)")
+                return nil
+            }
+        }
+        private var ca: CertificateAuthority?
 
         init(bus: DaemonEventBus, bodyCache: NetworkBodyCache? = NetworkBodyCache(name: "net-bodies-jacad"),
              bodiesInMemory: Int = 1_000, orphanTimeout: TimeInterval = 600) {
@@ -137,7 +146,9 @@ enum NetworkArea {
             let adb = AndroidToolchain.adbURL(override: JacaDefaults.shared.string(forKey: DevicesEngine.adbPathKey))
             let context = context(for: p.device, adbURL: adb)
             let intercept = interceptServices
-            let engine = NetworkCaptureEngine(id: p.id, device: p.device, adbURL: adb, ca: nil, companion: nil,
+            if p.device.platform == .mac, ca == nil { ca = loadCA() }
+            let engine = NetworkCaptureEngine(id: p.id, device: p.device, adbURL: adb,
+                                              ca: p.device.platform == .mac ? ca : nil, companion: nil,
                                               deviceContext: { context }, interceptServices: { intercept() })
             let hosted = Hosted(engine: engine, device: p.device)
             sessions[p.id] = hosted
@@ -396,6 +407,10 @@ enum NetworkArea {
         r.register("network.restartForInterceptChange", "Restarts the running source so it picks up changed override settings.",
                    params: IDParams.self, takes: .sessionID, returns: .empty) { p, _ in
             try await MainActor.run { try captures.session(p.id).engine.restartForInterceptChange() }; return RPCEmpty()
+        }
+        r.register("network.openBrowser", "This Mac: opens the capture's Chrome window again after it was closed.",
+                   params: IDParams.self, takes: .sessionID, returns: .empty) { p, _ in
+            try await MainActor.run { try captures.session(p.id).engine.openBrowser() }; return RPCEmpty()
         }
         r.register("network.relaunchToAttach", "iOS Simulator: relaunches the app to put the agent back.",
                    params: IDParams.self, takes: .sessionID, returns: .empty) { p, _ in

@@ -144,7 +144,7 @@ final class DaemonSchemaTests: XCTestCase {
         let json = try JSONSerialization.jsonObject(with: JSONEncoder.daemon.encode(Wider()))
         XCTAssertEqual(mismatches(json, .device), ["$.battery: not in the schema"])
         XCTAssertEqual(mismatches(["platform": "tv"], .device).sorted(),
-                       ["$.id: required, absent", "$.platform: tv is not one of [\"android\", \"iosSimulator\", \"iosDevice\"]"])
+                       ["$.id: required, absent", "$.platform: tv is not one of [\"android\", \"iosSimulator\", \"iosDevice\", \"mac\"]"])
         XCTAssertFalse(mismatches(["kind": "inline"], .overrideBodyRef).isEmpty, "inline needs its text")
     }
 
