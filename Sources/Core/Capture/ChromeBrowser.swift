@@ -51,13 +51,15 @@ enum ChromeBrowser {
     }
 
     /// Starts Chrome. A Chrome that still holds the profile (from a capture that didn't end
-    /// cleanly) would take the new window with its old proxy port, so it is closed first.
-    /// Returns the process, or a message to show.
-    static func launch(proxyPort: Int, spkiHash: String) -> Result<Process, LaunchError> {
+    /// cleanly) would take the new window with its old proxy port, so it is closed first,
+    /// unless it is `running`, this capture's own Chrome: then the new process hands the
+    /// profile's Chrome a new window and exits. Closing the last window leaves Chrome running,
+    /// so that is how the window comes back. Returns the process, or a message to show.
+    static func launch(proxyPort: Int, spkiHash: String, running: pid_t? = nil) -> Result<Process, LaunchError> {
         guard let app = appURL() else { return .failure(.notInstalled) }
         let profile = profileDirectory()
         try? FileManager.default.createDirectory(at: profile, withIntermediateDirectories: true)
-        if let stale = lockHolder(profile: profile), kill(stale, 0) == 0 {
+        if let stale = lockHolder(profile: profile), stale != running, kill(stale, 0) == 0 {
             kill(stale, SIGTERM)
             let deadline = Date().addingTimeInterval(3)
             while kill(stale, 0) == 0, Date() < deadline { usleep(50_000) }

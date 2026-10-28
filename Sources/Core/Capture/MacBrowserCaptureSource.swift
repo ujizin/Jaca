@@ -47,10 +47,11 @@ final class MacBrowserCaptureSource: CaptureSource {
     /// Opens the Chrome window, or a new one after the user closed it.
     func openBrowser() {
         guard let proxy, let ca else { return }
-        if let chrome, chrome.isRunning { return }
-        switch ChromeBrowser.launch(proxyPort: proxy.boundPort, spkiHash: ca.rootSPKIHash) {
+        let running = chrome.flatMap { $0.isRunning ? $0.processIdentifier : nil }
+        switch ChromeBrowser.launch(proxyPort: proxy.boundPort, spkiHash: ca.rootSPKIHash, running: running) {
         case .success(let process):
-            chrome = process
+            // A process that only handed over a window exits; the first one stays the capture's.
+            if running == nil { chrome = process }
             sink?.capture(didChangeStatus: "Capturing Chrome on this Mac")
         case .failure(let error):
             sink?.capture(didChangeStatus: error.message)
