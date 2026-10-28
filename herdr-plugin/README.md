@@ -115,6 +115,12 @@ overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network
   override, `space` or `Shift+Enter` (or a click on a rule's switch) enables or disables, `d` duplicates, `x` or `Backspace` deletes, `K`/`J` move a rule up
   or down (the first enabled match wins), `m` pauses or resumes all of them.
   `P` does this from the request list and the request detail.
+- **Override groups**: with a jacad that has groups, the list shows each group above the rules in
+  no group, and `N` (or the New group button) creates one and starts renaming it. On a group row,
+  `Enter` expands or collapses it, `space` or `Shift+Enter` turns the group and all its rules on or
+  off, `r` renames it (`Enter` saves, `Esc` cancels), `x` or `Backspace` deletes it (its rules
+  stay, in no group), and `K`/`J` move it. On a rule row, `g` moves the rule into a group or out
+  of one; `K`/`J` move a rule only inside its group. A right click on a row shows these as a menu.
 - **Override a request**: `O` on a selected request opens the editor filled from it (its URL as
   the pattern, its method, and the response it got), or on the rule that already answers it.
 - **Editor**: `Tab`/`Shift+Tab` move between fields, the arrows move inside a group of chips and

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -242,5 +243,279 @@ func TestOverridesShortcuts(t *testing.T) {
 		if call["method"] != "overrides.setMaster" {
 			t.Errorf("P sent %v, want overrides.setMaster", call["method"])
 		}
+	}
+}
+
+// groupedViewer is the network viewer with the overrides list open on two groups (Checkout
+// with rules 0 and 1, Login, off, with rule 2) and two rules in no group (3, and 4, whose
+// groupID names no listed group).
+func groupedViewer(t *testing.T) *netViewer {
+	t.Helper()
+	v := overridesListViewer(t)
+	rules := v.overrides.Rules[:5]
+	for i, group := range []string{groupA, groupA, groupB, "", "C0000000-0000-4000-8000-00000000000C"} {
+		rules[i].GroupID = group
+	}
+	v.setOverrides(overridesState{Rules: rules, MasterEnabled: true, HasGroups: true, Groups: []overrideGroup{
+		{ID: groupA, Name: "Checkout", Enabled: true}, {ID: groupB, Name: "Login", Enabled: false}}})
+	v.openOverridesList()
+	return v
+}
+
+// describeRows is the list's rows as text: "+Name(count)" for an expanded group, "-Name(count)"
+// for a collapsed one, "  Rule NN" for a rule under its group and "Rule NN" for one in none.
+func describeRows(v *netViewer) []string {
+	var out []string
+	for _, row := range v.ovRows() {
+		switch {
+		case row.group != nil && v.ovui.collapsed[row.group.ID]:
+			out = append(out, fmt.Sprintf("-%s(%d)", row.group.displayName(), row.count))
+		case row.group != nil:
+			out = append(out, fmt.Sprintf("+%s(%d)", row.group.displayName(), row.count))
+		case row.nested:
+			out = append(out, "  "+v.overrides.Rules[row.rule].Name)
+		default:
+			out = append(out, v.overrides.Rules[row.rule].Name)
+		}
+	}
+	return out
+}
+
+func TestOverrideRowsGroupsAndCollapse(t *testing.T) {
+	v := groupedViewer(t)
+	want := "+Checkout(2),  Rule 00,  Rule 01,+Login(1),  Rule 02,Rule 03,Rule 04"
+	if got := strings.Join(describeRows(v), ","); got != want {
+		t.Errorf("rows = %s\nwant   %s", got, want)
+	}
+	// Enter on a group row collapses it, and again expands it; nothing is sent.
+	v.ovui.selected = 0
+	v.overridesKey([]byte("\r"))
+	if v.focus != netOverrides || v.ovui.draft != nil {
+		t.Fatal("Enter on a group opened the editor")
+	}
+	want = "-Checkout(2),+Login(1),  Rule 02,Rule 03,Rule 04"
+	if got := strings.Join(describeRows(v), ","); got != want {
+		t.Errorf("collapsed rows = %s\nwant           %s", got, want)
+	}
+	v.overridesKey([]byte("\r"))
+	if got := len(v.ovRows()); got != 7 {
+		t.Errorf("expanded again: %d rows", got)
+	}
+
+	// A rule in a group that is off is drawn dim; one in a group that is on is not.
+	plain := map[string]string{}
+	for _, row := range v.listBox(60, 120).rows {
+		text := sgr.ReplaceAllString(row, "")
+		for _, name := range []string{"Rule 01", "Rule 02", "Login", "Checkout"} {
+			if strings.Contains(text, name) {
+				plain[name] = row
+			}
+		}
+	}
+	if !strings.Contains(plain["Rule 02"], tertiaryStyle+"Rule 02") || strings.Contains(plain["Rule 01"], tertiaryStyle+"Rule 01") {
+		t.Errorf("dimming: Rule 01 %q, Rule 02 %q", plain["Rule 01"], plain["Rule 02"])
+	}
+	if !strings.Contains(sgr.ReplaceAllString(plain["Checkout"], ""), "▾ Checkout") ||
+		!strings.Contains(sgr.ReplaceAllString(plain["Checkout"], ""), "(2)") {
+		t.Errorf("group row = %q", sgr.ReplaceAllString(plain["Checkout"], ""))
+	}
+	if !strings.Contains(plain["Login"], tertiaryStyle+"Login") {
+		t.Errorf("a group that is off isn't dim: %q", plain["Login"])
+	}
+
+	// Enter on a rule row still edits it.
+	v.ovui.selected = 2
+	v.overridesKey([]byte("\r"))
+	if v.focus != netEditor || v.ovui.draft == nil || v.ovui.draft.rule.Name != "Rule 01" {
+		t.Error("Enter on a nested rule didn't edit it")
+	}
+}
+
+// A daemon with no groups shows the list flat, as before; a groupID it sends anyway is ignored.
+func TestOverrideRowsWithoutGroups(t *testing.T) {
+	v := overridesListViewer(t)
+	rules := v.overrides.Rules
+	rules[0].GroupID = groupA
+	v.setOverrides(overridesState{Rules: rules, MasterEnabled: true})
+	rows := describeRows(v)
+	if len(rows) != 12 || rows[0] != "Rule 00" {
+		t.Errorf("rows = %v", rows)
+	}
+	c, calls := pipeClient(t)
+	v.p.c = c
+	for _, key := range []string{"N", "g", "r"} {
+		v.overridesKey([]byte(key))
+	}
+	if v.ovui.menu != nil || v.ovui.rename != nil {
+		t.Error("a group key acted on a daemon without groups")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := calls(); len(got) != 0 {
+		t.Errorf("calls: %v", got)
+	}
+
+	// An empty state: nothing to select, and no key panics.
+	v.setOverrides(overridesState{MasterEnabled: true, HasGroups: true})
+	for _, key := range []string{"\x1b[B", "\r", " ", "x", "K", "J", "g", "r", "d"} {
+		v.openOverridesList()
+		v.overridesKey([]byte(key))
+	}
+	v.closeOverrides()
+	v.openOverridesList()
+	v.listBox(40, 120)
+}
+
+// waitCalls waits for n calls to reach the pipe's jacad.
+func waitCalls(t *testing.T, calls func() []map[string]any, n int) []map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(calls()) < n && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := calls()
+	if len(got) != n {
+		t.Fatalf("%d calls, want %d: %v", len(got), n, got)
+	}
+	return got
+}
+
+func TestOverrideGroupActions(t *testing.T) {
+	v := groupedViewer(t)
+	c, calls := pipeClient(t)
+	v.p.c = c
+	rules := v.overrides.Rules
+
+	v.ovui.selected = 3         // Login
+	v.overridesKey([]byte(" ")) // toggle the group on
+	v.overridesKey([]byte("K")) // move it up
+	if v.ovui.selected != 0 {
+		t.Errorf("after moving Login up the selection is on row %d, want 0", v.ovui.selected)
+	}
+	v.ovui.selected = 3
+	v.overridesKey([]byte("r")) // rename
+	for _, k := range []string{"\x15", "A", "u", "t", "h", "\r"} {
+		v.overridesKey([]byte(k))
+	}
+	v.ovui.selected = 3
+	v.overridesKey([]byte("x")) // delete the group
+
+	v.ovui.selected = 5 // Rule 03, in no group
+	v.overridesKey([]byte("g"))
+	if v.ovui.menu == nil || len(v.ovui.menu.items) != 3 || v.ovui.menu.items[0].label != "Move to group" ||
+		v.ovui.menu.items[1].label != "Checkout" || v.ovui.menu.items[2].label != "Login" {
+		t.Fatalf("picker for a rule in no group: %+v", v.ovui.menu)
+	}
+	v.overridesKey([]byte("\x1b[B")) // Login
+	v.overridesKey([]byte("\r"))
+	v.ovui.selected = 1 // Rule 00, in Checkout
+	v.overridesKey([]byte("g"))
+	labels := []string{}
+	for _, it := range v.ovui.menu.items {
+		labels = append(labels, it.label)
+	}
+	if strings.Join(labels, ",") != "Move to group,Login,,No group" {
+		t.Fatalf("picker for a grouped rule: %v", labels)
+	}
+	v.overridesKey([]byte("\x1b[B")) // over the separator to No group
+	v.overridesKey([]byte("\r"))
+
+	// K on the first rule of a group doesn't cross into the group above; J moves inside it.
+	v.ovui.selected = 1
+	v.overridesKey([]byte("K"))
+	v.overridesKey([]byte("J"))
+	if v.ovui.selected != 2 {
+		t.Errorf("after J the selection is on row %d, want 2", v.ovui.selected)
+	}
+
+	type call struct {
+		method string
+		params map[string]any
+	}
+	want := []call{
+		{"overrides.saveGroup", map[string]any{"group": map[string]any{"id": groupB, "name": "Login", "enabled": true}}},
+		{"overrides.moveGroup", map[string]any{"id": groupB, "offset": float64(-1)}},
+		{"overrides.saveGroup", map[string]any{"group": map[string]any{"id": groupB, "name": "Auth", "enabled": false}}},
+		{"overrides.removeGroup", map[string]any{"id": groupB}},
+		{"overrides.setGroup", map[string]any{"id": rules[3].ID, "group": groupB}},
+		{"overrides.setGroup", map[string]any{"id": rules[0].ID}},
+		{"overrides.move", map[string]any{"id": rules[0].ID, "offset": float64(1)}},
+	}
+	// K on the first rule of a group sent nothing. Each call goes out on its own goroutine, so they
+	// are compared in any order. A group's createdAt is left out of the comparison.
+	got := waitCalls(t, calls, len(want))
+	for _, c := range got {
+		params := c["params"].(map[string]any)
+		if g, ok := params["group"].(map[string]any); ok {
+			if _, has := g["createdAt"]; !has {
+				t.Errorf("%s: a group without createdAt: %v", c["method"], g)
+			}
+			delete(g, "createdAt")
+		}
+		found := false
+		for i, w := range want {
+			if c["method"] == w.method && reflect.DeepEqual(params, w.params) {
+				want = append(want[:i], want[i+1:]...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("unexpected call %s %v", c["method"], params)
+		}
+	}
+	for _, w := range want {
+		t.Errorf("missing call %s %v", w.method, w.params)
+	}
+}
+
+// N creates "Untitled group" at the end of the groups, selects it and renames it in place.
+func TestOverrideNewGroup(t *testing.T) {
+	v := groupedViewer(t)
+	c, calls := pipeClient(t)
+	v.p.c = c
+	v.overridesKey([]byte("N"))
+	if v.ovui.rename == nil || v.ovui.rename.name.String() != "Untitled group" {
+		t.Fatalf("rename = %+v", v.ovui.rename)
+	}
+	rows := v.ovRows()
+	if sel := rows[v.ovui.selected]; sel.group == nil || sel.group.ID != v.ovui.rename.group.ID || v.ovui.selected != 5 {
+		t.Errorf("selected row %d: %+v", v.ovui.selected, sel)
+	}
+	drawn := false
+	for _, row := range v.listBox(60, 120).rows {
+		if strings.Contains(sgr.ReplaceAllString(row, ""), "Untitled group") {
+			drawn = true
+		}
+	}
+	if !drawn {
+		t.Error("the new group isn't drawn before the daemon lists it")
+	}
+	id := v.ovui.rename.group.ID
+	for _, k := range []string{"\x15", "C", "a", "r", "t", "\r"} {
+		v.overridesKey([]byte(k))
+	}
+	// The create and the rename, in either order (each call has its own goroutine).
+	names := map[string]bool{}
+	for _, c := range waitCalls(t, calls, 2) {
+		g := c["params"].(map[string]any)["group"].(map[string]any)
+		if c["method"] != "overrides.saveGroup" || g["id"] != id || g["enabled"] != true {
+			t.Errorf("call %v", c)
+		}
+		names[fmt.Sprint(g["name"])] = true
+	}
+	if !names["Untitled group"] || !names["Cart"] {
+		t.Errorf("saved names %v, want Untitled group and Cart", names)
+	}
+	// Esc while renaming keeps the old name and sends nothing.
+	v.ovui.selected = 0
+	v.overridesKey([]byte("r"))
+	v.overridesKey([]byte("x"))
+	v.overridesKey([]byte("\x1b"))
+	if v.ovui.rename != nil || v.focus != netOverrides {
+		t.Error("Esc didn't end renaming")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if len(calls()) != 2 {
+		t.Errorf("Esc sent %v", calls()[2:])
 	}
 }

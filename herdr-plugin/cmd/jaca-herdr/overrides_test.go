@@ -1178,3 +1178,150 @@ func TestNetFormatting(t *testing.T) {
 		}
 	}
 }
+
+const (
+	groupA = "A0000000-0000-4000-8000-00000000000A"
+	groupB = "B0000000-0000-4000-8000-00000000000B"
+)
+
+// A daemon with groups sends them in display order, and a rule names its group by groupID.
+func TestOverridesStateGroupsWire(t *testing.T) {
+	grouped := strings.Replace(wireRule, `"enabled":true,`, `"enabled":true,"groupID":"`+strings.ToLower(groupA)+`",`, 1)
+	text := `{"masterEnabled":true,"rules":[` + grouped + `,` + wireMapRemoteRule + `],"groups":[` +
+		`{"id":"` + groupA + `","name":"Checkout","enabled":false,"createdAt":"2026-10-06T11:00:00.000Z"},` +
+		`{"id":"` + groupB + `"},{"name":"no id"},{"id":"` + groupA + `","name":"twice"}]}`
+	var state overridesState
+	if err := json.Unmarshal([]byte(text), &state); err != nil {
+		t.Fatal(err)
+	}
+	want := []overrideGroup{
+		{ID: groupA, Name: "Checkout", Enabled: false, CreatedAt: "2026-10-06T11:00:00.000Z"},
+		{ID: groupB, Name: "", Enabled: true, CreatedAt: state.Groups[1].CreatedAt},
+	}
+	if !state.HasGroups || !reflect.DeepEqual(state.Groups, want) {
+		t.Errorf("groups = %+v (has %v), want %+v", state.Groups, state.HasGroups, want)
+	}
+	if len(state.Rules) != 2 || state.Rules[0].GroupID != groupA || state.Rules[1].GroupID != "" {
+		t.Fatalf("rules = %+v", state.Rules)
+	}
+	if state.groupOf(state.Rules[0]) != groupA || state.groupRuleCount(groupA) != 1 || state.groupRuleCount(groupB) != 0 {
+		t.Errorf("groupOf = %q, counts %d %d", state.groupOf(state.Rules[0]), state.groupRuleCount(groupA), state.groupRuleCount(groupB))
+	}
+	if g := state.Groups[1]; g.displayName() != "Untitled group" {
+		t.Errorf("an unnamed group is called %q", g.displayName())
+	}
+	encoded, _ := json.Marshal(state)
+	var again overridesState
+	if err := json.Unmarshal(encoded, &again); err != nil || !again.HasGroups || !reflect.DeepEqual(again.Groups, want) {
+		t.Errorf("re-decoded groups %+v from %s (%v)", again.Groups, encoded, err)
+	}
+
+	// A daemon from before groups: no groups key, and the state encodes without one.
+	var old overridesState
+	if err := json.Unmarshal([]byte(wireState), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.HasGroups || len(old.Groups) != 0 {
+		t.Errorf("an old state has groups: %+v", old.Groups)
+	}
+	if encoded, _ := json.Marshal(old); strings.Contains(string(encoded), "groups") {
+		t.Errorf("an old state encoded with groups: %s", encoded)
+	}
+	// An empty list is still a daemon that has groups.
+	var none overridesState
+	if json.Unmarshal([]byte(`{"rules":[],"groups":[]}`), &none) != nil || !none.HasGroups {
+		t.Errorf("an empty groups list reads as no groups: %+v", none)
+	}
+	if encoded, _ := json.Marshal(none); !strings.Contains(string(encoded), `"groups":[]`) {
+		t.Errorf("an empty groups list encoded as %s", encoded)
+	}
+}
+
+// groupID goes back to the daemon as it came, so saving a rule from the editor keeps it in its
+// group; a rule in no group sends no groupID.
+func TestRuleGroupIDRoundTrip(t *testing.T) {
+	grouped := strings.Replace(wireRule, `"enabled":true,`, `"enabled":true,"groupID":"`+groupA+`",`, 1)
+	var rule overrideRule
+	if err := json.Unmarshal([]byte(grouped), &rule); err != nil {
+		t.Fatal(err)
+	}
+	if rule.GroupID != groupA {
+		t.Fatalf("groupID = %q", rule.GroupID)
+	}
+	if encoded, err := json.Marshal(rule); err != nil || !sameJSON(t, encoded, grouped) {
+		t.Errorf("re-encoded as %s (%v)", encoded, err)
+	}
+	// Through the editor: open, save, and the group is still there.
+	v := testNetViewer(t)
+	v.openEditor(rule, false, "")
+	built, err := v.ovui.draft.build()
+	if err != nil || built.GroupID != groupA {
+		t.Errorf("the editor built groupID %q (%v)", built.GroupID, err)
+	}
+	for name, text := range map[string]string{
+		"absent":  wireRule,
+		"null":    strings.Replace(wireRule, `"enabled":true,`, `"enabled":true,"groupID":null,`, 1),
+		"no UUID": strings.Replace(wireRule, `"enabled":true,`, `"enabled":true,"groupID":"checkout",`, 1),
+	} {
+		var r overrideRule
+		if err := json.Unmarshal([]byte(text), &r); err != nil || r.GroupID != "" {
+			t.Errorf("%s: groupID %q (%v)", name, r.GroupID, err)
+			continue
+		}
+		if encoded, _ := json.Marshal(r); strings.Contains(string(encoded), "groupID") {
+			t.Errorf("%s: encoded with a groupID: %s", name, encoded)
+		}
+	}
+}
+
+// A rule applies only when the master switch, its own switch and its group's are all on. A
+// groupID naming no listed group is no group.
+func TestRuleEffectiveEnabled(t *testing.T) {
+	in := func(group string, enabled bool) overrideRule {
+		return ovRule("https://a.com/**", func(r *overrideRule) { r.GroupID, r.Enabled = group, enabled })
+	}
+	state := overridesState{MasterEnabled: true, HasGroups: true, Groups: []overrideGroup{
+		{ID: groupA, Enabled: true}, {ID: groupB, Enabled: false}}}
+	cases := []struct {
+		name string
+		rule overrideRule
+		want bool
+	}{
+		{"no group, on", in("", true), true},
+		{"no group, off", in("", false), false},
+		{"group on, rule on", in(groupA, true), true},
+		{"group on, rule off", in(groupA, false), false},
+		{"group off, rule on", in(groupB, true), false},
+		{"unknown group, rule on", in("C0000000-0000-4000-8000-00000000000C", true), true},
+	}
+	for _, c := range cases {
+		if got := state.ruleApplies(c.rule); got != c.want {
+			t.Errorf("%s: applies = %v, want %v", c.name, got, c.want)
+		}
+		if got := state.ruleOn(c.rule); got != c.want {
+			t.Errorf("%s: on = %v, want %v", c.name, got, c.want)
+		}
+	}
+	state.MasterEnabled = false
+	if state.ruleApplies(in("", true)) || !state.ruleOn(in("", true)) {
+		t.Error("the master switch: applies must be off, on must not look at it")
+	}
+
+	// A rule in a group that is off doesn't match a request.
+	state.MasterEnabled = true
+	off := in(groupB, true)
+	state.Rules = []overrideRule{off}
+	v := testNetViewer(t)
+	v.setOverrides(state)
+	if _, ok := v.rules.matchingRule("https://a.com/x", "GET"); ok {
+		t.Error("a rule in a disabled group matched")
+	}
+	if text, _ := v.overridesBadge(); text != "" {
+		t.Errorf("the Overrides button counts a rule in a disabled group: %q", text)
+	}
+	state.Groups[1].Enabled = true
+	v.setOverrides(state)
+	if _, ok := v.rules.matchingRule("https://a.com/x", "GET"); !ok {
+		t.Error("a rule in an enabled group didn't match")
+	}
+}

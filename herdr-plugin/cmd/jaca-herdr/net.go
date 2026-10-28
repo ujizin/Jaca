@@ -297,7 +297,8 @@ func (v *netViewer) resync() {
 
 func (v *netViewer) setOverrides(ov overridesState) {
 	v.overrides = ov
-	v.rules = compileRules(ov.Rules, ov.MasterEnabled)
+	// A rule in a group that is off doesn't match, as one that is off itself doesn't.
+	v.rules = compileRules(ov.activeRules(), ov.MasterEnabled)
 }
 
 // upsert applies request updates: a known id is replaced in place, a new one is appended, so the
@@ -1591,7 +1592,7 @@ func (b *barBuilder) rows() []string {
 func (v *netViewer) overridesBadge() (text, style string) {
 	enabled := 0
 	for _, r := range v.overrides.Rules {
-		if r.Enabled {
+		if v.overrides.ruleOn(r) {
 			enabled++
 		}
 	}
@@ -1610,7 +1611,7 @@ func (v *netViewer) overridesBadge() (text, style string) {
 	}
 	ok := 0
 	for _, r := range v.overrides.Rules {
-		if r.Enabled && skipReason(r, v.transport(), v.state.InterceptCapabilities, true) == "" {
+		if v.overrides.ruleOn(r) && skipReason(r, v.transport(), v.state.InterceptCapabilities, true) == "" {
 			ok++
 		}
 	}

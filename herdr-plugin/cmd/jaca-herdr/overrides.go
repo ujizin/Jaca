@@ -334,7 +334,8 @@ func (s ruleScope) matches(deviceID, appID string) bool {
 
 // overrideRule mirrors OverrideRule. ID is an uppercase UUID. CreatedAt is the ISO-8601 text
 // the daemon sent, kept as text so saving a rule doesn't change it. RoutedHosts is a set: the
-// only hosts the rule sends through the Mac.
+// only hosts the rule sends through the Mac. GroupID is the uppercase UUID of the group the
+// rule is in, "" for none; it goes back on save, so editing a rule keeps it in its group.
 type overrideRule struct {
 	ID, Name    string
 	Enabled     bool
@@ -344,6 +345,7 @@ type overrideRule struct {
 	DelayMillis int
 	CreatedAt   string
 	RoutedHosts []string // wire: divertHosts
+	GroupID     string
 }
 
 // newOverrideRule is OverrideRule(): a new id, enabled, an empty glob, a 200 JSON response with
@@ -384,7 +386,8 @@ func (r overrideRule) MarshalJSON() ([]byte, error) {
 		DelayMillis int         `json:"delayMillis"`
 		CreatedAt   string      `json:"createdAt"`
 		RoutedHosts []string    `json:"divertHosts"`
-	}{r.ID, r.Name, r.Enabled, r.Matcher, r.Scope, r.Action, r.DelayMillis, created, emptyIfNil(r.RoutedHosts)})
+		GroupID     string      `json:"groupID,omitempty"`
+	}{r.ID, r.Name, r.Enabled, r.Matcher, r.Scope, r.Action, r.DelayMillis, created, emptyIfNil(r.RoutedHosts), r.GroupID})
 }
 
 func (r *overrideRule) UnmarshalJSON(data []byte) error {
@@ -398,6 +401,7 @@ func (r *overrideRule) UnmarshalJSON(data []byte) error {
 		DelayMillis *int
 		CreatedAt   json.RawMessage
 		DivertHosts *[]string
+		GroupID     *string
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -427,6 +431,67 @@ func (r *overrideRule) UnmarshalJSON(data []byte) error {
 	}
 	if raw.DivertHosts != nil {
 		r.RoutedHosts = *raw.DivertHosts
+	}
+	// A group id that is no UUID names no group: the rule is ungrouped, not lost.
+	if id := stringOr(raw.GroupID, ""); isUUID(id) {
+		r.GroupID = strings.ToUpper(id)
+	}
+	return nil
+}
+
+// overrideGroup mirrors OverrideGroup: a folder of rules, with a switch over all of them. ID is
+// an uppercase UUID; CreatedAt is kept as the daemon's text, as a rule's is.
+type overrideGroup struct {
+	ID, Name  string
+	Enabled   bool
+	CreatedAt string
+}
+
+// newOverrideGroup is a new group: a new id, enabled, created now.
+func newOverrideGroup(name string) overrideGroup {
+	return overrideGroup{ID: newUUID(), Name: name, Enabled: true, CreatedAt: wireDate(time.Now())}
+}
+
+// displayName is what a group is called when the user hasn't named it.
+func (g overrideGroup) displayName() string {
+	if g.Name != "" {
+		return g.Name
+	}
+	return "Untitled group"
+}
+
+func (g overrideGroup) MarshalJSON() ([]byte, error) {
+	created := g.CreatedAt
+	if created == "" {
+		created = wireDate(time.Now())
+	}
+	return json.Marshal(struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Enabled   bool   `json:"enabled"`
+		CreatedAt string `json:"createdAt"`
+	}{g.ID, g.Name, g.Enabled, created})
+}
+
+// UnmarshalJSON requires only the id, as the rule's does.
+func (g *overrideGroup) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID        *string
+		Name      *string
+		Enabled   *bool
+		CreatedAt json.RawMessage
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.ID == nil || !isUUID(*raw.ID) {
+		return errors.New("override group without a valid id")
+	}
+	*g = overrideGroup{
+		ID:        strings.ToUpper(*raw.ID),
+		Name:      stringOr(raw.Name, ""),
+		Enabled:   raw.Enabled == nil || *raw.Enabled,
+		CreatedAt: decodeWireDate(raw.CreatedAt),
 	}
 	return nil
 }
@@ -551,9 +616,14 @@ type overrideArming = struct {
 }
 
 // overridesState mirrors OverridesState, the value on overrides.state. HitCounts and LastHitAt
-// are keyed by rule id; LastHitAt holds the daemon's ISO-8601 text.
+// are keyed by rule id; LastHitAt holds the daemon's ISO-8601 text. Groups are in display order,
+// and Rules arrive in display and precedence order: group by group, then the ungrouped rules.
+// HasGroups is whether the daemon sent groups at all: one from before groups sends none, and
+// the pane then offers no group actions.
 type overridesState struct {
 	Rules         []overrideRule
+	Groups        []overrideGroup
+	HasGroups     bool
 	MasterEnabled bool
 	HitCounts     map[string]int
 	LastHitAt     map[string]string
@@ -570,13 +640,23 @@ type overridesState struct {
 // malformed takes its default (the master switch defaults to on).
 func (s *overridesState) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Rules, MasterEnabled, HitCounts, LastHitAt, Armings, LastActivity, ReclaimedTunnelCount json.RawMessage
+		Rules, Groups, MasterEnabled, HitCounts, LastHitAt, Armings, LastActivity, ReclaimedTunnelCount json.RawMessage
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	*s = overridesState{MasterEnabled: true, HitCounts: map[string]int{}, LastHitAt: map[string]string{}}
 	s.Rules = decodeEach[overrideRule](raw.Rules)
+	var groups []json.RawMessage
+	s.HasGroups = len(raw.Groups) > 0 && json.Unmarshal(raw.Groups, &groups) == nil && groups != nil
+	// A group listed twice is shown once, where it first appears.
+	seen := map[string]bool{}
+	for _, g := range decodeEach[overrideGroup](raw.Groups) {
+		if !seen[g.ID] {
+			seen[g.ID] = true
+			s.Groups = append(s.Groups, g)
+		}
+	}
 	for _, a := range decodeEach[struct {
 		Target *interceptTarget
 		State  *armingState
@@ -622,15 +702,81 @@ func (s overridesState) MarshalJSON() ([]byte, error) {
 	if hits == nil {
 		hits = map[string]string{}
 	}
+	// A state with no groups key (from an old daemon) encodes without one.
+	var groups *[]overrideGroup
+	if s.HasGroups || len(s.Groups) > 0 {
+		list := emptyIfNil(s.Groups)
+		groups = &list
+	}
 	return json.Marshal(struct {
 		Rules                []overrideRule    `json:"rules"`
+		Groups               *[]overrideGroup  `json:"groups,omitempty"`
 		MasterEnabled        bool              `json:"masterEnabled"`
 		HitCounts            map[string]int    `json:"hitCounts"`
 		LastHitAt            map[string]string `json:"lastHitAt"`
 		Armings              []arming          `json:"armings"`
 		LastActivity         string            `json:"lastActivity,omitempty"`
 		ReclaimedTunnelCount int               `json:"reclaimedTunnelCount"`
-	}{emptyIfNil(s.Rules), s.MasterEnabled, counts, hits, armings, s.LastActivity, s.ReclaimedTunnelCount})
+	}{emptyIfNil(s.Rules), groups, s.MasterEnabled, counts, hits, armings, s.LastActivity, s.ReclaimedTunnelCount})
+}
+
+// group is the listed group with this id.
+func (s overridesState) group(id string) (overrideGroup, bool) {
+	if id != "" {
+		for _, g := range s.Groups {
+			if g.ID == id {
+				return g, true
+			}
+		}
+	}
+	return overrideGroup{}, false
+}
+
+// groupOf is the id of the group a rule is in, "" when it is in none. A groupID that names no
+// listed group (or a daemon that sends no groups) leaves the rule ungrouped.
+func (s overridesState) groupOf(r overrideRule) string {
+	if _, ok := s.group(r.GroupID); ok {
+		return r.GroupID
+	}
+	return ""
+}
+
+// ruleOn is whether a rule is switched on: its own switch and its group's. The master switch is
+// left to the caller, which often reports it apart.
+func (s overridesState) ruleOn(r overrideRule) bool {
+	if !r.Enabled {
+		return false
+	}
+	g, ok := s.group(r.GroupID)
+	return !ok || g.Enabled
+}
+
+// ruleApplies is whether a rule takes part in matching: the master switch, its own switch and
+// its group's are all on.
+func (s overridesState) ruleApplies(r overrideRule) bool {
+	return s.MasterEnabled && s.ruleOn(r)
+}
+
+// activeRules is the rules that are switched on (ruleOn), in precedence order.
+func (s overridesState) activeRules() []overrideRule {
+	var out []overrideRule
+	for _, r := range s.Rules {
+		if s.ruleOn(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// groupRuleCount is how many rules are in a group.
+func (s overridesState) groupRuleCount(id string) int {
+	n := 0
+	for _, r := range s.Rules {
+		if s.groupOf(r) == id {
+			n++
+		}
+	}
+	return n
 }
 
 // arming is what the transport for one app on one device last reported, idle when it reported

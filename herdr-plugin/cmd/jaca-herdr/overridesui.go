@@ -17,8 +17,12 @@ type overridesUI struct {
 	menu     *popupMenu
 	draft    *ruleDraft
 	fromList bool        // the editor was opened from the list popup, which it goes back to
-	ruleRows map[int]int // list popup: box row -> the rule drawn on it
+	ruleRows map[int]int // list popup: box row -> the list row (ovRows) drawn on it
+	selRow   int         // list popup: the box row the selected list row starts on, as last drawn
 	hidden   bool        // the pane is too small to draw the popup: only Esc acts on it
+
+	collapsed map[string]bool // list popup: the groups drawn collapsed, by id; view state only
+	rename    *groupRename    // list popup: the group whose name is being typed
 
 	// The open popup as last drawn: where it sits and what a click on each span does.
 	top, left int // 0-based
@@ -73,12 +77,88 @@ func (b *popupBox) closeRow(act func()) {
 
 func (v *netViewer) openOverridesList() {
 	v.focus = netOverrides
-	v.ovui.menu = nil
-	v.ovui.selected = clampIndex(v.ovui.selected, len(v.overrides.Rules))
+	v.ovui.menu, v.ovui.rename = nil, nil
+	v.ovui.selected = clampIndex(v.ovui.selected, len(v.ovRows()))
 }
 
 func (v *netViewer) closeOverrides() {
-	v.focus, v.ovui.menu, v.ovui.draft = netList, nil, nil
+	v.focus, v.ovui.menu, v.ovui.draft, v.ovui.rename = netList, nil, nil, nil
+}
+
+// overrideRow is one row of the list popup: a group, or a rule (under its expanded group, or at
+// the top level).
+type overrideRow struct {
+	group  *overrideGroup // a group row; nil for a rule row
+	count  int            // a group row: how many rules it holds
+	rule   int            // a rule row: its index in Rules
+	nested bool           // a rule row under its group
+}
+
+// groupRename is a group whose name is being typed in the list popup.
+type groupRename struct {
+	group overrideGroup // as it was, or as just created
+	name  textInput
+}
+
+// overrideRows is the list popup's rows: each group, with its rules under it unless it is
+// collapsed, then the rules in no group. pending is a group just created that the state doesn't
+// list yet; it is shown after the others, where the daemon puts it. With no groups (an old
+// daemon) this is the rules as they come.
+func overrideRows(s overridesState, collapsed map[string]bool, pending *overrideGroup) []overrideRow {
+	groups := s.Groups
+	if pending != nil {
+		if _, ok := s.group(pending.ID); !ok {
+			groups = append(append([]overrideGroup(nil), groups...), *pending)
+		}
+	}
+	inGroup := map[string][]int{}
+	var loose []int
+	for i, r := range s.Rules {
+		if id := s.groupOf(r); id != "" {
+			inGroup[id] = append(inGroup[id], i)
+		} else {
+			loose = append(loose, i)
+		}
+	}
+	var rows []overrideRow
+	for i := range groups {
+		g := groups[i]
+		rows = append(rows, overrideRow{group: &g, count: len(inGroup[g.ID]), rule: -1})
+		if !collapsed[g.ID] {
+			for _, n := range inGroup[g.ID] {
+				rows = append(rows, overrideRow{rule: n, nested: true})
+			}
+		}
+	}
+	for _, n := range loose {
+		rows = append(rows, overrideRow{rule: n})
+	}
+	return rows
+}
+
+// ovRows is the list popup's rows as the popup stands.
+func (v *netViewer) ovRows() []overrideRow {
+	return v.rowsOf(v.overrides)
+}
+
+func (v *netViewer) rowsOf(s overridesState) []overrideRow {
+	var pending *overrideGroup
+	if r := v.ovui.rename; r != nil {
+		pending = &r.group
+	}
+	return overrideRows(s, v.ovui.collapsed, pending)
+}
+
+// selectID selects the row of a group or rule in the list as it will stand in s, the state an
+// action is expected to bring. The selection stays put when s doesn't show it.
+func (v *netViewer) selectID(s overridesState, id string) {
+	for i, row := range v.rowsOf(s) {
+		if (row.group != nil && row.group.ID == id) ||
+			(row.group == nil && row.rule >= 0 && row.rule < len(s.Rules) && s.Rules[row.rule].ID == id) {
+			v.ovui.selected = i
+			return
+		}
+	}
 }
 
 // ruleCall sends an override change. The new state comes back on overrides.state.
@@ -94,7 +174,7 @@ func (v *netViewer) ruleCall(method string, params map[string]any) {
 // blockedReason is why a rule can't run on this capture ("not here"), "" when it can or when
 // that isn't known yet (OverridesPopover.blockedReason).
 func (v *netViewer) blockedReason(r overrideRule) string {
-	if !r.Enabled || !v.overrides.MasterEnabled || !v.state.HasRunningSource {
+	if !v.overrides.ruleApplies(r) || !v.state.HasRunningSource {
 		return ""
 	}
 	return skipReason(r, v.transport(), v.state.InterceptCapabilities, true)
@@ -139,6 +219,19 @@ func (v *netViewer) newOverride() {
 	v.openEditor(blankRule(host), true, "")
 }
 
+// openListMenu opens the menu of a row of the list popup at a cell.
+func (v *netViewer) openListMenu(row, x, y int) {
+	rows := v.ovRows()
+	if row < 0 || row >= len(rows) {
+		return
+	}
+	if g := rows[row].group; g != nil {
+		v.openGroupMenu(*g, x, y)
+		return
+	}
+	v.openRuleMenu(rows[row].rule, x, y)
+}
+
 // ruleMenu is the app's rule row menu.
 func (v *netViewer) openRuleMenu(i, x, y int) {
 	rules := v.overrides.Rules
@@ -147,11 +240,14 @@ func (v *netViewer) openRuleMenu(i, x, y int) {
 	}
 	rule := rules[i]
 	items := []menuItem{{"Edit override…", func() { v.openEditor(rule, false, "") }}}
-	if i > 0 {
+	if v.canMoveRule(i, -1) {
 		items = append(items, menuItem{"Move up", func() { v.moveRule(rule, -1) }})
 	}
-	if i < len(rules)-1 {
+	if v.canMoveRule(i, 1) {
 		items = append(items, menuItem{"Move down", func() { v.moveRule(rule, 1) }})
+	}
+	if v.groupTargets(rule) > 0 {
+		items = append(items, menuItem{"Move to group", func() { v.openGroupPicker(rule, x, y) }})
 	}
 	items = append(items, menuItem{},
 		menuItem{"Duplicate", func() { v.ruleCall("overrides.duplicate", map[string]any{"id": rule.ID}) }},
@@ -159,9 +255,32 @@ func (v *netViewer) openRuleMenu(i, x, y int) {
 	v.ovui.menu = &popupMenu{x: x, y: y, items: items}
 }
 
+// openGroupMenu is a group row's menu.
+func (v *netViewer) openGroupMenu(g overrideGroup, x, y int) {
+	items := []menuItem{{"Rename group", func() { v.startRename(g) }}}
+	if v.canMoveGroup(g.ID, -1) {
+		items = append(items, menuItem{"Move up", func() { v.moveGroup(g.ID, -1) }})
+	}
+	if v.canMoveGroup(g.ID, 1) {
+		items = append(items, menuItem{"Move down", func() { v.moveGroup(g.ID, 1) }})
+	}
+	items = append(items, menuItem{}, menuItem{"Delete group", func() { v.removeGroup(g.ID) }})
+	v.ovui.menu = &popupMenu{x: x, y: y, items: items}
+}
+
+// canMoveRule is whether a rule has a neighbour in its own section to swap with: the daemon
+// doesn't move a rule across a group's edge.
+func (v *netViewer) canMoveRule(i, offset int) bool {
+	rules, j := v.overrides.Rules, i+offset
+	if i < 0 || i >= len(rules) || j < 0 || j >= len(rules) {
+		return false
+	}
+	return v.overrides.groupOf(rules[i]) == v.overrides.groupOf(rules[j])
+}
+
 func (v *netViewer) moveRule(rule overrideRule, offset int) {
 	v.ruleCall("overrides.move", map[string]any{"id": rule.ID, "offset": offset})
-	v.ovui.selected = clampIndex(v.ovui.selected+offset, len(v.overrides.Rules))
+	v.ovui.selected = clampIndex(v.ovui.selected+offset, len(v.ovRows()))
 }
 
 func (v *netViewer) toggleRule(i int) {
@@ -175,6 +294,153 @@ func (v *netViewer) toggleMaster() {
 	v.ruleCall("overrides.setMaster", map[string]any{"enabled": !v.overrides.MasterEnabled})
 }
 
+// toggleRow switches a row's group or rule on or off.
+func (v *netViewer) toggleRow(row overrideRow) {
+	if row.group != nil {
+		v.toggleGroup(*row.group)
+		return
+	}
+	v.toggleRule(row.rule)
+}
+
+// toggleGroup switches a group, and with it all of its rules, on or off.
+func (v *netViewer) toggleGroup(g overrideGroup) {
+	if v.overrides.MasterEnabled {
+		g.Enabled = !g.Enabled
+		v.ruleCall("overrides.saveGroup", map[string]any{"group": g})
+	}
+}
+
+// toggleCollapsed shows or hides a group's rules. It is view state: nothing is sent.
+func (v *netViewer) toggleCollapsed(id string) {
+	if v.ovui.collapsed == nil {
+		v.ovui.collapsed = map[string]bool{}
+	}
+	v.ovui.collapsed[id] = !v.ovui.collapsed[id]
+	v.ovui.selected = clampIndex(v.ovui.selected, len(v.ovRows()))
+}
+
+// newGroup creates a group at the end of the list, selects it and starts renaming it.
+func (v *netViewer) newGroup() {
+	g := newOverrideGroup("Untitled group")
+	v.ruleCall("overrides.saveGroup", map[string]any{"group": g})
+	v.startRename(g)
+	v.selectID(v.overrides, g.ID)
+}
+
+// startRename puts a group's name in an input on its row.
+func (v *netViewer) startRename(g overrideGroup) {
+	r := &groupRename{group: g}
+	r.name.set(g.Name)
+	v.ovui.menu, v.ovui.rename = nil, r
+}
+
+// commitRename saves the typed name and ends renaming.
+func (v *netViewer) commitRename() {
+	r := v.ovui.rename
+	v.ovui.rename = nil
+	if r == nil {
+		return
+	}
+	g := r.group
+	if current, ok := v.overrides.group(g.ID); ok {
+		g = current // a switch flipped meanwhile is kept
+	}
+	g.Name = strings.TrimSpace(r.name.String())
+	v.ruleCall("overrides.saveGroup", map[string]any{"group": g})
+}
+
+// renameKey handles a key while a group's name is being typed: Enter saves it, Esc keeps the
+// name it had.
+func (v *netViewer) renameKey(k []byte) {
+	switch {
+	case isEsc(k):
+		v.ovui.rename = nil
+	case isEnter(k):
+		v.commitRename()
+	default:
+		v.ovui.rename.name.handle(k)
+	}
+}
+
+func (v *netViewer) removeGroup(id string) {
+	v.ruleCall("overrides.removeGroup", map[string]any{"id": id})
+	v.ovui.selected = clampIndex(v.ovui.selected, len(v.ovRows())-1)
+}
+
+// canMoveGroup is whether a group has a neighbour to swap with that way.
+func (v *netViewer) canMoveGroup(id string, offset int) bool {
+	for i, g := range v.overrides.Groups {
+		if g.ID == id {
+			return i+offset >= 0 && i+offset < len(v.overrides.Groups)
+		}
+	}
+	return false
+}
+
+// moveGroup moves a group up or down, and the selection with it.
+func (v *netViewer) moveGroup(id string, offset int) {
+	v.ruleCall("overrides.moveGroup", map[string]any{"id": id, "offset": offset})
+	next := v.overrides
+	next.Groups = append([]overrideGroup(nil), next.Groups...)
+	for i := range next.Groups {
+		if j := i + offset; next.Groups[i].ID == id && j >= 0 && j < len(next.Groups) {
+			next.Groups[i], next.Groups[j] = next.Groups[j], next.Groups[i]
+			break
+		}
+	}
+	v.selectID(next, id)
+}
+
+// groupTargets is how many places the picker offers a rule: the groups it isn't in, and No group
+// when it is in one, which comes to one per group. None from a daemon that has no groups.
+func (v *netViewer) groupTargets(r overrideRule) int {
+	if !v.overrides.HasGroups {
+		return 0
+	}
+	return len(v.overrides.Groups)
+}
+
+// openGroupPicker lists where a rule can go, under a heading: the other groups, and No group.
+func (v *netViewer) openGroupPicker(r overrideRule, x, y int) {
+	if v.groupTargets(r) == 0 {
+		return
+	}
+	current := v.overrides.groupOf(r)
+	items := []menuItem{{"Move to group", nil}}
+	for _, g := range v.overrides.Groups {
+		if g.ID != current {
+			items = append(items, menuItem{sanitize(g.displayName()), func() { v.setGroup(r, g.ID) }})
+		}
+	}
+	if current != "" {
+		items = append(items, menuItem{}, menuItem{"No group", func() { v.setGroup(r, "") }})
+	}
+	menu := &popupMenu{x: x, y: y, items: items}
+	menu.move(1) // off the heading, onto the first place
+	v.ovui.menu = menu
+}
+
+// setGroup puts a rule at the end of a group, or of the rules in none for "", and keeps it
+// selected where it lands.
+func (v *netViewer) setGroup(r overrideRule, groupID string) {
+	params := map[string]any{"id": r.ID}
+	if groupID != "" {
+		params["group"] = groupID
+	}
+	v.ruleCall("overrides.setGroup", params)
+	next := v.overrides
+	next.Rules = nil
+	for _, other := range v.overrides.Rules {
+		if other.ID != r.ID {
+			next.Rules = append(next.Rules, other)
+		}
+	}
+	r.GroupID = groupID
+	next.Rules = append(next.Rules, r)
+	v.selectID(next, r.ID)
+}
+
 // showLog reveals Jaca's log in Finder, as the popup's link does.
 func showLog() {
 	go func() { _ = exec.Command("sh", "-c", `open -R "$HOME/.jaca/logs/jaca.log"`).Run() }()
@@ -182,7 +448,7 @@ func showLog() {
 
 // takesShiftEnter: Shift+Enter toggles the selected rule in the list popup; elsewhere it is Enter.
 func (v *netViewer) takesShiftEnter() bool {
-	return v.focus == netOverrides && !v.ovui.hidden && v.ovui.menu == nil
+	return v.focus == netOverrides && !v.ovui.hidden && v.ovui.menu == nil && v.ovui.rename == nil
 }
 
 // overridesKey handles a key in whichever override popup is open.
@@ -199,6 +465,10 @@ func (v *netViewer) overridesKey(k []byte) {
 		return
 	}
 	ui := &v.ovui
+	if ui.rename != nil {
+		v.renameKey(k)
+		return
+	}
 	if ui.menu != nil {
 		switch {
 		case isEsc(k):
@@ -210,47 +480,76 @@ func (v *netViewer) overridesKey(k []byte) {
 		case isEnter(k):
 			menu := ui.menu
 			ui.menu = nil
-			menu.items[menu.selected].act()
+			if i := menu.selected; i >= 0 && i < len(menu.items) && menu.items[i].act != nil {
+				menu.items[i].act()
+			}
 		}
 		return
 	}
+	rows := v.ovRows()
+	i := clampIndex(ui.selected, len(rows))
+	has := len(rows) > 0
+	var row overrideRow
+	if has {
+		row = rows[i]
+	}
+	group, rule := has && row.group != nil, has && row.group == nil
 	rules := v.overrides.Rules
-	i := clampIndex(ui.selected, len(rules))
-	has := len(rules) > 0
 	switch {
 	case isEsc(k) || (len(k) == 1 && (k[0] == 'q' || k[0] == 'o')):
 		v.closeOverrides()
 	case isUp(k):
-		ui.selected = clampIndex(i-1, len(rules))
+		ui.selected = clampIndex(i-1, len(rows))
 	case isDown(k):
-		ui.selected = clampIndex(i+1, len(rules))
+		ui.selected = clampIndex(i+1, len(rows))
 	case isShiftEnter(k):
-		v.toggleRule(i)
-	case isEnter(k):
 		if has {
-			v.openEditor(rules[i], false, "")
-		} else {
+			v.toggleRow(row)
+		}
+	case isEnter(k):
+		switch {
+		case group:
+			v.toggleCollapsed(row.group.ID)
+		case rule:
+			v.openEditor(rules[row.rule], false, "")
+		default:
 			v.newOverride()
 		}
 	case len(k) != 1:
 	case k[0] == 'n':
 		v.newOverride()
+	case k[0] == 'N' && v.overrides.HasGroups:
+		v.newGroup()
 	case k[0] == 'm':
 		v.toggleMaster()
 	case k[0] == 'L':
 		showLog()
 	case !has:
 	case k[0] == ' ':
-		v.toggleRule(i)
-	case k[0] == 'd':
-		v.ruleCall("overrides.duplicate", map[string]any{"id": rules[i].ID})
+		v.toggleRow(row)
 	case k[0] == 'x' || k[0] == 0x7f || k[0] == 0x08: // x or Backspace
-		v.ruleCall("overrides.remove", map[string]any{"id": rules[i].ID})
-		ui.selected = clampIndex(i, len(rules)-1)
-	case k[0] == 'K' && i > 0:
-		v.moveRule(rules[i], -1)
-	case k[0] == 'J' && i < len(rules)-1:
-		v.moveRule(rules[i], 1)
+		if group {
+			v.removeGroup(row.group.ID)
+			break
+		}
+		v.ruleCall("overrides.remove", map[string]any{"id": rules[row.rule].ID})
+		ui.selected = clampIndex(i, len(rows)-1)
+	case group && k[0] == 'r':
+		v.startRename(*row.group)
+	case group && k[0] == 'K' && v.canMoveGroup(row.group.ID, -1):
+		v.moveGroup(row.group.ID, -1)
+	case group && k[0] == 'J' && v.canMoveGroup(row.group.ID, 1):
+		v.moveGroup(row.group.ID, 1)
+	case group:
+	case k[0] == 'd':
+		v.ruleCall("overrides.duplicate", map[string]any{"id": rules[row.rule].ID})
+	case k[0] == 'g':
+		// The picker opens beside the selected row.
+		v.openGroupPicker(rules[row.rule], ui.left+6, ui.top+ui.selRow+2)
+	case k[0] == 'K' && v.canMoveRule(row.rule, -1):
+		v.moveRule(rules[row.rule], -1)
+	case k[0] == 'J' && v.canMoveRule(row.rule, 1):
+		v.moveRule(rules[row.rule], 1)
 	}
 }
 
@@ -263,7 +562,7 @@ func (v *netViewer) overridesMouse(m mouseEvent) {
 	if v.focus == netOverrides && ui.menu != nil {
 		menu := ui.menu
 		ui.menu = nil
-		if i := menu.itemAt(m.x, m.y); m.button == 0 && i >= 0 {
+		if i := menu.itemAt(m.x, m.y); m.button == 0 && i >= 0 && menu.items[i].act != nil {
 			menu.items[i].act()
 		}
 		return
@@ -276,9 +575,13 @@ func (v *netViewer) overridesMouse(m mouseEvent) {
 		if v.focus == netEditor {
 			v.ovui.draft.wheel(by * 3)
 		} else {
-			ui.selected = clampIndex(ui.selected+by, len(v.overrides.Rules))
+			ui.selected = clampIndex(ui.selected+by, len(v.ovRows()))
 		}
 		return
+	}
+	if v.focus == netOverrides && ui.rename != nil && m.button&mouseDrag == 0 {
+		// A press elsewhere ends renaming, as Enter does.
+		v.commitRename()
 	}
 	row, col := m.y-1-ui.top, m.x-1-ui.left
 	for i := len(ui.hits) - 1; i >= 0; i-- {
@@ -292,7 +595,7 @@ func (v *netViewer) overridesMouse(m mouseEvent) {
 			if m.button == 2 && v.focus == netOverrides {
 				if n, ok := v.ruleAt(row); ok {
 					ui.selected = n
-					v.openRuleMenu(n, m.x, m.y)
+					v.openListMenu(n, m.x, m.y)
 				}
 				return
 			}
@@ -304,7 +607,8 @@ func (v *netViewer) overridesMouse(m mouseEvent) {
 	}
 }
 
-// ruleAt is the rule drawn on a row of the list popup.
+// ruleAt is the list row (a group or a rule, an index into ovRows) drawn on a row of the list
+// popup.
 func (v *netViewer) ruleAt(row int) (int, bool) {
 	n, ok := v.ovui.ruleRows[row]
 	return n, ok
@@ -345,8 +649,8 @@ func (v *netViewer) overridesBox(rows, cols int) (box []string, top, left int) {
 	return box, ui.top, ui.left
 }
 
-// listBox is the app's overrides popover: the master switch, the rules in precedence order, how
-// they stand on this capture, and New override.
+// listBox is the app's overrides popover: the master switch, the groups and rules in precedence
+// order, how they stand on this capture, and New override.
 func (v *netViewer) listBox(rows, cols int) *popupBox {
 	w := min(cols, 84)
 	if w < 40 || rows < 10 {
@@ -366,8 +670,8 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 	b.add(toggleSwitch(v.overrides.MasterEnabled, false) + " " + masterStyle + clip(master, b.inner-toggleCells-1) + sgrReset)
 	b.add("")
 
-	rules := v.overrides.Rules
-	if len(rules) == 0 {
+	list := v.ovRows()
+	if len(list) == 0 {
 		b.add(sgrBold + clip("No response overrides", b.inner) + sgrReset)
 		for _, text := range []string{
 			"Right-click any captured request to override its response, or create one from scratch.",
@@ -378,18 +682,36 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		}
 	}
 	// A rule is its two rows and a row of padding (all three take the selection and the clicks),
-	// and a divider row is the margin before the next rule. The window moves only to keep the
-	// selection in view.
-	ui.selected = clampIndex(ui.selected, len(rules))
+	// a group its row and a row of padding, and a divider row is the margin before the next one.
+	// The window moves only to keep the selection in view; it is sized for rules, so groups only
+	// make it shorter.
+	ui.selected = clampIndex(ui.selected, len(list))
 	room := max(1, (rows-14+1)/4)
-	ui.start = followWindow(ui.start, ui.selected, room, len(rules))
+	ui.start = followWindow(ui.start, ui.selected, room, len(list))
 	start := ui.start
-	for i := start; i < len(rules) && i < start+room; i++ {
-		r := rules[i]
+	const switchW = toggleCells + 2 // the switch and a cell either side
+	for i := start; i < len(list) && i < start+room; i++ {
 		if i > start {
 			b.add(sgrDim + strings.Repeat("─", b.inner) + sgrReset)
 		}
-		dim := !r.Enabled || !v.overrides.MasterEnabled
+		n := i
+		if i == ui.selected {
+			ui.selRow = len(b.rows)
+		}
+		if list[i].group != nil {
+			v.groupRow(b, *list[i].group, list[i].count, n)
+			continue
+		}
+		ri := list[i].rule
+		if ri < 0 || ri >= len(v.overrides.Rules) {
+			continue
+		}
+		r := v.overrides.Rules[ri]
+		indent := "  "
+		if list[i].nested {
+			indent = "    "
+		}
+		dim := !v.overrides.ruleApplies(r)
 		name := sanitize(r.displayName())
 		if v.rules.diagnostic(r.ID) != "" {
 			name += " !"
@@ -403,25 +725,23 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		}
 		// The switch sits at the right of the rule's three rows, so it is a big target, and a
 		// rule that is off reads as off: dim, with the switch's knob at the left on grey.
-		const switchW = toggleCells + 2                      // the switch and a cell either side
-		nameW := b.inner - cellWidth(trailing) - 4 - switchW // the indent, the gaps and the switch
-		n := i
+		nameW := b.inner - cellWidth(trailing) - len(indent) - 2 - switchW // the indent, the gaps and the switch
 		for row := len(b.rows); row < len(b.rows)+3; row++ {
 			ui.ruleRows[row] = n
 		}
-		toggle := func() { ui.selected = n; v.toggleRule(n) }
+		toggle := func() { ui.selected = n; v.toggleRule(ri) }
 		edit := func(int) { ui.selected = n; v.openEditor(r, false, "") }
 		nameStyle, trailingStyle := sgrBold, sgrYellow
 		if dim {
 			nameStyle, trailingStyle = tertiaryStyle, tertiaryStyle
 		}
 		sw := toggleSwitch(r.Enabled, !v.overrides.MasterEnabled)
-		line := "  " + nameStyle + fit(name, nameW) + sgrReset + " " + trailingStyle + trailing + sgrReset + "  " + sw + " "
+		line := indent + nameStyle + fit(name, nameW) + sgrReset + " " + trailingStyle + trailing + sgrReset + "  " + sw + " "
 		pattern := sanitize(r.Matcher.Pattern)
 		if pattern == "" {
 			pattern = "No pattern"
 		}
-		under := "  " + tertiaryStyle + fit(pattern, b.inner-2-switchW) + sgrReset
+		under := indent + tertiaryStyle + fit(pattern, b.inner-len(indent)-switchW) + sgrReset
 		padding := ""
 		if i == ui.selected {
 			line, under = onRow(line, selectedRowStyle, b.inner), onRow(under, selectedRowStyle, b.inner)
@@ -437,7 +757,7 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		b.hit(b.inner-switchW, b.inner-1, func(int) { toggle() })
 		b.add(padding)
 	}
-	if len(rules) == 0 {
+	if len(list) == 0 {
 		b.add("") // a drawn rule ends in its padding row
 	}
 	if text, style := v.overridesStatus(); text != "" {
@@ -447,6 +767,10 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 	}
 	footer := ""
 	b.button(&footer, " New override ", sgrBold+sgrRev, v.newOverride)
+	if v.overrides.HasGroups {
+		footer += "  "
+		b.button(&footer, " New group ", sgrRev, v.newGroup)
+	}
 	footer += "   "
 	b.button(&footer, "Show log", sgrUnder, showLog)
 	b.add(footer)
@@ -454,6 +778,44 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		b.add(sgrDim + clip(sanitize(v.overrides.LastActivity), b.inner) + sgrReset)
 	}
 	return b
+}
+
+// groupRow draws a group's row and its padding row: the expand marker, the name (or the input
+// renaming it), how many rules it holds and its switch. A click on the name expands or collapses
+// it; a click on the switch turns it on or off.
+func (v *netViewer) groupRow(b *popupBox, g overrideGroup, count, n int) {
+	ui := &v.ovui
+	const switchW = toggleCells + 2
+	marker := "▾"
+	if ui.collapsed[g.ID] {
+		marker = "▸"
+	}
+	countText := fmt.Sprintf("(%d)", count)
+	nameW := b.inner - 4 - cellWidth(countText) - 2 - switchW // the indent and marker, the gaps and the switch
+	nameStyle := sgrBold
+	if !g.Enabled || !v.overrides.MasterEnabled {
+		nameStyle = tertiaryStyle
+	}
+	name := nameStyle + fit(sanitize(g.displayName()), nameW) + sgrReset
+	if r := ui.rename; r != nil && r.group.ID == g.ID {
+		name = renderField(&r.name, "Untitled group", true, nameW, sgrUnder)
+	}
+	line := "  " + marker + " " + name + " " + sgrDim + countText + sgrReset + "  " + toggleSwitch(g.Enabled, !v.overrides.MasterEnabled) + " "
+	padding := ""
+	if n == ui.selected {
+		line, padding = onRow(line, selectedRowStyle, b.inner), onRow(padding, selectedRowStyle, b.inner)
+	}
+	for row := len(b.rows); row < len(b.rows)+2; row++ {
+		ui.ruleRows[row] = n
+	}
+	expand := func(int) { ui.selected = n; v.toggleCollapsed(g.ID) }
+	toggle := func(int) { ui.selected = n; v.toggleGroup(g) }
+	b.hit(0, b.inner-switchW-1, expand)
+	b.hit(b.inner-switchW, b.inner-1, toggle)
+	b.add(line)
+	b.hit(0, b.inner-switchW-1, expand)
+	b.hit(b.inner-switchW, b.inner-1, toggle)
+	b.add(padding)
 }
 
 // wrapWords breaks text into lines of at most w cells at spaces.
