@@ -40,9 +40,10 @@ final class CLIParserTests: XCTestCase {
     func test_netShow_andOverrides() {
         XCTAssertEqual(parse("net show 3fa2").command, .netShow(request: "3fa2"))
         XCTAssertEqual(parse("overrides add --from 3fa2").command,
-                       .overridesAdd(from: "3fa2", name: nil, statusCode: nil, bodyFile: nil, disabled: false))
-        XCTAssertEqual(parse("overrides add --from 3fa2 --name Stub --status 503 --body-file - --disabled").command,
-                       .overridesAdd(from: "3fa2", name: "Stub", statusCode: 503, bodyFile: "-", disabled: true))
+                       .overridesAdd(from: "3fa2", name: nil, statusCode: nil, bodyFile: nil, disabled: false, generalize: false))
+        XCTAssertEqual(parse("overrides add --from 3fa2 --name Stub --status 503 --body-file - --disabled --generalize").command,
+                       .overridesAdd(from: "3fa2", name: "Stub", statusCode: 503, bodyFile: "-", disabled: true, generalize: true))
+        XCTAssertEqual(parse("overrides generalize Stub").command, .overridesGeneralize(rule: "Stub"))
         XCTAssertEqual(parse("overrides enable Stub").command, .overridesSetEnabled(rule: "Stub", enabled: true))
         XCTAssertEqual(parse("overrides disable 9c").command, .overridesSetEnabled(rule: "9c", enabled: false))
         XCTAssertEqual(parse("overrides rm 9c").command, .overridesRemove(rule: "9c"))
@@ -98,6 +99,7 @@ final class CLIParserTests: XCTestCase {
             ("overrides add", ["overrides", "add"]), ("overrides add --from", ["overrides", "add"]),
             ("overrides add --from x --status 99", ["overrides", "add"]), ("overrides add x", ["overrides", "add"]),
             ("overrides enable", ["overrides", "enable"]), ("overrides rm", ["overrides", "rm"]),
+            ("overrides generalize", ["overrides", "generalize"]),
         ]
         for (line, path) in bad {
             XCTAssertEqual(parse(line).command, .usage(path: path), line)
@@ -148,6 +150,7 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(CLIUsage.text(under: ["net", "show"], program: "jaca"),
                        "usage: jaca net show REQUEST\n       jaca ... [--json] [--raw] [--no-spawn] [--help]")
         XCTAssertEqual(CLIUsage.methods(under: ["overrides"]),
-                       ["overrides.state", "overrides.createFromTransaction", "overrides.setEnabled", "overrides.remove"])
+                       ["overrides.state", "overrides.createFromTransaction", "overrides.save",
+                        "overrides.setEnabled", "overrides.remove"])
     }
 }

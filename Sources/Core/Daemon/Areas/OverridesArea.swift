@@ -19,6 +19,8 @@ enum OverridesArea {
         var body: Data?
         /// Absent: enabled, like every new rule.
         var enabled: Bool?
+        /// `true`: the rule is saved with its path on any base URL (`OverrideSeeding.onAnyBaseURL`).
+        var anyBaseURL: Bool?
     }
     struct Created: Codable, Sendable, Equatable {
         var rule: OverrideRule
@@ -77,7 +79,8 @@ enum OverridesArea {
         if let captures {
             r.register("overrides.createFromTransaction", "", params: FromTransactionParams.self,
                        takes: .object(["id": .uuid, "transaction": .uuid],
-                                      optional: ["name": .string, "statusCode": .integer, "body": .bytes, "enabled": .boolean]),
+                                      optional: ["name": .string, "statusCode": .integer, "body": .bytes, "enabled": .boolean,
+                                                 "anyBaseURL": .boolean]),
                        returns: .nullable(.object(["rule": .overrideRule], optional: ["warning": .string]))) { p, _ in
                 await create(p, engine: engine, captures: captures)
             }
@@ -95,6 +98,7 @@ enum OverridesArea {
         var rule = OverrideSeeding.rule(for: txn, responseBody: txn.responseBody ?? Data())
         if let name = p.name { rule.name = name }
         if let enabled = p.enabled { rule.enabled = enabled }
+        if p.anyBaseURL == true { rule = OverrideSeeding.onAnyBaseURL(rule) }
         if case .respond(var spec) = rule.action {
             if let statusCode = p.statusCode { spec.statusCode = statusCode }
             if let body = p.body { spec.body = OverrideRuleStore.makeBodyRef(body) }

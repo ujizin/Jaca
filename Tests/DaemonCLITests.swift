@@ -439,6 +439,30 @@ final class DaemonCLITests: XCTestCase {
         XCTAssertEqual((listed["rules"] as? [[String: Any]])?.first?["id"] as? String, added[0]["id"] as? String)
     }
 
+    /// `--generalize` puts the rule's path on any base URL while keeping the device's host
+    /// routed; the same rewrite applies to a rule that already exists.
+    func test_jaca_generalize_onAddAndOnAnExistingRule() async throws {
+        try await openCaptures()
+        let added = try await run("overrides add --from 3fa2b --generalize --json")
+        XCTAssertEqual(added.status, 0, added.printed.errText)
+        let rows = try XCTUnwrap(try json(added.printed) as? [[String: Any]])
+        XCTAssertEqual(rows.first?["pattern"] as? String, "**/v1/orders")
+        let generalized = try XCTUnwrap(overrides.state.rules.first)
+        XCTAssertEqual(generalized.routedHosts, ["api.example.com"], "the device still routes the captured host")
+
+        let plain = try await run("overrides add --from 3fa2f --name Users")
+        XCTAssertEqual(plain.status, 0, plain.printed.errText)
+        XCTAssertEqual(overrides.state.rules.last?.matcher.pattern, "https://api.example.com/v1/users")
+
+        let rewritten = try await run("overrides generalize users")
+        XCTAssertEqual(rewritten.status, 0, rewritten.printed.errText)
+        let users = try XCTUnwrap(overrides.state.rules.last)
+        XCTAssertEqual(users.matcher.pattern, "**/v1/users")
+        XCTAssertEqual(users.routedHosts, ["api.example.com"])
+        XCTAssertTrue(rewritten.printed.outText.contains("**/v1/users"), rewritten.printed.outText)
+        XCTAssertEqual(overrides.state.rules.count, 2, "generalize replaces the rule, it does not add one")
+    }
+
     func test_jaca_rawShowsCredentials() async throws {
         try await openCaptures()
         let shown = try await run("net show 3fa2b --raw")

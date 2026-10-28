@@ -69,6 +69,8 @@ jaca logs tail pixel --grep 'timeout|refused' -n 100
 jaca overrides list --json
 jaca overrides add --from 3fa2b1c0 --json                      # replay the captured response
 jaca overrides add --from 3fa2b1c0 --status 503 --body-file body.json --name "Orders down"
+jaca overrides add --from 3fa2b1c0 --generalize                 # the path on any base URL
+jaca overrides generalize "Orders down"                        # the same rewrite on an existing rule
 jaca overrides disable "Orders down"
 jaca overrides enable 9c41
 jaca overrides rm 9c41
@@ -77,6 +79,13 @@ jaca overrides rm 9c41
 - `add --from REQUEST` makes a rule that matches the request's method and URL (query dropped) and
   answers with the captured status, headers and body. `--status`, `--body-file` (`-` reads stdin)
   and `--name` replace those parts.
+- `--generalize` (and `overrides generalize RULE`) rewrite the base URL of the pattern to `**`
+  and keep the path as written, so one rule answers the endpoint from the device
+  (`https://private-api.teya.xyz/lending/v1/…`) and from a browser on a dev server that proxies
+  it under another base URL (`http://localhost:3000/private-api/lending/v1/…`). The device's
+  host stays routed. An id the path names stays: a rule per mock deal keeps telling its deals
+  apart. Generalize the rule made from the **device's** request, not the browser's: the
+  browser's path carries the proxy prefix, which the device's path does not.
 - **A new rule is enabled and answers matching requests at once**, for every device and app. Pass
   `--disabled` unless the user asked for the override to take effect now, and say which pattern
   it matches when you report it.

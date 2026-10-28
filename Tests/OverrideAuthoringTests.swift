@@ -253,4 +253,32 @@ final class OverrideAuthoringTests: XCTestCase {
         let other = OverrideMatching.facts(url: "https://a.com/v1/state?locale=fr&extra=9")!
         XCTAssertNotNil(set.firstMatch(facts: other, method: "GET", deviceID: nil, appID: nil))
     }
+    /// A rule put on any base URL still routes the device's host through the Mac, keeps the id
+    /// its path names, and answers the same endpoint behind the portal's dev proxy as well.
+    func test_ruleOnAnyBaseURLKeepsItsRoutedHostAndPathAndMatchesTheDevProxy() {
+        var txn = NetworkTransaction(method: "GET",
+                                     url: "https://private-api.teya.xyz/lending/v1/companies/42/deals?x=1",
+                                     host: "private-api.teya.xyz", scheme: "https")
+        txn.statusCode = 200
+        let rule = OverrideSeeding.onAnyBaseURL(OverrideSeeding.rule(for: txn, responseBody: Data()))
+
+        XCTAssertEqual(rule.matcher.pattern, "**/lending/v1/companies/42/deals")
+        XCTAssertEqual(rule.routedHosts, ["private-api.teya.xyz"])
+
+        let set = OverrideCompiler.compile([rule], masterEnabled: true)
+        for url in [txn.url, "http://localhost:3000/private-api/lending/v1/companies/42/deals"] {
+            XCTAssertNotNil(set.firstMatch(facts: OverrideMatching.facts(url: url)!, method: "GET",
+                                           deviceID: nil, appID: nil), url)
+        }
+        XCTAssertNil(set.firstMatch(facts: OverrideMatching.facts(url: "http://localhost:3000/private-api/lending/v1/companies/7/deals")!,
+                                    method: "GET", deviceID: nil, appID: nil), "the company id it names is kept")
+        XCTAssertEqual(set.routedHosts(deviceID: nil, appID: nil), ["private-api.teya.xyz"])
+    }
+
+    func test_anyBaseURLTwiceChangesNothing() {
+        var txn = NetworkTransaction(method: "GET", url: "https://a.com/v1/users/12", host: "a.com", scheme: "https")
+        txn.statusCode = 200
+        let once = OverrideSeeding.onAnyBaseURL(OverrideSeeding.rule(for: txn, responseBody: Data()))
+        XCTAssertEqual(OverrideSeeding.onAnyBaseURL(once), once)
+    }
 }

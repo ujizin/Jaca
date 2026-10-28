@@ -182,8 +182,16 @@ score, so the winner is always visible. The editor's live preview counts how man
 requests a pattern matches and how many are *shadowed* by an earlier rule, with a one-click
 "Move this rule up".
 
-**Generalize** rewrites UUID-shaped and numeric path segments to `*`, which is how you get from
-one company's `product-state` to every company's without learning glob syntax first.
+**Generalize** rewrites UUID-shaped and numeric path segments to `*` and the base URL to `**`,
+which is how you get from one company's `product-state` on the staging gateway to every
+company's on any base URL without learning glob syntax first. Because `**` crosses `/`, the
+same rule answers the endpoint behind a dev server's proxy prefix too — the portal running on
+`http://localhost:3000/private-api/lending/…` matches a rule generalized from the device's
+`https://private-api.teya.xyz/lending/…`. Generalize from the device's capture, which carries no
+such prefix. The host the pattern named stays in the rule's routed hosts, so the device keeps
+routing it through the Mac. On the command line, `jaca overrides add --from … --generalize` and
+`jaca overrides generalize RULE` rewrite **only the base URL**: a path the rule names on purpose
+(one mock per deal id) is kept as written.
 
 ---
 

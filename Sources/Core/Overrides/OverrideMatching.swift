@@ -388,21 +388,37 @@ enum OverrideMatching {
 
     // MARK: - Generalize
 
-    /// Replaces UUID-shaped and all-digit path segments with `*`, so "this one company's
-    /// product-state" becomes "every company's" without learning glob syntax.
-    static func generalize(_ url: String) -> String {
-        guard let range = url.range(of: "://") else { return url }
-        let origin = String(url[url.startIndex..<range.upperBound])
-        let rest = String(url[range.upperBound...])
-        guard let slash = rest.firstIndex(of: "/") else { return url }
-        let host = String(rest[rest.startIndex..<slash])
-        let path = String(rest[slash...])
+    /// Replaces the base URL — scheme, host and port, or a bare host — with `**`, so the pattern
+    /// matches its path on any base URL.
+    ///
+    /// This is what lets one rule answer the same endpoint from a device
+    /// (`https://private-api.teya.xyz/lending/v1/…`) and from a browser running the portal
+    /// against its dev server (`http://localhost:3000/private-api/lending/v1/…`): `**` crosses
+    /// `/`, so it absorbs the scheme, the host, the port and the dev server's proxy prefix.
+    /// Rewrite the pattern captured from the **device**, which carries no such prefix.
+    ///
+    /// Idempotent: a pattern that already starts with `**` keeps it. The host the pattern named
+    /// is gone from the text, so callers that route a device through the Mac keep it in
+    /// `routedHosts` themselves (`OverrideSeeding.onAnyBaseURL`).
+    static func anyBaseURL(_ pattern: String) -> String {
+        var rest = pattern
+        if let range = rest.range(of: "://") { rest = String(rest[range.upperBound...]) }
+        guard let slash = rest.firstIndex(of: "/") else { return pattern }
+        return "**" + String(rest[slash...])
+    }
 
+    /// `anyBaseURL`, plus UUID-shaped and all-digit path segments replaced with `*`: the editor's
+    /// Generalize, which turns "this one company's product-state on the staging gateway" into
+    /// "every company's, on any base URL" without learning glob syntax.
+    static func generalize(_ url: String) -> String {
+        let pattern = anyBaseURL(url)
+        guard let slash = pattern.firstIndex(of: "/") else { return pattern }
+        let path = String(pattern[slash...])
         let segments = path.split(separator: "/", omittingEmptySubsequences: false).map { seg -> String in
             let s = String(seg)
             return isVariable(s) ? "*" : s
         }
-        return origin + host + segments.joined(separator: "/")
+        return String(pattern[pattern.startIndex..<slash]) + segments.joined(separator: "/")
     }
 
     /// A path segment that looks like an identifier rather than a route.

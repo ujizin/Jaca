@@ -192,13 +192,48 @@ final class OverrideMatchingTests: XCTestCase {
     func test_generalizeReplacesUUIDAndNumericSegments() {
         XCTAssertEqual(
             OverrideMatching.generalize("https://a.com/v1/companies/3F2504E0-4F89-11D3-9A0C-0305E82C3301/state"),
-            "https://a.com/v1/companies/*/state")
+            "**/v1/companies/*/state")
         XCTAssertEqual(OverrideMatching.generalize("https://a.com/users/12345/posts"),
-                       "https://a.com/users/*/posts")
+                       "**/users/*/posts")
     }
 
     func test_generalizeLeavesRouteSegmentsAlone() {
         XCTAssertEqual(OverrideMatching.generalize("https://a.com/lending/v1/product-state"),
-                       "https://a.com/lending/v1/product-state")
+                       "**/lending/v1/product-state")
+    }
+
+    /// The base URL goes too: scheme, host and port become `**`, and a pattern that already
+    /// starts with `**` is left as it is (the path is still generalized).
+    func test_generalizeDropsTheBaseURL() {
+        XCTAssertEqual(OverrideMatching.generalize("http://localhost:3000/v1/users/42"), "**/v1/users/*")
+        XCTAssertEqual(OverrideMatching.generalize("a.com/v1/state"), "**/v1/state")
+        XCTAssertEqual(OverrideMatching.generalize("**/v1/users/42"), "**/v1/users/*")
+        XCTAssertEqual(OverrideMatching.generalize("**/v1/state"), "**/v1/state", "idempotent")
+        XCTAssertEqual(OverrideMatching.generalize("https://a.com"), "https://a.com", "nothing to generalize")
+    }
+
+    /// The command line's rewrite: only the base URL changes, an id the pattern names stays.
+    func test_anyBaseURLKeepsThePathAsWritten() {
+        XCTAssertEqual(OverrideMatching.anyBaseURL("https://a.com/v1/companies/*/deals/c011ec71-0000-4000-a000-000000000001"),
+                       "**/v1/companies/*/deals/c011ec71-0000-4000-a000-000000000001")
+        XCTAssertEqual(OverrideMatching.anyBaseURL("http://localhost:3000/v1/users/42"), "**/v1/users/42")
+        XCTAssertEqual(OverrideMatching.anyBaseURL("**/v1/users/42"), "**/v1/users/42", "idempotent")
+        XCTAssertEqual(OverrideMatching.anyBaseURL("https://a.com"), "https://a.com", "no path to keep")
+    }
+
+    /// Why the base URL is dropped: a rule made from the device's capture must also answer the
+    /// portal, whose dev server proxies the same endpoint under `localhost` and a path prefix.
+    func test_generalizedPatternMatchesTheSameEndpointOnAnyBaseURL() {
+        let device = "https://private-api.teya.xyz/lending/v1/companies/7c1f3c2e-2b1a-4c2d-9e1f-0a1b2c3d4e5f/deals"
+        let pattern = OverrideMatching.generalize(device)
+        XCTAssertEqual(pattern, "**/lending/v1/companies/*/deals")
+
+        let program = try! OverrideMatching.compileGlob(pattern).get()
+        let compiled = CompiledRule(rule: OverrideRule(matcher: OverrideMatcher(pattern: pattern)), program: program, regex: nil)
+        let portal = "http://localhost:3000/private-api/lending/v1/companies/0f0e0d0c-0b0a-4908-8706-050403020100/deals?page=1"
+        XCTAssertTrue(OverrideMatching.matches(compiled, OverrideMatching.facts(url: device)!, method: "GET"))
+        XCTAssertTrue(OverrideMatching.matches(compiled, OverrideMatching.facts(url: portal)!, method: "GET"))
+        XCTAssertFalse(OverrideMatching.matches(compiled, OverrideMatching.facts(url: "https://private-api.teya.xyz/lending/v1/deals")!,
+                                                method: "GET"), "still anchored on the path")
     }
 }

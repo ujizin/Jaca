@@ -20,7 +20,8 @@ enum CLICommand: Equatable {
     case netRequests(session: String?, host: String?, status: [NetworkStatusRange], method: String?, failed: Bool, count: Int?)
     case netShow(request: String)
     case overridesList
-    case overridesAdd(from: String, name: String?, statusCode: Int?, bodyFile: String?, disabled: Bool)
+    case overridesAdd(from: String, name: String?, statusCode: Int?, bodyFile: String?, disabled: Bool, generalize: Bool)
+    case overridesGeneralize(rule: String)
     case overridesSetEnabled(rule: String, enabled: Bool)
     case overridesRemove(rule: String)
     /// `--help`: usage, then the daemon methods behind the commands under `path`.
@@ -53,8 +54,9 @@ enum CLIUsage {
         Entry(path: ["net", "show"], arguments: "REQUEST", methods: ["network.transaction"]),
         Entry(path: ["overrides", "list"], arguments: "", methods: ["overrides.state"]),
         Entry(path: ["overrides", "add"],
-              arguments: "--from REQUEST [--name NAME] [--status CODE] [--body-file PATH] [--disabled]",
+              arguments: "--from REQUEST [--name NAME] [--status CODE] [--body-file PATH] [--disabled] [--generalize]",
               methods: ["overrides.createFromTransaction"]),
+        Entry(path: ["overrides", "generalize"], arguments: "RULE", methods: ["overrides.save"]),
         Entry(path: ["overrides", "enable"], arguments: "RULE", methods: ["overrides.setEnabled"]),
         Entry(path: ["overrides", "disable"], arguments: "RULE", methods: ["overrides.setEnabled"]),
         Entry(path: ["overrides", "rm"], arguments: "RULE", methods: ["overrides.remove"]),
@@ -179,7 +181,8 @@ enum CLIParser {
             guard scan(arguments, positionals: 0) != nil else { return nil }
             return .overridesList
         case ["overrides", "add"]:
-            guard let a = scan(arguments, valued: ["--from", "--name", "--status", "--body-file"], flags: ["--disabled"], positionals: 0),
+            guard let a = scan(arguments, valued: ["--from", "--name", "--status", "--body-file"],
+                               flags: ["--disabled", "--generalize"], positionals: 0),
                   let from = a.values["--from"], !from.isEmpty else { return nil }
             var statusCode: Int?
             if let text = a.values["--status"] {
@@ -187,7 +190,11 @@ enum CLIParser {
                 statusCode = code
             }
             return .overridesAdd(from: from, name: a.values["--name"], statusCode: statusCode,
-                                 bodyFile: a.values["--body-file"], disabled: a.flags.contains("--disabled"))
+                                 bodyFile: a.values["--body-file"], disabled: a.flags.contains("--disabled"),
+                                 generalize: a.flags.contains("--generalize"))
+        case ["overrides", "generalize"]:
+            guard let a = scan(arguments, positionals: 1), let rule = a.positionals.first else { return nil }
+            return .overridesGeneralize(rule: rule)
         case ["overrides", "enable"], ["overrides", "disable"]:
             guard let a = scan(arguments, positionals: 1), let rule = a.positionals.first else { return nil }
             return .overridesSetEnabled(rule: rule, enabled: path[1] == "enable")

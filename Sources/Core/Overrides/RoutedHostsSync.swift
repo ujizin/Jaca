@@ -33,6 +33,14 @@ enum RoutedHostsSync {
         return State(hosts: [], isDerived: false)
     }
 
+    /// After Generalize rewrote the pattern's base URL to `**`. The pattern no longer names a
+    /// host, but the one it named is still what the device must route: it is kept as if the user
+    /// had typed it, so a generalized rule saves without asking for hosts.
+    static func afterGeneralize(_ state: State, previousHost: String?) -> State {
+        guard state.hosts.isEmpty, let previousHost else { return state }
+        return State(hosts: [previousHost], isDerived: false)
+    }
+
     /// The user typed into the hosts field, so the set is theirs from now on.
     static func afterUserEdit(hosts: Set<String>) -> State {
         State(hosts: hosts, isDerived: false)

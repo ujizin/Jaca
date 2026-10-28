@@ -260,8 +260,13 @@ struct OverrideEditorSheet: View {
                         LemonadeUi.Chip(label: "Generalize", selected: false, leadingIcon: .lightning,
                                         onChipClicked: {
                             withAnimation(.easeInOut(duration: 0.2)) {
+                                let host = OverrideMatching.literalHost(ofPattern: draft.matcher.pattern)
                                 draft.matcher.pattern = OverrideMatching.generalize(draft.matcher.pattern)
                                 syncRoutedHosts()
+                                let next = RoutedHostsSync.afterGeneralize(
+                                    .init(hosts: draft.routedHosts, isDerived: hostsDerived), previousHost: host)
+                                draft.routedHosts = next.hosts
+                                hostsDerived = next.isDerived
                             }
                         })
                         .transition(.opacity)

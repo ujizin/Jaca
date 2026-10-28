@@ -55,4 +55,14 @@ final class RoutedHostsSyncTests: XCTestCase {
         let regex = RoutedHostsSync.afterMatcherChange(glob, derived: OverrideCompiler.derivedRoutedHosts(for: matcher))
         XCTAssertTrue(regex.hosts.isEmpty)
     }
+    /// Generalize rewrites the base URL to `**`, which derives no host — but the host the pattern
+    /// named is still the one to route, so it is kept as if typed. Hosts already there stay.
+    func test_generalizeKeepsTheHostThePatternNamed() {
+        let emptied = RoutedHostsSync.State(hosts: [], isDerived: false)
+        XCTAssertEqual(RoutedHostsSync.afterGeneralize(emptied, previousHost: "api.example.com"),
+                       .init(hosts: ["api.example.com"], isDerived: false))
+        XCTAssertEqual(RoutedHostsSync.afterGeneralize(emptied, previousHost: nil), emptied)
+        let typed = RoutedHostsSync.State(hosts: ["other.example.com"], isDerived: false)
+        XCTAssertEqual(RoutedHostsSync.afterGeneralize(typed, previousHost: "api.example.com"), typed)
+    }
 }

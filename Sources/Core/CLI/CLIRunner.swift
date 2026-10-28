@@ -78,11 +78,12 @@ struct CLIRunner {
             }
             return 0
 
-        case .overridesAdd(let from, let name, let statusCode, let bodyFile, let disabled):
+        case .overridesAdd(let from, let name, let statusCode, let bodyFile, let disabled, let generalize):
             let body = try bodyFile.map(readFile)
             guard let row = try await pickRequest(from) else { return 1 }
             let params = OverridesArea.FromTransactionParams(id: row.session, transaction: row.id, name: name,
-                                                             statusCode: statusCode, body: body, enabled: disabled ? false : nil)
+                                                             statusCode: statusCode, body: body, enabled: disabled ? false : nil,
+                                                             anyBaseURL: generalize ? true : nil)
             guard let created = try await client.call("overrides.createFromTransaction", params, as: OverridesArea.Created?.self) else {
                 // The capture closed or was cleared after the request was found.
                 printRows([NetworkArea.Row](), to: err)
@@ -90,6 +91,15 @@ struct CLIRunner {
             }
             if let warning = created.warning { fail(warning) }
             printRows([CLIRule(created.rule, hitCount: 0)])
+            return 0
+
+        case .overridesGeneralize(let rule):
+            guard let picked = pickRule(rule, from: try await overridesState()) else { return 1 }
+            let rewritten = OverrideSeeding.onAnyBaseURL(picked.rule)
+            let _: RPCEmpty = try await client.call("overrides.save", OverridesArea.RuleParams(rule: rewritten))
+            // As the daemon holds it now.
+            let rules = CLIOverrides(try await overridesState()).rules
+            printRows(rules.filter { $0.id == picked.id })
             return 0
 
         case .overridesSetEnabled(let rule, let enabled):

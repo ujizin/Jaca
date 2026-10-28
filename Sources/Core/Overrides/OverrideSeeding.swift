@@ -38,6 +38,20 @@ enum OverrideSeeding {
         return rule
     }
 
+    /// The rule's path on any base URL (`OverrideMatching.anyBaseURL`). The path is kept as it
+    /// was written: an id a rule names on purpose — one mock deal per id — stays. The base URL
+    /// leaves the pattern, so the host it named stays in `routedHosts`: the device still sends
+    /// that host through the Mac, and the rule now also answers the path on any other base URL.
+    static func onAnyBaseURL(_ rule: OverrideRule) -> OverrideRule {
+        var rewritten = rule
+        let host = OverrideMatching.literalHost(ofPattern: rule.matcher.pattern)
+        rewritten.matcher.pattern = OverrideMatching.anyBaseURL(rule.matcher.pattern)
+        if rewritten.routedHosts.isEmpty, let host {
+            rewritten.routedHosts = [host]
+        }
+        return rewritten
+    }
+
     /// Response headers worth copying: everything except the framing headers Jaca recomputes and
     /// its own internal markers.
     static func headers(_ headers: [HeaderPair]) -> [HeaderPair] {
