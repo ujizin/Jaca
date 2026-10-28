@@ -146,7 +146,7 @@ struct OverridesToolbarButton: View {
         let capabilities = session.activeInterceptCapabilities
         let transport = session.interceptTransport
         let honourable = overrides.rules.filter { rule in
-            guard rule.enabled else { return false }
+            guard overrides.isActive(rule) else { return false }
             let compiled = CompiledRule(rule: rule, program: nil, regex: nil)
             let (_, skip) = OverrideMatching.decide(compiled, transport: transport,
                                                     capabilities: capabilities,

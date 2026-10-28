@@ -47,6 +47,13 @@ final class CLIParserTests: XCTestCase {
         XCTAssertEqual(parse("overrides enable Stub").command, .overridesSetEnabled(rule: "Stub", enabled: true))
         XCTAssertEqual(parse("overrides disable 9c").command, .overridesSetEnabled(rule: "9c", enabled: false))
         XCTAssertEqual(parse("overrides rm 9c").command, .overridesRemove(rule: "9c"))
+        XCTAssertEqual(parse("overrides groups").command, .overridesGroups)
+        XCTAssertEqual(parse("overrides mkgroup Deals").command, .overridesNewGroup(name: "Deals"))
+        XCTAssertEqual(parse("overrides rmgroup Deals").command, .overridesRemoveGroup(group: "Deals"))
+        XCTAssertEqual(parse("overrides enable --group Deals").command, .overridesSetGroupEnabled(group: "Deals", enabled: true))
+        XCTAssertEqual(parse("overrides disable --group=Deals").command, .overridesSetGroupEnabled(group: "Deals", enabled: false))
+        XCTAssertEqual(parse("overrides group 9c Deals").command, .overridesSetGroup(rule: "9c", group: "Deals"))
+        XCTAssertEqual(parse("overrides ungroup 9c").command, .overridesSetGroup(rule: "9c", group: nil))
     }
 
     /// A value with spaces arrives as one argument; a name that starts with a dash goes after `--`.
@@ -100,6 +107,9 @@ final class CLIParserTests: XCTestCase {
             ("overrides add --from x --status 99", ["overrides", "add"]), ("overrides add x", ["overrides", "add"]),
             ("overrides enable", ["overrides", "enable"]), ("overrides rm", ["overrides", "rm"]),
             ("overrides generalize", ["overrides", "generalize"]),
+            ("overrides enable 9c --group Deals", ["overrides", "enable"]), ("overrides mkgroup", ["overrides", "mkgroup"]),
+            ("overrides group 9c", ["overrides", "group"]), ("overrides ungroup", ["overrides", "ungroup"]),
+            ("overrides groups x", ["overrides", "groups"]),
         ]
         for (line, path) in bad {
             XCTAssertEqual(parse(line).command, .usage(path: path), line)
@@ -151,6 +161,7 @@ final class CLIParserTests: XCTestCase {
                        "usage: jaca net show REQUEST\n       jaca ... [--json] [--raw] [--no-spawn] [--help]")
         XCTAssertEqual(CLIUsage.methods(under: ["overrides"]),
                        ["overrides.state", "overrides.createFromTransaction", "overrides.save",
-                        "overrides.setEnabled", "overrides.remove"])
+                        "overrides.setEnabled", "overrides.saveGroup", "overrides.remove",
+                        "overrides.removeGroup", "overrides.setGroup"])
     }
 }

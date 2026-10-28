@@ -116,6 +116,45 @@ struct CLIRunner {
             printRows([picked])
             return 0
 
+        case .overridesGroups:
+            printRows(CLIOverrides(try await overridesState()).groups)
+            return 0
+
+        case .overridesNewGroup(let name):
+            let group = OverrideGroup(name: name)
+            let _: RPCEmpty = try await client.call("overrides.saveGroup", OverridesArea.GroupParams(group: group))
+            // As the daemon holds it now.
+            printRows(CLIOverrides(try await overridesState()).groups.filter { $0.id == group.id })
+            return 0
+
+        case .overridesRemoveGroup(let group):
+            let state = try await overridesState()
+            guard let picked = pickGroup(group, from: state) else { return 1 }
+            let _: RPCEmpty = try await client.call("overrides.removeGroup", OverridesArea.IDParams(id: picked.id))
+            printRows([picked])
+            return 0
+
+        case .overridesSetGroupEnabled(let group, let enabled):
+            let state = try await overridesState()
+            guard let picked = pickGroup(group, from: state),
+                  var saved = state.groups.first(where: { $0.id == picked.id }) else { return 1 }
+            saved.enabled = enabled
+            let _: RPCEmpty = try await client.call("overrides.saveGroup", OverridesArea.GroupParams(group: saved))
+            printRows(CLIOverrides(try await overridesState()).groups.filter { $0.id == picked.id })
+            return 0
+
+        case .overridesSetGroup(let rule, let group):
+            let state = try await overridesState()
+            guard let pickedRule = pickRule(rule, from: state) else { return 1 }
+            var groupID: UUID?
+            if let group {
+                guard let picked = pickGroup(group, from: state) else { return 1 }
+                groupID = picked.id
+            }
+            let _: RPCEmpty = try await client.call("overrides.setGroup", OverridesArea.SetGroupParams(id: pickedRule.id, group: groupID))
+            printRows(CLIOverrides(try await overridesState()).rules.filter { $0.id == pickedRule.id })
+            return 0
+
         case .help(let path):
             return try await describe(CLIUsage.methods(under: path))
 
@@ -169,6 +208,10 @@ struct CLIRunner {
 
     private func pickRule(_ input: String, from state: OverridesState) -> CLIRule? {
         pick(input, from: CLIOverrides(state).rules, id: \.id.uuidString, names: { [$0.name] }, rows: { $0 }, missing: nil)
+    }
+
+    private func pickGroup(_ input: String, from state: OverridesState) -> CLIGroup? {
+        pick(input, from: CLIOverrides(state).groups, id: \.id.uuidString, names: { [$0.name] }, rows: { $0 }, missing: nil)
     }
 
     /// The request whose id starts with `input`, looked up in every open capture.

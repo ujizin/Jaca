@@ -8,7 +8,9 @@ struct OverridesState: Codable, Equatable, Sendable {
         var state: InterceptArmingState
     }
 
+    /// In display order, which is precedence (`OverrideGrouping`).
     var rules: [OverrideRule] = []
+    var groups: [OverrideGroup] = []
     var masterEnabled = true
     /// Keyed by rule id (`uuidString`); runtime only, never persisted.
     var hitCounts: [String: Int] = [:]
@@ -20,13 +22,14 @@ struct OverridesState: Codable, Equatable, Sendable {
 
 extension OverridesState {
     private enum CodingKeys: String, CodingKey {
-        case rules, masterEnabled, hitCounts, lastHitAt, armings, lastActivity, reclaimedTunnelCount
+        case rules, groups, masterEnabled, hitCounts, lastHitAt, armings, lastActivity, reclaimedTunnelCount
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             rules: CloudPersistence.decodeArrayField(OverrideRule.self, in: c, forKey: .rules),
+            groups: CloudPersistence.decodeArrayField(OverrideGroup.self, in: c, forKey: .groups),
             masterEnabled: (try? c.decodeIfPresent(Bool.self, forKey: .masterEnabled)) ?? true,
             hitCounts: (try? c.decodeIfPresent([String: Int].self, forKey: .hitCounts)) ?? [:],
             lastHitAt: (try? c.decodeIfPresent([String: Date].self, forKey: .lastHitAt)) ?? [:],
@@ -64,18 +67,19 @@ final class OverridesEngine {
 
     init() {
         // Synchronous so the first frame already has the user's rules — the cache-first rule.
-        if let rules = OverrideRuleStore.loadIfReadable() {
-            state.rules = rules
+        if let rules = OverrideRuleStore.loadIfReadable(), let groups = OverrideRuleStore.loadGroupsIfReadable() {
+            state.groups = groups
+            state.rules = OverrideGrouping.normalized(rules, groups: groups)
         } else {
             // Nothing in memory to fall back on: hold saves until the file reads again, so the
             // first edit doesn't replace the user's library with one rule.
             diskUnreadable = true
-            JacaLog.error("override", "\(OverrideRuleStore.rulesURL.path) isn't readable JSON; not saving over it")
+            JacaLog.error("override", "\(OverrideRuleStore.directory.path) has a file that isn't readable JSON; not saving over it")
         }
         state.masterEnabled = FeatureFlags.overridesMasterEnabled
         diskStamp = Self.diskModified
         JacaLog.info("override",
-            "loaded \(state.rules.count) rule(s) from \(OverrideRuleStore.rulesURL.path); master=\(state.masterEnabled)")
+            "loaded \(state.rules.count) rule(s) in \(state.groups.count) group(s) from \(OverrideRuleStore.rulesURL.path); master=\(state.masterEnabled)")
         republish()
     }
 
@@ -83,11 +87,12 @@ final class OverridesEngine {
     /// there, and hands the runtime back to this engine.
     func reload() {
         diskStamp = Self.diskModified
-        if let rules = OverrideRuleStore.loadIfReadable() {
-            state.rules = rules
+        if let rules = OverrideRuleStore.loadIfReadable(), let groups = OverrideRuleStore.loadGroupsIfReadable() {
+            state.groups = groups
+            state.rules = OverrideGrouping.normalized(rules, groups: groups)
             diskUnreadable = false
         } else {
-            JacaLog.error("override", "\(OverrideRuleStore.rulesURL.path) isn't readable JSON; keeping the \(state.rules.count) rule(s) in memory")
+            JacaLog.error("override", "\(OverrideRuleStore.directory.path) has a file that isn't readable JSON; keeping the \(state.rules.count) rule(s) in memory")
         }
         state.masterEnabled = FeatureFlags.overridesMasterEnabled
         republish()
@@ -224,6 +229,7 @@ final class OverridesEngine {
             }
             state.rules.append(newRule)
         }
+        state.rules = OverrideGrouping.normalized(state.rules, groups: state.groups)
         persistAndRepublish()
     }
 
@@ -249,19 +255,70 @@ final class OverridesEngine {
                                 name: source.name.isEmpty ? "Copy" : "\(source.name) copy",
                                 enabled: true, matcher: source.matcher, scope: source.scope,
                                 action: source.action, delayMillis: source.delayMillis,
-                                routedHosts: source.routedHosts)
+                                routedHosts: source.routedHosts, groupID: source.groupID)
         state.rules.append(copy)
+        state.rules = OverrideGrouping.normalized(state.rules, groups: state.groups)
         persistAndRepublish()
     }
 
-    /// Precedence is list order, so moving a rule up is how the user resolves shadowing.
+    /// Precedence is list order, so moving a rule up is how the user resolves shadowing. A rule
+    /// moves only inside its own group; `setGroup` moves it to another.
     func move(_ id: UUID, by offset: Int) {
         syncFromDisk()
-        guard let index = state.rules.firstIndex(where: { $0.id == id }) else { return }
-        // `offset` can come off the wire: no overflow trap.
-        let (target, overflow) = index.addingReportingOverflow(offset)
-        guard !overflow, state.rules.indices.contains(target) else { return }
+        guard let index = state.rules.firstIndex(where: { $0.id == id }),
+              let target = OverrideGrouping.moveTarget(in: state.rules, groups: state.groups,
+                                                       index: index, offset: offset) else { return }
         state.rules.swapAt(index, target)
+        persistAndRepublish()
+    }
+
+    // MARK: - Groups
+
+    /// Adds a group at the end of the list, or replaces the one with its id (a rename, or its
+    /// switch).
+    func saveGroup(_ group: OverrideGroup) {
+        syncFromDisk()
+        if let index = state.groups.firstIndex(where: { $0.id == group.id }) {
+            state.groups[index] = group
+        } else {
+            state.groups.append(group)
+        }
+        state.rules = OverrideGrouping.normalized(state.rules, groups: state.groups)
+        persistAndRepublish()
+    }
+
+    /// Deletes a group. Its rules stay, in no group.
+    func removeGroup(_ id: UUID) {
+        syncFromDisk()
+        guard state.groups.contains(where: { $0.id == id }) else { return }
+        state.groups.removeAll { $0.id == id }
+        for index in state.rules.indices where state.rules[index].groupID == id {
+            state.rules[index].groupID = nil
+        }
+        state.rules = OverrideGrouping.normalized(state.rules, groups: state.groups)
+        persistAndRepublish()
+    }
+
+    /// Moves a group, and with it the precedence of all its rules.
+    func moveGroup(_ id: UUID, by offset: Int) {
+        syncFromDisk()
+        guard let index = state.groups.firstIndex(where: { $0.id == id }) else { return }
+        let (target, overflow) = index.addingReportingOverflow(offset)
+        guard !overflow, state.groups.indices.contains(target) else { return }
+        state.groups.swapAt(index, target)
+        state.rules = OverrideGrouping.normalized(state.rules, groups: state.groups)
+        persistAndRepublish()
+    }
+
+    /// Puts a rule at the end of a group, or (`groupID` nil, or a group that is gone) at the end
+    /// of the rules in no group.
+    func setGroup(_ groupID: UUID?, for id: UUID) {
+        syncFromDisk()
+        guard let index = state.rules.firstIndex(where: { $0.id == id }) else { return }
+        var rule = state.rules.remove(at: index)
+        rule.groupID = state.groups.contains { $0.id == groupID } ? groupID : nil
+        state.rules.append(rule)
+        state.rules = OverrideGrouping.normalized(state.rules, groups: state.groups)
         persistAndRepublish()
     }
 
@@ -286,11 +343,14 @@ final class OverridesEngine {
         state.lastActivity = "\(now.formatted(date: .omitted, time: .standard)) · applied \(name ?? "a rule")"
     }
 
-    /// Modification date of `rules.json` when this engine last read or wrote it.
-    private var diskStamp: Date?
+    /// Modification dates of `rules.json` and `groups.json` when this engine last read or wrote
+    /// them.
+    private var diskStamp: [Date?] = []
 
-    private static var diskModified: Date? {
-        try? FileManager.default.attributesOfItem(atPath: OverrideRuleStore.rulesURL.path)[.modificationDate] as? Date
+    private static var diskModified: [Date?] {
+        [OverrideRuleStore.rulesURL, OverrideRuleStore.groupsURL].map {
+            try? FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date
+        }
     }
 
     /// Re-reads the library when another process wrote it since (the app while network capture
@@ -315,15 +375,17 @@ final class OverridesEngine {
             republish()
             return
         }
-        let ok = OverrideRuleStore.save(state.rules)
-        JacaLog.info("override", "saved \(state.rules.count) rule(s) -> \(ok ? "ok" : "FAILED")")
+        // Groups first: a rule that names a group not yet on disk would read as in no group.
+        let groupsOK = OverrideRuleStore.saveGroups(state.groups)
+        let ok = OverrideRuleStore.save(state.rules) && groupsOK
+        JacaLog.info("override", "saved \(state.rules.count) rule(s), \(state.groups.count) group(s) -> \(ok ? "ok" : "FAILED")")
         republish()
     }
 
     /// Recompiles and pushes to the resolver and every armed transport — what makes an edit
     /// apply on the app's next request with no re-attach.
     private func republish() {
-        resolver.publish(OverrideCompiler.compile(state.rules, masterEnabled: state.masterEnabled))
+        resolver.publish(OverrideCompiler.compile(state.rules, masterEnabled: state.masterEnabled, groups: state.groups))
         for (target, list) in coordinators {
             let hosts = routedHosts(for: target)
             for entry in list { entry.coordinator.updateHosts(hosts) }

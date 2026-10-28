@@ -182,6 +182,13 @@ score, so the winner is always visible. The editor's live preview counts how man
 requests a pattern matches and how many are *shadowed* by an earlier rule, with a one-click
 "Move this rule up".
 
+**Groups** collect rules in folders. The popover shows each group as a row that opens to its
+rules. A group has its own switch: off, none of its rules apply, and each rule keeps its own
+switch for when the group is on again. The list order is still the precedence: the rules of each
+group in group order, then the rules in no group. A rule moves up or down inside its group, and
+"Move to group" moves it to another. Deleting a group keeps its rules, in no group. Groups are
+saved in `groups.json`, next to `rules.json`; a rule names its group with `groupID`.
+
 **Generalize** rewrites UUID-shaped and numeric path segments to `*` and the base URL to `**`,
 which is how you get from one company's `product-state` on the staging gateway to every
 company's on any base URL without learning glob syntax first. Because `**` crosses `/`, the

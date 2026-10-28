@@ -8,6 +8,9 @@ enum OverridesArea {
     struct EnabledParams: Codable, Sendable { var id: UUID; var enabled: Bool }
     struct MoveParams: Codable, Sendable { var id: UUID; var offset: Int }
     struct MasterParams: Codable, Sendable { var enabled: Bool }
+    struct GroupParams: Codable, Sendable { var group: OverrideGroup }
+    /// `group` absent: the rule leaves its group.
+    struct SetGroupParams: Codable, Sendable { var id: UUID; var group: UUID? }
     struct FromTransactionParams: Codable, Sendable {
         /// The capture, and the transaction in it.
         var id: UUID
@@ -68,9 +71,26 @@ enum OverridesArea {
                    takes: .object(["id": .uuid]), returns: .empty) { p, _ in
             await engine.duplicate(p.id); return RPCEmpty()
         }
-        r.register("overrides.move", "Moves a rule by an offset in the precedence order.", params: MoveParams.self,
+        r.register("overrides.move", "Moves a rule by an offset in the precedence order, inside its group.", params: MoveParams.self,
                    takes: .object(["id": .uuid, "offset": .integer]), returns: .empty) { p, _ in
             await engine.move(p.id, by: p.offset); return RPCEmpty()
+        }
+        r.register("overrides.saveGroup", "Adds a group at the end, or replaces one (by id).", params: GroupParams.self,
+                   takes: .object(["group": .overrideGroup]), returns: .empty) { p, _ in
+            await engine.saveGroup(p.group); return RPCEmpty()
+        }
+        r.register("overrides.removeGroup", "Deletes a group. Its rules stay, in no group.", params: IDParams.self,
+                   takes: .object(["id": .uuid]), returns: .empty) { p, _ in
+            await engine.removeGroup(p.id); return RPCEmpty()
+        }
+        r.register("overrides.moveGroup", "Moves a group, and its rules' precedence, by an offset.", params: MoveParams.self,
+                   takes: .object(["id": .uuid, "offset": .integer]), returns: .empty) { p, _ in
+            await engine.moveGroup(p.id, by: p.offset); return RPCEmpty()
+        }
+        r.register("overrides.setGroup", "Puts a rule at the end of a group; without group, in no group.",
+                   params: SetGroupParams.self,
+                   takes: .object(["id": .uuid], optional: ["group": .uuid]), returns: .empty) { p, _ in
+            await engine.setGroup(p.group, for: p.id); return RPCEmpty()
         }
         r.register("overrides.setMaster", "The master switch: apply every rule, or none.", params: MasterParams.self,
                    takes: .object(["enabled": .boolean]), returns: .empty) { p, _ in

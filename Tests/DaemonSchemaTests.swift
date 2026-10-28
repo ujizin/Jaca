@@ -58,13 +58,15 @@ final class DaemonSchemaTests: XCTestCase {
          .active(port: 4321, hosts: ["api.example.com"]), .failed("boom")]
     }
 
+    private static let groupID = UUID()
+
     private var rules: [OverrideRule] {
         let bodies: [OverrideBodyRef] = [.none, .inline("{}"), .blob(filename: "a.bin"), .file(path: "/tmp/a.json", watch: true)]
         var all = bodies.map { body -> OverrideRule in
             OverrideRule(name: "Respond", matcher: OverrideMatcher(pattern: "https://a/*", kind: .regex, methods: ["GET"]),
                          scope: OverrideScope(deviceIDs: ["emu-1"], appIDs: ["com.x"]),
                          action: .respond(OverrideResponseSpec(statusCode: 418, headers: [HeaderPair(name: "A", value: "b")], body: body)),
-                         delayMillis: 20, routedHosts: ["a"])
+                         delayMillis: 20, routedHosts: ["a"], groupID: Self.groupID)
         }
         all.append(OverrideRule(action: .editResponse(ResponseEdit(statusCode: 500, headerMode: .replace,
                                                                   headers: [HeaderPair(name: "A", value: "b")],
@@ -135,6 +137,8 @@ final class DaemonSchemaTests: XCTestCase {
         state.armings = armingStates.map { .init(target: InterceptTarget(deviceID: "sim", package: "com.x"), state: $0) }
         state.lastActivity = "12:00 · applied Stub"
         state.reclaimedTunnelCount = 1
+        state.groups = [OverrideGroup(id: Self.groupID, name: "Deals", enabled: false)]
+        try assertDescribed(state.groups[0], by: .overrideGroup, "OverrideGroup")
         try assertDescribed(state, by: .overridesState, "OverridesState")
     }
 

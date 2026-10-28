@@ -42,11 +42,13 @@ struct OverrideRuleSet: Sendable {
 /// Turns the user's rule list into an `OverrideRuleSet`.
 enum OverrideCompiler {
 
-    static func compile(_ rules: [OverrideRule], masterEnabled: Bool) -> OverrideRuleSet {
+    /// A rule in a group that is off is left out, like a rule that is off itself.
+    static func compile(_ rules: [OverrideRule], masterEnabled: Bool,
+                        groups: [OverrideGroup] = []) -> OverrideRuleSet {
         var compiled: [CompiledRule] = []
         var diagnostics: [UUID: String] = [:]
 
-        for rule in rules where rule.enabled {
+        for rule in rules where OverrideGrouping.isActive(rule, groups: groups) {
             switch rule.matcher.kind {
             case .glob:
                 switch OverrideMatching.compileGlob(rule.matcher.pattern) {

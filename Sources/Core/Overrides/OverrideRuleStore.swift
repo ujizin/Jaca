@@ -6,6 +6,7 @@ import Foundation
 /// ```
 /// ~/.jaca/network-overrides/
 ///   rules.json        — the ordered rule list, hand-editable
+///   groups.json       — the ordered group list (`OverrideGroup`), absent until a group is made
 ///   bodies/<uuid>.bin — payloads too large to inline
 /// ```
 ///
@@ -25,6 +26,7 @@ struct OverrideRuleStore: Sendable {
     }
 
     static var rulesURL: URL { directory.appendingPathComponent("rules.json") }
+    static var groupsURL: URL { directory.appendingPathComponent("groups.json") }
     static var bodiesDirectory: URL { directory.appendingPathComponent("bodies", isDirectory: true) }
 
     /// Loads the rule library, or `[]` when nothing is saved. Synchronous by design: the model
@@ -45,6 +47,34 @@ struct OverrideRuleStore: Sendable {
         return CloudPersistence.decodeArray(OverrideRule.self, from: data, decoder: makeDecoder())
     }
 
+    /// The groups, or `[]` when none is saved. A file that isn't a JSON array also gives nil
+    /// from `loadGroupsIfReadable`, for the same reason as `loadIfReadable`.
+    static func loadGroups() -> [OverrideGroup] {
+        loadGroupsIfReadable() ?? []
+    }
+
+    static func loadGroupsIfReadable() -> [OverrideGroup]? {
+        guard FileManager.default.fileExists(atPath: groupsURL.path) else { return [] }
+        guard let data = try? Data(contentsOf: groupsURL) else { return nil }
+        if data.isEmpty { return [] }
+        guard (try? JSONSerialization.jsonObject(with: data)) is [Any] else { return nil }
+        return CloudPersistence.decodeArray(OverrideGroup.self, from: data, decoder: makeDecoder())
+    }
+
+    /// Writes the groups atomically. With no groups and no file, it writes nothing, so a library
+    /// that never used groups keeps its one file.
+    @discardableResult
+    static func saveGroups(_ groups: [OverrideGroup]) -> Bool {
+        if groups.isEmpty, !FileManager.default.fileExists(atPath: groupsURL.path) { return true }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try makeEncoder().encode(groups).write(to: groupsURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Must mirror `save`'s encoder exactly. It writes ISO-8601 dates to stay hand-editable, and
     /// decoding those numerically throws on **every** record — the library then loads empty and
     /// the next save wipes the file and every body blob with it.
@@ -54,15 +84,19 @@ struct OverrideRuleStore: Sendable {
         return decoder
     }
 
+    private static func makeEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }
+
     /// Writes the library atomically and garbage-collects orphaned body blobs.
     @discardableResult
     static func save(_ rules: [OverrideRule]) -> Bool {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(rules)
+            let data = try makeEncoder().encode(rules)
             try data.write(to: rulesURL, options: .atomic)
             collectGarbage(keeping: rules)
             return true

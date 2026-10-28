@@ -74,7 +74,17 @@ jaca overrides generalize "Orders down"                        # the same rewrit
 jaca overrides disable "Orders down"
 jaca overrides enable 9c41
 jaca overrides rm 9c41
+jaca overrides groups                                          # the groups, with their rule counts
+jaca overrides mkgroup "Deals"
+jaca overrides group 9c41 Deals                                # put a rule in a group
+jaca overrides ungroup 9c41
+jaca overrides disable --group Deals                           # every rule in it stops applying
+jaca overrides rmgroup Deals                                   # its rules stay, in no group
 ```
+
+- A **group** collects rules. A rule applies only when it and its group are both enabled; a rule
+  keeps its own `enabled` while its group is off. The list order is the precedence: the rules of
+  each group, in group order, then the rules in no group. `list` shows each rule's `group`.
 
 - `add --from REQUEST` makes a rule that matches the request's method and URL (query dropped) and
   answers with the captured status, headers and body. `--status`, `--body-file` (`-` reads stdin)

@@ -15,7 +15,9 @@ final class OverridesModel {
 
     // MARK: - State (mirrored from the engine)
 
+    /// In display order, which is precedence (`OverrideGrouping`).
     private(set) var rules: [OverrideRule] = []
+    private(set) var groups: [OverrideGroup] = []
 
     /// Applies every rule, or none — for "let me see the real thing for a second".
     var masterEnabled: Bool = true {
@@ -37,6 +39,10 @@ final class OverridesModel {
 
     /// The compiled snapshot, for match previews and shadow detection in the editor.
     private(set) var compiled = OverrideRuleSet.empty
+
+    /// Groups the list shows open. View state for this run only: kept here so a group stays
+    /// open when the popover closes and opens again, and never saved.
+    var expandedGroups: Set<UUID> = []
 
     // MARK: - Plumbing
 
@@ -84,7 +90,8 @@ final class OverridesModel {
     private func watchDaemon() {
         // First frame from disk (read-only); the daemon's retained state follows.
         var initial = OverridesState()
-        initial.rules = OverrideRuleStore.load()
+        initial.groups = OverrideRuleStore.loadGroups()
+        initial.rules = OverrideGrouping.normalized(OverrideRuleStore.load(), groups: initial.groups)
         initial.masterEnabled = FeatureFlags.overridesMasterEnabled
         apply(initial)
         // On every (re)connection: the app may have edited the library in-process meanwhile (the
@@ -117,8 +124,9 @@ final class OverridesModel {
     private func apply(_ state: OverridesState) {
         applyingState = true
         defer { applyingState = false }
-        let rulesChanged = rules != state.rules || masterEnabled != state.masterEnabled
+        let rulesChanged = rules != state.rules || groups != state.groups || masterEnabled != state.masterEnabled
         rules = state.rules
+        groups = state.groups
         masterEnabled = state.masterEnabled
         hitCounts = Dictionary(uniqueKeysWithValues: state.hitCounts.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
         lastHitAt = Dictionary(uniqueKeysWithValues: state.lastHitAt.compactMap { k, v in UUID(uuidString: k).map { ($0, v) } })
@@ -128,7 +136,7 @@ final class OverridesModel {
         // Compiled here from the rules (a pure function) rather than read from the engine: the
         // engine reports a change before it republishes its resolver.
         if rulesChanged || !compiledOnce {
-            compiled = OverrideCompiler.compile(rules, masterEnabled: masterEnabled)
+            compiled = OverrideCompiler.compile(rules, masterEnabled: masterEnabled, groups: groups)
             compiledOnce = true
         }
     }
@@ -166,7 +174,8 @@ final class OverridesModel {
             local(OverridesEngine())
             // The daemon re-reads the file on its next mutation; this mirror re-reads it now.
             var state = OverridesState()
-            state.rules = OverrideRuleStore.load()
+            state.groups = OverrideRuleStore.loadGroups()
+            state.rules = OverrideGrouping.normalized(OverrideRuleStore.load(), groups: state.groups)
             state.masterEnabled = FeatureFlags.overridesMasterEnabled
             self.apply(state)
         }
@@ -224,9 +233,42 @@ final class OverridesModel {
         send("overrides.move", OverridesArea.MoveParams(id: id, offset: offset)) { $0.move(id, by: offset) }
     }
 
+    // MARK: - Groups
+
+    /// Adds a group at the end of the list, or saves a rename or its switch.
+    func saveGroup(_ group: OverrideGroup) {
+        send("overrides.saveGroup", OverridesArea.GroupParams(group: group)) { $0.saveGroup(group) }
+    }
+
+    /// Deletes a group. Its rules stay, in no group.
+    func removeGroup(_ id: UUID) {
+        send("overrides.removeGroup", OverridesArea.IDParams(id: id)) { $0.removeGroup(id) }
+    }
+
+    func setEnabled(_ enabled: Bool, forGroup id: UUID) {
+        guard var group = groups.first(where: { $0.id == id }), group.enabled != enabled else { return }
+        group.enabled = enabled
+        saveGroup(group)
+    }
+
+    func moveGroup(_ id: UUID, by offset: Int) {
+        send("overrides.moveGroup", OverridesArea.MoveParams(id: id, offset: offset)) { $0.moveGroup(id, by: offset) }
+    }
+
+    /// Puts a rule at the end of a group, or (nil) in no group.
+    func setGroup(_ groupID: UUID?, for id: UUID) {
+        send("overrides.setGroup", OverridesArea.SetGroupParams(id: id, group: groupID)) { $0.setGroup(groupID, for: id) }
+    }
+
     // MARK: - Derived state the UI renders
 
-    var enabledCount: Int { rules.filter(\.enabled).count }
+    /// The groups and their rules, then the rules in no group: what the list shows.
+    var sections: [OverrideGrouping.Section] { OverrideGrouping.sections(rules, groups: groups) }
+
+    /// Whether the rule applies, master switch aside: it is on, and so is its group.
+    func isActive(_ rule: OverrideRule) -> Bool { OverrideGrouping.isActive(rule, groups: groups) }
+
+    var enabledCount: Int { rules.filter(isActive).count }
 
     func hitCount(for id: UUID) -> Int { hitCounts[id] ?? 0 }
 

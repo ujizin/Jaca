@@ -392,8 +392,8 @@ final class DaemonCLITests: XCTestCase {
         XCTAssertEqual(added.status, 0, added.printed.errText)
         let rule = try XCTUnwrap(overrides.state.rules.first)
         XCTAssertEqual(added.printed.outText, """
-        id        enabled  hitCount  action   statusCode  methods  pattern                            name
-        \(rule.id.uuidString.prefix(8))  true     0         respond  500         POST     https://api.example.com/v1/orders  POST orders
+        id        enabled  hitCount  action   statusCode  methods  group  pattern                            name
+        \(rule.id.uuidString.prefix(8))  true     0         respond  500         POST            https://api.example.com/v1/orders  POST orders
         """)
 
         let listed = try await run("overrides list")
@@ -435,7 +435,7 @@ final class DaemonCLITests: XCTestCase {
 
         let rules = try await run("overrides list --json")
         let listed = try XCTUnwrap(try json(rules.printed) as? [String: Any])
-        XCTAssertEqual(Set(listed.keys), ["masterEnabled", "rules"])
+        XCTAssertEqual(Set(listed.keys), ["masterEnabled", "groups", "rules"])
         XCTAssertEqual((listed["rules"] as? [[String: Any]])?.first?["id"] as? String, added[0]["id"] as? String)
     }
 
@@ -461,6 +461,41 @@ final class DaemonCLITests: XCTestCase {
         XCTAssertEqual(users.routedHosts, ["api.example.com"])
         XCTAssertTrue(rewritten.printed.outText.contains("**/v1/users"), rewritten.printed.outText)
         XCTAssertEqual(overrides.state.rules.count, 2, "generalize replaces the rule, it does not add one")
+    }
+
+    /// Groups from the command line: make one, put a rule in it, turn it off, list it, delete it.
+    func test_jaca_groups() async throws {
+        try await openCaptures()
+        let added = try await run("overrides add --from 3fa2b --name Orders")
+        XCTAssertEqual(added.status, 0)
+        let made = try await run("overrides mkgroup Deals --json")
+        XCTAssertEqual(made.status, 0, made.printed.errText)
+        XCTAssertEqual((try json(made.printed) as? [[String: Any]])?.first?["name"] as? String, "Deals")
+        let deals = try XCTUnwrap(overrides.state.groups.first)
+
+        let grouped = try await run("overrides group orders deals")
+        XCTAssertEqual(grouped.status, 0, grouped.printed.errText)
+        XCTAssertEqual(overrides.state.rules.first?.groupID, deals.id)
+        XCTAssertTrue(grouped.printed.outText.contains("Deals"), grouped.printed.outText)
+
+        let disabled = try await run("overrides disable --group deals")
+        XCTAssertEqual(disabled.status, 0)
+        XCTAssertEqual(overrides.state.groups.first?.enabled, false)
+        XCTAssertTrue(overrides.compiled.rules.isEmpty, "the group is off")
+
+        let listed = try await run("overrides groups --json")
+        let row = try XCTUnwrap((try json(listed.printed) as? [[String: Any]])?.first)
+        XCTAssertEqual(row["rules"] as? Int, 1)
+        XCTAssertEqual(row["enabled"] as? Bool, false)
+
+        let ungrouped = try await run("overrides ungroup orders")
+        XCTAssertEqual(ungrouped.status, 0)
+        XCTAssertNil(overrides.state.rules.first?.groupID)
+        let removed = try await run("overrides rmgroup deals")
+        XCTAssertEqual(removed.status, 0)
+        XCTAssertEqual(overrides.state.groups, [])
+        let missing = try await run("overrides group orders nope")
+        XCTAssertEqual(missing.status, 1, "no such group")
     }
 
     func test_jaca_rawShowsCredentials() async throws {

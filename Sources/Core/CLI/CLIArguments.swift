@@ -24,6 +24,12 @@ enum CLICommand: Equatable {
     case overridesGeneralize(rule: String)
     case overridesSetEnabled(rule: String, enabled: Bool)
     case overridesRemove(rule: String)
+    case overridesGroups
+    case overridesNewGroup(name: String)
+    case overridesRemoveGroup(group: String)
+    case overridesSetGroupEnabled(group: String, enabled: Bool)
+    /// `group` nil: `ungroup`.
+    case overridesSetGroup(rule: String, group: String?)
     /// `--help`: usage, then the daemon methods behind the commands under `path`.
     case help(path: [String])
     /// Arguments that don't parse: usage for the commands under `path`, exit status 2.
@@ -57,9 +63,16 @@ enum CLIUsage {
               arguments: "--from REQUEST [--name NAME] [--status CODE] [--body-file PATH] [--disabled] [--generalize]",
               methods: ["overrides.createFromTransaction"]),
         Entry(path: ["overrides", "generalize"], arguments: "RULE", methods: ["overrides.save"]),
-        Entry(path: ["overrides", "enable"], arguments: "RULE", methods: ["overrides.setEnabled"]),
-        Entry(path: ["overrides", "disable"], arguments: "RULE", methods: ["overrides.setEnabled"]),
+        Entry(path: ["overrides", "enable"], arguments: "RULE | --group GROUP",
+              methods: ["overrides.setEnabled", "overrides.saveGroup"]),
+        Entry(path: ["overrides", "disable"], arguments: "RULE | --group GROUP",
+              methods: ["overrides.setEnabled", "overrides.saveGroup"]),
         Entry(path: ["overrides", "rm"], arguments: "RULE", methods: ["overrides.remove"]),
+        Entry(path: ["overrides", "groups"], arguments: "", methods: ["overrides.state"]),
+        Entry(path: ["overrides", "mkgroup"], arguments: "NAME", methods: ["overrides.saveGroup"]),
+        Entry(path: ["overrides", "rmgroup"], arguments: "GROUP", methods: ["overrides.removeGroup"]),
+        Entry(path: ["overrides", "group"], arguments: "RULE GROUP", methods: ["overrides.setGroup"]),
+        Entry(path: ["overrides", "ungroup"], arguments: "RULE", methods: ["overrides.setGroup"]),
     ]
 
     /// The `jacad` client commands `jaca` also runs.
@@ -196,8 +209,29 @@ enum CLIParser {
             guard let a = scan(arguments, positionals: 1), let rule = a.positionals.first else { return nil }
             return .overridesGeneralize(rule: rule)
         case ["overrides", "enable"], ["overrides", "disable"]:
+            let enabled = path[1] == "enable"
+            guard let a = scan(arguments, valued: ["--group"], positionals: 1) else { return nil }
+            switch (a.positionals.first, a.values["--group"]) {
+            case (let rule?, nil): return .overridesSetEnabled(rule: rule, enabled: enabled)
+            case (nil, let group?): return .overridesSetGroupEnabled(group: group, enabled: enabled)
+            default: return nil
+            }
+        case ["overrides", "groups"]:
+            guard scan(arguments, positionals: 0) != nil else { return nil }
+            return .overridesGroups
+        case ["overrides", "mkgroup"]:
+            guard let a = scan(arguments, positionals: 1), let name = a.positionals.first,
+                  !name.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            return .overridesNewGroup(name: name)
+        case ["overrides", "rmgroup"]:
+            guard let a = scan(arguments, positionals: 1), let group = a.positionals.first else { return nil }
+            return .overridesRemoveGroup(group: group)
+        case ["overrides", "group"]:
+            guard let a = scan(arguments, positionals: 2), a.positionals.count == 2 else { return nil }
+            return .overridesSetGroup(rule: a.positionals[0], group: a.positionals[1])
+        case ["overrides", "ungroup"]:
             guard let a = scan(arguments, positionals: 1), let rule = a.positionals.first else { return nil }
-            return .overridesSetEnabled(rule: rule, enabled: path[1] == "enable")
+            return .overridesSetGroup(rule: rule, group: nil)
         case ["overrides", "rm"]:
             guard let a = scan(arguments, positionals: 1), let rule = a.positionals.first else { return nil }
             return .overridesRemove(rule: rule)

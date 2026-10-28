@@ -21,11 +21,13 @@ struct OverrideRule: Codable, Sendable, Identifiable, Hashable {
     /// companion transports, which are already on the wire.
     var routedHosts: Set<String> = []
     var createdAt: Date = Date()
+    /// The `OverrideGroup` the rule is in. Nil, or an id no group has, puts it in no group.
+    var groupID: UUID?
 
     init(id: UUID = UUID(), name: String = "", enabled: Bool = true,
          matcher: OverrideMatcher = .init(), scope: OverrideScope = .init(),
          action: OverrideActionSpec = .respond(.init()), delayMillis: Int = 0,
-         routedHosts: Set<String> = [], createdAt: Date = Date()) {
+         routedHosts: Set<String> = [], createdAt: Date = Date(), groupID: UUID? = nil) {
         self.id = id
         self.name = name
         self.enabled = enabled
@@ -35,12 +37,29 @@ struct OverrideRule: Codable, Sendable, Identifiable, Hashable {
         self.delayMillis = delayMillis
         self.routedHosts = routedHosts
         self.createdAt = createdAt
+        self.groupID = groupID
     }
 
     /// What the UI shows when the user hasn't named the rule.
     var displayName: String {
         if !name.isEmpty { return name }
         return matcher.pattern.isEmpty ? "Untitled override" : matcher.pattern
+    }
+}
+
+/// A folder of rules, saved to `~/.jaca/network-overrides/groups.json`. Turned off, none of its
+/// rules apply, and each rule keeps its own switch for when the group is turned on again.
+struct OverrideGroup: Codable, Sendable, Identifiable, Hashable {
+    let id: UUID
+    var name: String = ""
+    var enabled: Bool = true
+    var createdAt: Date = Date()
+
+    init(id: UUID = UUID(), name: String = "", enabled: Bool = true, createdAt: Date = Date()) {
+        self.id = id
+        self.name = name
+        self.enabled = enabled
+        self.createdAt = createdAt
     }
 }
 
@@ -156,7 +175,7 @@ enum OverrideBodyRef: Codable, Sendable, Hashable {
 
 extension OverrideRule {
     enum CodingKeys: String, CodingKey {
-        case id, name, enabled, matcher, scope, action, delayMillis, createdAt
+        case id, name, enabled, matcher, scope, action, delayMillis, createdAt, groupID
         // The property was renamed; the key on disk wasn't. Without the explicit raw value every
         // saved rule would decode with no hosts, and the next save would write that loss back.
         case routedHosts = "divertHosts"
@@ -175,6 +194,22 @@ extension OverrideRule {
         // ISO-8601 *or* numeric, so either strategy loads: `createdAt` is cosmetic and must
         // never be the reason a rule is dropped.
         createdAt   = OverrideRule.decodeDate(from: c) ?? Date()
+        groupID     = try? c.decodeIfPresent(UUID.self, forKey: .groupID)
+    }
+}
+
+extension OverrideGroup {
+    enum CodingKeys: String, CodingKey { case id, name, enabled, createdAt }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id        = try c.decode(UUID.self, forKey: .id)
+        name      = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+        enabled   = (try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? true
+        // Like the rule's: either date strategy loads, and a bad date never drops the group.
+        createdAt = (try? c.decodeIfPresent(Date.self, forKey: .createdAt))
+            ?? (try? c.decodeIfPresent(String.self, forKey: .createdAt)).flatMap { ISO8601DateFormatter().date(from: $0) }
+            ?? Date()
     }
 }
 

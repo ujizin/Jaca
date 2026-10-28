@@ -281,10 +281,12 @@ struct CLIRule: CLIRow, Equatable {
     /// The status the rule answers with, when it sets one.
     var statusCode: Int?
     var hitCount: Int
+    /// The name of the group the rule is in.
+    var group: String?
     /// The rule as the daemon holds it.
     var rule: OverrideRule
 
-    init(_ rule: OverrideRule, hitCount: Int) {
+    init(_ rule: OverrideRule, hitCount: Int, group: OverrideGroup? = nil) {
         id = rule.id
         name = rule.name
         enabled = rule.enabled
@@ -301,22 +303,48 @@ struct CLIRule: CLIRow, Equatable {
             action = "mapRemote"
         }
         self.hitCount = hitCount
+        self.group = group?.name
         self.rule = rule
     }
 
-    static let header = ["id", "enabled", "hitCount", "action", "statusCode", "methods", "pattern", "name"]
+    static let header = ["id", "enabled", "hitCount", "action", "statusCode", "methods", "group", "pattern", "name"]
     var cells: [String] {
         [CLITable.short(id), String(enabled), String(hitCount), action, CLITable.cell(statusCode),
-         methods.joined(separator: ","), pattern, name]
+         methods.joined(separator: ","), group ?? "", pattern, name]
     }
+}
+
+struct CLIGroup: CLIRow, Equatable {
+    var id: UUID
+    var name: String
+    var enabled: Bool
+    /// How many rules are in the group.
+    var rules: Int
+
+    init(_ group: OverrideGroup, rules: Int) {
+        id = group.id
+        name = group.name
+        enabled = group.enabled
+        self.rules = rules
+    }
+
+    static let header = ["id", "enabled", "rules", "name"]
+    var cells: [String] { [CLITable.short(id), String(enabled), String(rules), name] }
 }
 
 struct CLIOverrides: Encodable, Equatable {
     var masterEnabled: Bool
+    var groups: [CLIGroup]
     var rules: [CLIRule]
 
     init(_ state: OverridesState) {
         masterEnabled = state.masterEnabled
-        rules = state.rules.map { CLIRule($0, hitCount: state.hitCounts[$0.id.uuidString] ?? 0) }
+        groups = OverrideGrouping.sections(state.rules, groups: state.groups).compactMap { section in
+            section.group.map { CLIGroup($0, rules: section.rules.count) }
+        }
+        rules = state.rules.map {
+            CLIRule($0, hitCount: state.hitCounts[$0.id.uuidString] ?? 0,
+                    group: OverrideGrouping.group(of: $0, in: state.groups))
+        }
     }
 }

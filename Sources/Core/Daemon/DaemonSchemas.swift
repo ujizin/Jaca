@@ -118,10 +118,16 @@ extension DaemonSchema {
         // The key `routedHosts` is saved under.
         "divertHosts": DaemonSchema.array(.string).titled("routedHosts"),
         "createdAt": .date,
+        "groupID": .uuid,
+    ])
+
+    static let overrideGroup = DaemonSchema.object(["id": .uuid], optional: [
+        "name": .string, "enabled": .boolean, "createdAt": .date,
     ])
 
     static let overridesState = DaemonSchema.object(optional: [
         "rules": .array(.overrideRule),
+        "groups": .array(.overrideGroup),
         "masterEnabled": .boolean,
         "hitCounts": .map(.integer),
         "lastHitAt": .map(.date),
