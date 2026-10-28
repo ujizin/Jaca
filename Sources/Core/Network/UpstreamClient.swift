@@ -30,12 +30,43 @@ final class UpstreamClient: @unchecked Sendable {
         config.httpShouldUsePipelining = false
         config.connectionProxyDictionary = [:]   // go direct; never recurse through a system proxy
         config.timeoutIntervalForRequest = 60
+        // The client keeps its own cookies and sends them in the request. A jar here would add
+        // cookies the client never sent and keep ones it deleted.
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        config.httpCookieStorage = nil
         session = URLSession(configuration: config)
     }
 
     /// Lets the connection pool and its threads go once the capture session that owns this client
     /// does. Reachable now only because the session has no delegate to retain us.
     deinit { session.finishTasksAndInvalidate() }
+
+    /// The cookies of a Set-Cookie value URLSession joined with ", ". A comma starts a new
+    /// cookie only before a `name=`; the one in an `Expires` date ("Wed, 28 Oct …") doesn't.
+    static func splitSetCookie(_ joined: String) -> [String] {
+        var cookies: [String] = []
+        var current = ""
+        var rest = Substring(joined)
+        while let comma = rest.firstIndex(of: ",") {
+            let after = rest[rest.index(after: comma)...]
+            let next = after.drop { $0 == " " }
+            let name = next.prefix { $0 != "=" && $0 != ";" && $0 != "," && $0 != " " }
+            current += rest[..<comma]
+            if !name.isEmpty, next.dropFirst(name.count).first == "=" {
+                cookies.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+                rest = next
+            } else {
+                current += ","
+                rest = after
+            }
+        }
+        current += rest
+        let last = current.trimmingCharacters(in: .whitespaces)
+        if !last.isEmpty { cookies.append(last) }
+        return cookies
+    }
 
     func send(_ request: URLRequest) async -> Response {
         // Per task, so its lifetime is the request's — there is no dictionary to prune and no
@@ -44,9 +75,12 @@ final class UpstreamClient: @unchecked Sendable {
         do {
             let (data, response) = try await session.data(for: request, delegate: observer)
             let http = response as? HTTPURLResponse
-            let headers: [(String, String)] = (http?.allHeaderFields ?? [:]).compactMap { key, value in
-                guard let k = key as? String else { return nil }
-                return (k, "\(value)")
+            let headers: [(String, String)] = (http?.allHeaderFields ?? [:]).flatMap { key, value -> [(String, String)] in
+                guard let k = key as? String else { return [] }
+                // URLSession joins repeated headers with ", ". Joined Set-Cookie lines are one
+                // cookie to the client, so a login loses its session; send them apart again.
+                guard k.caseInsensitiveCompare("Set-Cookie") == .orderedSame else { return [(k, "\(value)")] }
+                return Self.splitSetCookie("\(value)").map { (k, $0) }
             }
             let metric = observer.lastTransactionMetric()
             return Response(

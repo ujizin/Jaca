@@ -72,6 +72,13 @@ echo "✓ built: $APP"
 # --- 3. Install (optional) -------------------------------------------------
 if [ "$DO_INSTALL" = 1 ]; then
   step "Installing to /Applications"
+  # A running Jaca keeps the old build in memory, and `open` below would only bring it to the
+  # front, so quit it first. The new app then replaces the older jacad when it connects.
+  if pgrep -xq Jaca; then
+    osascript -e 'tell application id "dev.srsouza.Jaca" to quit' >/dev/null 2>&1 || true
+    for _ in $(seq 1 40); do pgrep -xq Jaca || break; sleep 0.25; done
+    pgrep -xq Jaca && echo "⚠️  Jaca is still running; the old build stays open until you quit it."
+  fi
   rm -rf /Applications/Jaca.app
   cp -R "$APP" /Applications/Jaca.app
   APP=/Applications/Jaca.app
