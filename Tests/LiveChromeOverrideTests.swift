@@ -8,7 +8,8 @@ final class LiveChromeOverrideTests: XCTestCase {
     private struct PageRule: InterceptResolving {
         func resolve(_ request: InterceptedRequest,
                      capabilities: InterceptCapabilities) -> (InterceptDecision, InterceptSkipReason?) {
-            guard request.url == "https://override.jaca.test/" else { return (.proceed, .noRuleMatched) }
+            guard request.url == "https://override.jaca.test/" || request.url == "http://localhost:3999/"
+        else { return (.proceed, .noRuleMatched) }
             return (InterceptDecision(action: .respond(InterceptedResponse(
                 statusCode: 200, headers: [HeaderPair(name: "Content-Type", value: "text/html")],
                 body: Data("<html><body><p id=x>overridden by jaca</p></body></html>".utf8))), ruleID: UUID()), nil)
@@ -22,6 +23,17 @@ final class LiveChromeOverrideTests: XCTestCase {
     }
 
     func test_chromeLoadsTheOverriddenPageThroughTheProxy() throws {
+        try XCTAssertTrue(dump("https://override.jaca.test/").contains("overridden by jaca"))
+    }
+
+    /// Chrome never proxies localhost by default; `<-loopback>` sends it to Jaca too. Nothing
+    /// listens on the port, so only the rule can answer.
+    func test_chromeSendsLocalhostThroughTheProxy() throws {
+        try XCTAssertTrue(dump("http://localhost:3999/").contains("overridden by jaca"))
+    }
+
+    /// The page Chrome renders for `url` through a proxy with `PageRule`.
+    private func dump(_ url: String) throws -> String {
         guard let app = ChromeBrowser.appURL() else { throw XCTSkip("Google Chrome isn't installed") }
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("jaca-live-chrome-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -35,7 +47,7 @@ final class LiveChromeOverrideTests: XCTestCase {
         chrome.executableURL = ChromeBrowser.executable(in: app)
         chrome.arguments = ChromeBrowser.arguments(proxyPort: proxy.boundPort, spkiHash: ca.rootSPKIHash,
                                                    profile: dir.appendingPathComponent("profile"))
-            + ["--headless=new", "--disable-gpu", "--dump-dom", "https://override.jaca.test/"]
+            + ["--headless=new", "--disable-gpu", "--dump-dom", url]
         let out = Pipe()
         chrome.standardOutput = out
         chrome.standardError = FileHandle.nullDevice
@@ -46,6 +58,7 @@ final class LiveChromeOverrideTests: XCTestCase {
         chrome.waitUntilExit()
         killer.cancel()
 
-        XCTAssertTrue(dom.contains("overridden by jaca"), "Chrome printed: \(dom.prefix(500))")
+        if !dom.contains("overridden by jaca") { print("Chrome printed for \(url): \(dom.prefix(500))") }
+        return dom
     }
 }

@@ -24,12 +24,14 @@ enum ChromeBrowser {
     }
 
     /// The command line. Chrome honours the SPKI list only with a non-default profile, which
-    /// `--user-data-dir` gives it. QUIC is off so every request takes the proxy.
+    /// `--user-data-dir` gives it. QUIC is off so every request takes the proxy, and
+    /// `<-loopback>` sends localhost through it too, which Chrome otherwise never proxies.
     static func arguments(proxyPort: Int, spkiHash: String, profile: URL) -> [String] {
         [
             "--user-data-dir=\(profile.path)",
             "--proxy-server=http://127.0.0.1:\(proxyPort)",
             "--ignore-certificate-errors-spki-list=\(spkiHash)",
+            "--proxy-bypass-list=<-loopback>",
             "--disable-quic",
             "--no-first-run",
             "--no-default-browser-check",

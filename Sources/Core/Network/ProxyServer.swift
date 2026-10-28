@@ -8,7 +8,9 @@ import NIOTLS
 /// A man-in-the-middle HTTP(S) proxy. Clients point their device proxy at it;
 /// for `CONNECT` it terminates TLS with a per-host leaf cert (signed by our CA),
 /// reads the plaintext HTTP, and runs it through an `InterceptPipeline` (the override rules,
-/// then the origin), emitting a `NetworkTransaction` per request/response.
+/// then the origin), emitting a `NetworkTransaction` per request/response. A tunnel that
+/// doesn't start with TLS (Chrome sends a `ws://` WebSocket through `CONNECT` too) is relayed
+/// to its target unread.
 final class ProxyServer: @unchecked Sendable {
     let port: Int
     private let ca: CertificateAuthority
@@ -80,6 +82,23 @@ final class ProxyServer: @unchecked Sendable {
         channel = nil
         DispatchQueue.global(qos: .utility).async { try? group.syncShutdownGracefully() }
     }
+
+    /// The host and port of a `CONNECT` target: "host:port", or "[v6]:port". 443 when the
+    /// port is missing or unreadable.
+    static func connectTarget(_ authority: String) -> (host: String, port: Int) {
+        if authority.hasPrefix("["), let close = authority.firstIndex(of: "]") {
+            let host = String(authority[authority.index(after: authority.startIndex)..<close])
+            return (host, Int(authority[authority.index(after: close)...].dropFirst()) ?? 443)
+        }
+        let parts = authority.split(separator: ":", maxSplits: 1)
+        return (String(parts.first ?? ""), parts.count > 1 ? Int(parts[1]) ?? 443 : 443)
+    }
+
+    /// The URL of a request inside a `CONNECT` tunnel: the port only when it isn't 443.
+    static func tunnelURL(host: String, port: Int, path: String) -> String {
+        let name = host.contains(":") ? "[\(host)]" : host
+        return port == 443 ? "https://\(name)\(path)" : "https://\(name):\(port)\(path)"
+    }
 }
 
 /// Who a proxy's requests come from, for rules scoped to a device or an app.
@@ -96,7 +115,7 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
 
     enum Mode {
         case initial            // first request on a connection (CONNECT or absolute-URI)
-        case tls(host: String)  // after CONNECT + TLS upgrade; origin-form requests
+        case tls(host: String, port: Int)  // after CONNECT + TLS upgrade; origin-form requests
     }
 
     private let ca: CertificateAuthority
@@ -139,12 +158,12 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
         }
     }
 
-    // MARK: CONNECT → TLS upgrade
+    // MARK: CONNECT → TLS upgrade, or a relay
 
     private func handleConnect(context: ChannelHandlerContext, head: HTTPRequestHead) {
-        let host = String(head.uri.split(separator: ":").first ?? "")
-        // Stop delivering inbound bytes until the TLS handler is installed, so the
-        // client's ClientHello (sent right after our 200) isn't read by the stale
+        let (host, port) = ProxyServer.connectTarget(head.uri)
+        // Stop delivering inbound bytes until the tunnel's handler is installed, so the
+        // client's first bytes (sent right after our 200) aren't read by the stale
         // HTTP decoder mid-reconfiguration.
         let channel = context.channel
         _ = channel.setOption(ChannelOptions.autoRead, value: false)
@@ -156,34 +175,18 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
         resHead.headers.add(name: "Content-Length", value: "0")
         context.write(wrapOutboundOut(.head(resHead)), promise: nil)
         context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { [weak self] _ in
-            self?.upgradeToTLS(channel: channel, host: host)
+            self?.startTunnel(channel: channel, host: host, port: port)
         }
     }
 
-    private func upgradeToTLS(channel: Channel, host: String) {
+    /// Swaps the HTTP handlers for a sniffer that reads the tunnel's first bytes.
+    private func startTunnel(channel: Channel, host: String, port: Int) {
         let pipeline = channel.pipeline
-        let sslContext: NIOSSLContext
-        do { sslContext = try ca.serverContext(forHost: host) }
-        catch { channel.close(promise: nil); return }
-
-        let sslHandler = NIOSSLServerHandler(context: sslContext)
-        let observer = HandshakeObserver(host: host, report: onHandshake)
-        let newProxy = ProxyHandler(ca: ca, pipeline: self.pipeline, target: target, onTransaction: onTransaction,
-                                    onHandshake: onHandshake, mode: .tls(host: host))
-
+        let sniffer = TunnelSniffer(host: host, port: port, tls: { [self] in try tlsHandlers(host: host, port: port) })
         pipeline.removeHandler(name: "decoder")
             .flatMap { pipeline.removeHandler(name: "encoder") }
             .flatMap { pipeline.removeHandler(name: "proxy") }
-            .flatMap { pipeline.addHandler(sslHandler, name: "ssl", position: .first) }
-            .flatMap { pipeline.addHandler(observer, name: "handshake", position: .after(sslHandler)) }
-            .flatMap { pipeline.addHandler(HTTPResponseEncoder(), name: "encoder") }
-            .flatMap {
-                pipeline.addHandler(
-                    ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)),
-                    name: "decoder"
-                )
-            }
-            .flatMap { pipeline.addHandler(newProxy, name: "proxy") }
+            .flatMap { pipeline.addHandler(sniffer, name: "sniffer") }
             .flatMap { channel.setOption(ChannelOptions.autoRead, value: true) }
             .whenComplete { result in
                 switch result {
@@ -193,6 +196,19 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
             }
     }
 
+    /// The handlers that decrypt a TLS tunnel and read the HTTP inside it, in pipeline order.
+    private func tlsHandlers(host: String, port: Int) throws -> [ChannelHandler] {
+        let sslHandler = NIOSSLServerHandler(context: try ca.serverContext(forHost: host))
+        return [
+            sslHandler,
+            HandshakeObserver(host: host, report: onHandshake),
+            HTTPResponseEncoder(),
+            ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)),
+            ProxyHandler(ca: ca, pipeline: self.pipeline, target: target, onTransaction: onTransaction,
+                         onHandshake: onHandshake, mode: .tls(host: host, port: port)),
+        ]
+    }
+
     // MARK: Forwarding
 
     private func forward(context: ChannelHandlerContext, head: HTTPRequestHead, body: Data) {
@@ -200,10 +216,10 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
         let host: String
         let scheme: String
         switch mode {
-        case .tls(let connectHost):
+        case .tls(let connectHost, let port):
             host = connectHost
             scheme = "https"
-            urlString = "https://\(connectHost)\(head.uri)"
+            urlString = ProxyServer.tunnelURL(host: connectHost, port: port, path: head.uri)
         case .initial:
             scheme = "http"
             urlString = head.uri            // absolute-form for plain proxying
@@ -261,6 +277,126 @@ private final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler
         buffer.writeBytes(body)
         context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
         context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { _ in context.close(promise: nil) }
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.close(promise: nil)
+    }
+}
+
+// MARK: - Tunnel
+
+/// The first handler of a `CONNECT` tunnel. TLS (a handshake record, 0x16) gets the decrypting
+/// handlers; anything else is a protocol the proxy doesn't read, such as a `ws://` WebSocket,
+/// and is relayed to the target as it is, without a transaction.
+private final class TunnelSniffer: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+
+    private enum State { case waiting, decrypting, connecting([ByteBuffer]) }
+
+    private let host: String
+    private let port: Int
+    private let tls: () throws -> [ChannelHandler]
+    private var state = State.waiting
+
+    init(host: String, port: Int, tls: @escaping () throws -> [ChannelHandler]) {
+        self.host = host
+        self.port = port
+        self.tls = tls
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        switch state {
+        case .decrypting:
+            context.fireChannelRead(data)
+        case .connecting(var pending):
+            pending.append(unwrapInboundIn(data))
+            state = .connecting(pending)
+        case .waiting:
+            let buffer = unwrapInboundIn(data)
+            guard let first = buffer.getInteger(at: buffer.readerIndex, as: UInt8.self) else { return }
+            if first == 0x16 { decrypt(context: context, data: data) } else { relay(context: context, first: buffer) }
+        }
+    }
+
+    private func decrypt(context: ChannelHandlerContext, data: NIOAny) {
+        do {
+            var after: ChannelHandler = self
+            for handler in try tls() {
+                try context.pipeline.syncOperations.addHandler(handler, position: .after(after))
+                after = handler
+            }
+        } catch {
+            context.close(promise: nil)
+            return
+        }
+        state = .decrypting
+        context.fireChannelRead(data)
+        context.pipeline.removeHandler(context: context, promise: nil)
+    }
+
+    private func relay(context: ChannelHandlerContext, first: ByteBuffer) {
+        state = .connecting([first])
+        let inbound = context.channel
+        _ = inbound.setOption(ChannelOptions.autoRead, value: false)
+        ClientBootstrap(group: context.eventLoop).connect(host: host, port: port).whenComplete { [self] result in
+            guard case .success(let outbound) = result, case .connecting(let pending) = state else {
+                inbound.close(promise: nil)
+                return
+            }
+            let (here, there) = GlueHandler.matchedPair()
+            do {
+                try inbound.pipeline.syncOperations.addHandler(here, position: .after(self))
+                try outbound.pipeline.syncOperations.addHandler(there)
+            } catch {
+                inbound.close(promise: nil)
+                outbound.close(promise: nil)
+                return
+            }
+            for buffer in pending { outbound.write(buffer, promise: nil) }
+            outbound.flush()
+            inbound.pipeline.removeHandler(self, promise: nil)
+            _ = inbound.setOption(ChannelOptions.autoRead, value: true)
+            inbound.read()
+        }
+    }
+}
+
+/// One end of a relay: what one channel reads, the other writes. Both channels are on one
+/// event loop, so each can use the other's context.
+private final class GlueHandler: ChannelDuplexHandler, RemovableChannelHandler, @unchecked Sendable {
+    typealias InboundIn = NIOAny
+    typealias OutboundIn = NIOAny
+    typealias OutboundOut = NIOAny
+
+    private var partner: GlueHandler?
+    private var context: ChannelHandlerContext?
+
+    static func matchedPair() -> (GlueHandler, GlueHandler) {
+        let a = GlueHandler(), b = GlueHandler()
+        a.partner = b
+        b.partner = a
+        return (a, b)
+    }
+
+    func handlerAdded(context: ChannelHandlerContext) { self.context = context }
+
+    func handlerRemoved(context: ChannelHandlerContext) {
+        self.context = nil
+        partner = nil
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        partner?.context?.write(data, promise: nil)
+    }
+
+    func channelReadComplete(context: ChannelHandlerContext) {
+        partner?.context?.flush()
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        partner?.context?.close(promise: nil)
+        context.fireChannelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {

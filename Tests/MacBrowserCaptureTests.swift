@@ -11,6 +11,7 @@ final class MacBrowserCaptureTests: XCTestCase {
             "--user-data-dir=/tmp/jaca profile",
             "--proxy-server=http://127.0.0.1:51234",
             "--ignore-certificate-errors-spki-list=abc=",
+            "--proxy-bypass-list=<-loopback>",
             "--disable-quic",
             "--no-first-run",
             "--no-default-browser-check",

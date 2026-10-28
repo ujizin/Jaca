@@ -123,8 +123,14 @@ The capture runs where the agent captures run: in jacad when the network area is
 (jacad reads the CA from `Application Support/Jaca/ca` when the first Mac capture opens), so
 `jaca net` and the Herdr plugin see it. `network.openBrowser` opens the window again.
 
-Limits of the proxy that a website hits: HTTP/1.1 only, no WebSockets (`Upgrade` is dropped as
-hop-by-hop), and bodies are buffered whole, so a streamed response arrives at its end.
+Chrome gets `--proxy-bypass-list=<-loopback>`, so `localhost` goes through the proxy too (Chrome
+never proxies it by default). Chrome sends a `ws://` WebSocket through `CONNECT`; a tunnel that
+doesn't start with a TLS record is relayed to its target unread, so a dev server's hot reload keeps
+working but isn't captured.
+
+Limits of the proxy that a website hits: HTTP/1.1 only, no `wss://` WebSockets (`Upgrade` is
+dropped as hop-by-hop inside a decrypted tunnel), and bodies are buffered whole, so a streamed
+response arrives at its end.
 
 ### The arming half
 
