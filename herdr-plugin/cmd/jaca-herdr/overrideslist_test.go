@@ -262,60 +262,48 @@ func groupedViewer(t *testing.T) *netViewer {
 	return v
 }
 
-// describeRows is the list's rows as text: "+Name(count)" for an expanded group, "-Name(count)"
-// for a collapsed one, "  Rule NN" for a rule under its group and "Rule NN" for one in none.
+// describeRows is the list's rows as text: "Name(count)" for a group and the name for a rule.
 func describeRows(v *netViewer) []string {
 	var out []string
 	for _, row := range v.ovRows() {
-		switch {
-		case row.group != nil && v.ovui.collapsed[row.group.ID]:
-			out = append(out, fmt.Sprintf("-%s(%d)", row.group.displayName(), row.count))
-		case row.group != nil:
-			out = append(out, fmt.Sprintf("+%s(%d)", row.group.displayName(), row.count))
-		case row.nested:
-			out = append(out, "  "+v.overrides.Rules[row.rule].Name)
-		default:
-			out = append(out, v.overrides.Rules[row.rule].Name)
+		if row.group != nil {
+			out = append(out, fmt.Sprintf("%s(%d)", row.group.displayName(), row.count))
+			continue
 		}
+		out = append(out, v.overrides.Rules[row.rule].Name)
 	}
 	return out
 }
 
-func TestOverrideRowsGroupsAndCollapse(t *testing.T) {
+// boxText is the popup as drawn, without styles, one string per row.
+func boxText(v *netViewer) []string {
+	var out []string
+	for _, row := range v.listBox(60, 120).rows {
+		out = append(out, sgr.ReplaceAllString(row, ""))
+	}
+	return out
+}
+
+// The list shows each group as one row; Enter opens the group in its own popup, under its name,
+// with its rules, its switch and its actions, and Esc goes back.
+func TestOverrideGroupPopup(t *testing.T) {
 	v := groupedViewer(t)
-	want := "+Checkout(2),  Rule 00,  Rule 01,+Login(1),  Rule 02,Rule 03,Rule 04"
+	want := "Checkout(2),Login(1),Rule 03,Rule 04"
 	if got := strings.Join(describeRows(v), ","); got != want {
 		t.Errorf("rows = %s\nwant   %s", got, want)
 	}
-	// Enter on a group row collapses it, and again expands it; nothing is sent.
-	v.ovui.selected = 0
-	v.overridesKey([]byte("\r"))
-	if v.focus != netOverrides || v.ovui.draft != nil {
-		t.Fatal("Enter on a group opened the editor")
-	}
-	want = "-Checkout(2),+Login(1),  Rule 02,Rule 03,Rule 04"
-	if got := strings.Join(describeRows(v), ","); got != want {
-		t.Errorf("collapsed rows = %s\nwant           %s", got, want)
-	}
-	v.overridesKey([]byte("\r"))
-	if got := len(v.ovRows()); got != 7 {
-		t.Errorf("expanded again: %d rows", got)
-	}
 
-	// A rule in a group that is off is drawn dim; one in a group that is on is not.
+	// A group that is off is dim; the group row has its marker and count.
 	plain := map[string]string{}
 	for _, row := range v.listBox(60, 120).rows {
 		text := sgr.ReplaceAllString(row, "")
-		for _, name := range []string{"Rule 01", "Rule 02", "Login", "Checkout"} {
+		for _, name := range []string{"Login", "Checkout"} {
 			if strings.Contains(text, name) {
 				plain[name] = row
 			}
 		}
 	}
-	if !strings.Contains(plain["Rule 02"], tertiaryStyle+"Rule 02") || strings.Contains(plain["Rule 01"], tertiaryStyle+"Rule 01") {
-		t.Errorf("dimming: Rule 01 %q, Rule 02 %q", plain["Rule 01"], plain["Rule 02"])
-	}
-	if !strings.Contains(sgr.ReplaceAllString(plain["Checkout"], ""), "▾ Checkout") ||
+	if !strings.Contains(sgr.ReplaceAllString(plain["Checkout"], ""), "▸ Checkout") ||
 		!strings.Contains(sgr.ReplaceAllString(plain["Checkout"], ""), "(2)") {
 		t.Errorf("group row = %q", sgr.ReplaceAllString(plain["Checkout"], ""))
 	}
@@ -323,11 +311,65 @@ func TestOverrideRowsGroupsAndCollapse(t *testing.T) {
 		t.Errorf("a group that is off isn't dim: %q", plain["Login"])
 	}
 
-	// Enter on a rule row still edits it.
-	v.ovui.selected = 2
+	// Enter on Checkout opens its popup; nothing is sent and the editor stays shut.
+	v.ovui.selected = 0
+	v.overridesKey([]byte("\r"))
+	if v.focus != netOverrides || v.ovui.draft != nil || v.ovui.group != groupA {
+		t.Fatalf("Enter on a group: focus %v, group %q", v.focus, v.ovui.group)
+	}
+	if got := strings.Join(describeRows(v), ","); got != "Rule 00,Rule 01" {
+		t.Errorf("group rows = %s", got)
+	}
+	text := strings.Join(boxText(v), "\n")
+	for _, part := range []string{"Checkout", "Group: ON", "Rule 00", "Rule 01", "New override", "Rename group", "Delete group"} {
+		if !strings.Contains(text, part) {
+			t.Errorf("the group popup lacks %q:\n%s", part, text)
+		}
+	}
+	if strings.Contains(text, "Rule 03") || strings.Contains(text, "New group") || strings.Contains(text, "Overrides: ON") {
+		t.Errorf("the group popup shows the list of everything:\n%s", text)
+	}
+	if !strings.Contains(boxText(v)[0], "Checkout") {
+		t.Errorf("title row = %q", boxText(v)[0])
+	}
+
+	// Enter on a rule edits it, and closing the editor comes back to the group's popup.
+	v.overridesKey([]byte("\x1b[B"))
 	v.overridesKey([]byte("\r"))
 	if v.focus != netEditor || v.ovui.draft == nil || v.ovui.draft.rule.Name != "Rule 01" {
-		t.Error("Enter on a nested rule didn't edit it")
+		t.Fatal("Enter on a rule in the group didn't edit it")
+	}
+	v.closeEditor()
+	if v.focus != netOverrides || v.ovui.group != groupA {
+		t.Errorf("after the editor: focus %v, group %q", v.focus, v.ovui.group)
+	}
+
+	// A new override made here goes in the group.
+	v.overridesKey([]byte("n"))
+	if d := v.ovui.draft; d == nil || d.rule.GroupID != groupA {
+		t.Errorf("a new override from the group's popup isn't in it: %+v", v.ovui.draft)
+	}
+	v.closeEditor()
+
+	// Esc goes back to the list, with the group selected; Esc again closes the popup.
+	v.overridesKey([]byte("\x1b"))
+	if v.focus != netOverrides || v.ovui.group != "" || v.ovui.selected != 0 {
+		t.Errorf("after Esc: focus %v, group %q, selected %d", v.focus, v.ovui.group, v.ovui.selected)
+	}
+	v.overridesKey([]byte("\x1b"))
+	if v.focus != netList {
+		t.Error("Esc on the list didn't close it")
+	}
+
+	// A group deleted elsewhere closes its popup.
+	v.openOverridesList()
+	v.openGroup(groupB)
+	s := v.overrides
+	s.Groups = s.Groups[:1]
+	v.setOverrides(s)
+	v.listBox(60, 120)
+	if v.ovui.group != "" {
+		t.Error("the popup of a group that is gone stayed open")
 	}
 }
 
@@ -385,21 +427,21 @@ func TestOverrideGroupActions(t *testing.T) {
 	v.p.c = c
 	rules := v.overrides.Rules
 
-	v.ovui.selected = 3         // Login
+	v.ovui.selected = 1         // Login
 	v.overridesKey([]byte(" ")) // toggle the group on
 	v.overridesKey([]byte("K")) // move it up
 	if v.ovui.selected != 0 {
 		t.Errorf("after moving Login up the selection is on row %d, want 0", v.ovui.selected)
 	}
-	v.ovui.selected = 3
+	v.ovui.selected = 1
 	v.overridesKey([]byte("r")) // rename
 	for _, k := range []string{"\x15", "A", "u", "t", "h", "\r"} {
 		v.overridesKey([]byte(k))
 	}
-	v.ovui.selected = 3
+	v.ovui.selected = 1
 	v.overridesKey([]byte("x")) // delete the group
 
-	v.ovui.selected = 5 // Rule 03, in no group
+	v.ovui.selected = 2 // Rule 03, in no group
 	v.overridesKey([]byte("g"))
 	if v.ovui.menu == nil || len(v.ovui.menu.items) != 3 || v.ovui.menu.items[0].label != "Move to group" ||
 		v.ovui.menu.items[1].label != "Checkout" || v.ovui.menu.items[2].label != "Login" {
@@ -407,7 +449,9 @@ func TestOverrideGroupActions(t *testing.T) {
 	}
 	v.overridesKey([]byte("\x1b[B")) // Login
 	v.overridesKey([]byte("\r"))
-	v.ovui.selected = 1 // Rule 00, in Checkout
+	v.ovui.selected = 0
+	v.overridesKey([]byte("\r")) // open Checkout
+	v.ovui.selected = 0          // Rule 00
 	v.overridesKey([]byte("g"))
 	labels := []string{}
 	for _, it := range v.ovui.menu.items {
@@ -419,12 +463,12 @@ func TestOverrideGroupActions(t *testing.T) {
 	v.overridesKey([]byte("\x1b[B")) // over the separator to No group
 	v.overridesKey([]byte("\r"))
 
-	// K on the first rule of a group doesn't cross into the group above; J moves inside it.
-	v.ovui.selected = 1
+	// K on the first rule of a group doesn't cross out of it; J moves inside it.
+	v.ovui.selected = 0
 	v.overridesKey([]byte("K"))
 	v.overridesKey([]byte("J"))
-	if v.ovui.selected != 2 {
-		t.Errorf("after J the selection is on row %d, want 2", v.ovui.selected)
+	if v.ovui.selected != 1 {
+		t.Errorf("after J the selection is on row %d, want 1", v.ovui.selected)
 	}
 
 	type call struct {
@@ -478,7 +522,7 @@ func TestOverrideNewGroup(t *testing.T) {
 		t.Fatalf("rename = %+v", v.ovui.rename)
 	}
 	rows := v.ovRows()
-	if sel := rows[v.ovui.selected]; sel.group == nil || sel.group.ID != v.ovui.rename.group.ID || v.ovui.selected != 5 {
+	if sel := rows[v.ovui.selected]; sel.group == nil || sel.group.ID != v.ovui.rename.group.ID || v.ovui.selected != 2 {
 		t.Errorf("selected row %d: %+v", v.ovui.selected, sel)
 	}
 	drawn := false

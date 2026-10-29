@@ -21,8 +21,8 @@ type overridesUI struct {
 	selRow   int         // list popup: the box row the selected list row starts on, as last drawn
 	hidden   bool        // the pane is too small to draw the popup: only Esc acts on it
 
-	collapsed map[string]bool // list popup: the groups drawn collapsed, by id; view state only
-	rename    *groupRename    // list popup: the group whose name is being typed
+	group  string       // list popup: the id of the group open in its own popup; "" for the list of everything
+	rename *groupRename // list popup: the group whose name is being typed
 
 	// The open popup as last drawn: where it sits and what a click on each span does.
 	top, left int // 0-based
@@ -83,15 +83,47 @@ func (v *netViewer) openOverridesList() {
 
 func (v *netViewer) closeOverrides() {
 	v.focus, v.ovui.menu, v.ovui.draft, v.ovui.rename = netList, nil, nil, nil
+	v.ovui.group = ""
 }
 
-// overrideRow is one row of the list popup: a group, or a rule (under its expanded group, or at
-// the top level).
+// openGroup shows a group in its own popup: its rules, its switch and its actions, under its name.
+func (v *netViewer) openGroup(id string) {
+	ui := &v.ovui
+	ui.group, ui.menu, ui.rename = id, nil, nil
+	ui.selected, ui.start = 0, 0
+}
+
+// closeGroup goes back from a group's popup to the list of everything, with the group selected.
+func (v *netViewer) closeGroup() {
+	id := v.ovui.group
+	v.ovui.group, v.ovui.menu, v.ovui.rename = "", nil, nil
+	v.ovui.start = 0
+	v.selectID(v.overrides, id)
+}
+
+// openGroupOf is the group open in its own popup. A group that is gone (deleted elsewhere) closes
+// its popup, back to the list of everything.
+func (v *netViewer) openGroupOf() (overrideGroup, bool) {
+	ui := &v.ovui
+	if ui.group == "" {
+		return overrideGroup{}, false
+	}
+	if g, ok := v.overrides.group(ui.group); ok {
+		return g, true
+	}
+	if r := ui.rename; r != nil && r.group.ID == ui.group {
+		return r.group, true // just created: the daemon doesn't list it yet
+	}
+	ui.group, ui.rename = "", nil
+	ui.selected = clampIndex(ui.selected, len(v.ovRows()))
+	return overrideGroup{}, false
+}
+
+// overrideRow is one row of the list popup: a group, or a rule.
 type overrideRow struct {
-	group  *overrideGroup // a group row; nil for a rule row
-	count  int            // a group row: how many rules it holds
-	rule   int            // a rule row: its index in Rules
-	nested bool           // a rule row under its group
+	group *overrideGroup // a group row; nil for a rule row
+	count int            // a group row: how many rules it holds
+	rule  int            // a rule row: its index in Rules
 }
 
 // groupRename is a group whose name is being typed in the list popup.
@@ -100,11 +132,11 @@ type groupRename struct {
 	name  textInput
 }
 
-// overrideRows is the list popup's rows: each group, with its rules under it unless it is
-// collapsed, then the rules in no group. pending is a group just created that the state doesn't
-// list yet; it is shown after the others, where the daemon puts it. With no groups (an old
-// daemon) this is the rules as they come.
-func overrideRows(s overridesState, collapsed map[string]bool, pending *overrideGroup) []overrideRow {
+// overrideRows is the list popup's rows. With no group open: each group (whose rules are in its
+// own popup), then the rules in no group. With a group open: that group's rules. pending is a
+// group just created that the state doesn't list yet; it is shown after the others, where the
+// daemon puts it. With no groups (an old daemon) this is the rules as they come.
+func overrideRows(s overridesState, open string, pending *overrideGroup) []overrideRow {
 	groups := s.Groups
 	if pending != nil {
 		if _, ok := s.group(pending.ID); !ok {
@@ -121,14 +153,15 @@ func overrideRows(s overridesState, collapsed map[string]bool, pending *override
 		}
 	}
 	var rows []overrideRow
+	if open != "" {
+		for _, n := range inGroup[open] {
+			rows = append(rows, overrideRow{rule: n})
+		}
+		return rows
+	}
 	for i := range groups {
 		g := groups[i]
 		rows = append(rows, overrideRow{group: &g, count: len(inGroup[g.ID]), rule: -1})
-		if !collapsed[g.ID] {
-			for _, n := range inGroup[g.ID] {
-				rows = append(rows, overrideRow{rule: n, nested: true})
-			}
-		}
 	}
 	for _, n := range loose {
 		rows = append(rows, overrideRow{rule: n})
@@ -146,7 +179,7 @@ func (v *netViewer) rowsOf(s overridesState) []overrideRow {
 	if r := v.ovui.rename; r != nil {
 		pending = &r.group
 	}
-	return overrideRows(s, v.ovui.collapsed, pending)
+	return overrideRows(s, v.ovui.group, pending)
 }
 
 // selectID selects the row of a group or rule in the list as it will stand in s, the state an
@@ -216,7 +249,11 @@ func (v *netViewer) newOverride() {
 	} else if len(v.txns) > 0 {
 		host = v.txns[len(v.txns)-1].Host
 	}
-	v.openEditor(blankRule(host), true, "")
+	rule := blankRule(host)
+	if g, ok := v.openGroupOf(); ok {
+		rule.GroupID = g.ID // made from a group's popup: it goes in that group
+	}
+	v.openEditor(rule, true, "")
 }
 
 // openListMenu opens the menu of a row of the list popup at a cell.
@@ -311,15 +348,6 @@ func (v *netViewer) toggleGroup(g overrideGroup) {
 	}
 }
 
-// toggleCollapsed shows or hides a group's rules. It is view state: nothing is sent.
-func (v *netViewer) toggleCollapsed(id string) {
-	if v.ovui.collapsed == nil {
-		v.ovui.collapsed = map[string]bool{}
-	}
-	v.ovui.collapsed[id] = !v.ovui.collapsed[id]
-	v.ovui.selected = clampIndex(v.ovui.selected, len(v.ovRows()))
-}
-
 // newGroup creates a group at the end of the list, selects it and starts renaming it.
 func (v *netViewer) newGroup() {
 	g := newOverrideGroup("Untitled group")
@@ -365,6 +393,9 @@ func (v *netViewer) renameKey(k []byte) {
 
 func (v *netViewer) removeGroup(id string) {
 	v.ruleCall("overrides.removeGroup", map[string]any{"id": id})
+	if v.ovui.group == id {
+		v.closeGroup()
+	}
 	v.ovui.selected = clampIndex(v.ovui.selected, len(v.ovRows())-1)
 }
 
@@ -486,6 +517,7 @@ func (v *netViewer) overridesKey(k []byte) {
 		}
 		return
 	}
+	open, inGroup := v.openGroupOf()
 	rows := v.ovRows()
 	i := clampIndex(ui.selected, len(rows))
 	has := len(rows) > 0
@@ -496,6 +528,8 @@ func (v *netViewer) overridesKey(k []byte) {
 	group, rule := has && row.group != nil, has && row.group == nil
 	rules := v.overrides.Rules
 	switch {
+	case isEsc(k) && inGroup:
+		v.closeGroup()
 	case isEsc(k) || (len(k) == 1 && (k[0] == 'q' || k[0] == 'o')):
 		v.closeOverrides()
 	case isUp(k):
@@ -509,7 +543,7 @@ func (v *netViewer) overridesKey(k []byte) {
 	case isEnter(k):
 		switch {
 		case group:
-			v.toggleCollapsed(row.group.ID)
+			v.openGroup(row.group.ID)
 		case rule:
 			v.openEditor(rules[row.rule], false, "")
 		default:
@@ -518,10 +552,14 @@ func (v *netViewer) overridesKey(k []byte) {
 	case len(k) != 1:
 	case k[0] == 'n':
 		v.newOverride()
-	case k[0] == 'N' && v.overrides.HasGroups:
+	case k[0] == 'N' && v.overrides.HasGroups && !inGroup:
 		v.newGroup()
+	case k[0] == 'm' && inGroup:
+		v.toggleGroup(open) // the switch at the top of a group's popup is the group's
 	case k[0] == 'm':
 		v.toggleMaster()
+	case k[0] == 'r' && inGroup:
+		v.startRename(open)
 	case k[0] == 'L':
 		showLog()
 	case !has:
@@ -657,6 +695,10 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		return nil
 	}
 	ui := &v.ovui
+	open, inGroup := v.openGroupOf()
+	if inGroup {
+		return v.groupBox(open, w, rows)
+	}
 	b := newPopupBox("Overrides", w)
 	b.closeRow(v.closeOverrides)
 	ui.ruleRows = map[int]int{}
@@ -681,6 +723,85 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 			}
 		}
 	}
+	v.drawRows(b, list, rows)
+	if len(list) == 0 {
+		b.add("") // a drawn rule ends in its padding row
+	}
+	v.drawStatus(b)
+	footer := ""
+	b.button(&footer, " New override ", sgrBold+sgrRev, v.newOverride)
+	if v.overrides.HasGroups {
+		footer += "  "
+		b.button(&footer, " New group ", sgrRev, v.newGroup)
+	}
+	footer += "   "
+	b.button(&footer, "Show log", sgrUnder, showLog)
+	b.add(footer)
+	v.drawActivity(b)
+	return b
+}
+
+// groupBox is a group's own popup, under the group's name: its switch (or the input renaming
+// it), its rules in precedence order, how they stand on this capture, and the group's actions.
+// Esc goes back to the list of everything.
+func (v *netViewer) groupBox(g overrideGroup, w, rows int) *popupBox {
+	ui := &v.ovui
+	b := newPopupBox(sanitize(g.displayName()), w)
+	b.closeRow(v.closeGroup)
+	ui.ruleRows = map[int]int{}
+
+	if r := ui.rename; r != nil && r.group.ID == g.ID {
+		b.add(renderField(&r.name, "Untitled group", true, b.inner, sgrUnder))
+	} else {
+		label, style := "Group: ON", ""
+		if !g.Enabled {
+			label, style = "Group: OFF", sgrYellow
+		}
+		b.hit(0, toggleCells+cellWidth(label), func(int) { v.toggleGroup(g) })
+		b.add(toggleSwitch(g.Enabled, !v.overrides.MasterEnabled) + " " + style + clip(label, b.inner-toggleCells-1) + sgrReset)
+	}
+	b.add("")
+
+	list := v.ovRows()
+	if len(list) == 0 {
+		b.add(sgrBold + clip("No overrides in this group", b.inner) + sgrReset)
+		for _, part := range wrapWords("Select an override in the list of all overrides and press g to move it here.", b.inner) {
+			b.add(sgrDim + part + sgrReset)
+		}
+		b.add("")
+	}
+	v.drawRows(b, list, rows)
+	v.drawStatus(b)
+	footer := ""
+	b.button(&footer, " New override ", sgrBold+sgrRev, v.newOverride)
+	footer += "  "
+	b.button(&footer, " Rename group ", sgrRev, func() { v.startRename(g) })
+	footer += "  "
+	b.button(&footer, " Delete group ", sgrRev, func() { v.removeGroup(g.ID) })
+	footer += "   "
+	b.button(&footer, "Show log", sgrUnder, showLog)
+	b.add(footer)
+	v.drawActivity(b)
+	return b
+}
+
+func (v *netViewer) drawStatus(b *popupBox) {
+	if text, style := v.overridesStatus(); text != "" {
+		for _, part := range wrapWords(sanitize(text), b.inner) {
+			b.add(style + part + sgrReset)
+		}
+	}
+}
+
+func (v *netViewer) drawActivity(b *popupBox) {
+	if v.overrides.LastActivity != "" {
+		b.add(sgrDim + clip(sanitize(v.overrides.LastActivity), b.inner) + sgrReset)
+	}
+}
+
+// drawRows draws the list's rows, as many as the pane has room for around the selection.
+func (v *netViewer) drawRows(b *popupBox, list []overrideRow, rows int) {
+	ui := &v.ovui
 	// A rule is its two rows and a row of padding (all three take the selection and the clicks),
 	// a group its row and a row of padding, and a divider row is the margin before the next one.
 	// The window moves only to keep the selection in view; it is sized for rules, so groups only
@@ -708,9 +829,6 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		}
 		r := v.overrides.Rules[ri]
 		indent := "  "
-		if list[i].nested {
-			indent = "    "
-		}
 		dim := !v.overrides.ruleApplies(r)
 		name := sanitize(r.displayName())
 		if v.rules.diagnostic(r.ID) != "" {
@@ -757,39 +875,15 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		b.hit(b.inner-switchW, b.inner-1, func(int) { toggle() })
 		b.add(padding)
 	}
-	if len(list) == 0 {
-		b.add("") // a drawn rule ends in its padding row
-	}
-	if text, style := v.overridesStatus(); text != "" {
-		for _, part := range wrapWords(sanitize(text), b.inner) {
-			b.add(style + part + sgrReset)
-		}
-	}
-	footer := ""
-	b.button(&footer, " New override ", sgrBold+sgrRev, v.newOverride)
-	if v.overrides.HasGroups {
-		footer += "  "
-		b.button(&footer, " New group ", sgrRev, v.newGroup)
-	}
-	footer += "   "
-	b.button(&footer, "Show log", sgrUnder, showLog)
-	b.add(footer)
-	if v.overrides.LastActivity != "" {
-		b.add(sgrDim + clip(sanitize(v.overrides.LastActivity), b.inner) + sgrReset)
-	}
-	return b
 }
 
-// groupRow draws a group's row and its padding row: the expand marker, the name (or the input
-// renaming it), how many rules it holds and its switch. A click on the name expands or collapses
-// it; a click on the switch turns it on or off.
+// groupRow draws a group's row and its padding row: a marker, the name (or the input renaming
+// it), how many rules it holds and its switch. A click on the name opens the group's popup; a
+// click on the switch turns it on or off.
 func (v *netViewer) groupRow(b *popupBox, g overrideGroup, count, n int) {
 	ui := &v.ovui
 	const switchW = toggleCells + 2
-	marker := "▾"
-	if ui.collapsed[g.ID] {
-		marker = "▸"
-	}
+	marker := "▸"
 	countText := fmt.Sprintf("(%d)", count)
 	nameW := b.inner - 4 - cellWidth(countText) - 2 - switchW // the indent and marker, the gaps and the switch
 	nameStyle := sgrBold
@@ -808,7 +902,7 @@ func (v *netViewer) groupRow(b *popupBox, g overrideGroup, count, n int) {
 	for row := len(b.rows); row < len(b.rows)+2; row++ {
 		ui.ruleRows[row] = n
 	}
-	expand := func(int) { ui.selected = n; v.toggleCollapsed(g.ID) }
+	expand := func(int) { ui.selected = n; v.openGroup(g.ID) }
 	toggle := func(int) { ui.selected = n; v.toggleGroup(g) }
 	b.hit(0, b.inner-switchW-1, expand)
 	b.hit(b.inner-switchW, b.inner-1, toggle)
