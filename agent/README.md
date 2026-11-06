@@ -90,4 +90,4 @@ The `.so` links with `-Wl,-z,max-page-size=16384` (`native/CMakeLists.txt`). Do 
 - [`docs/agent-https-debugging-android.md`](../docs/agent-https-debugging-android.md): response overrides on Android, the OkHttp layer rule, teardown.
 - [`docs/agent-https-debugging-ios.md`](../docs/agent-https-debugging-ios.md): the iOS Simulator transport.
 - [`docs/agent-http-contract.md`](../docs/agent-http-contract.md): the route frame that the desktop and both agents share.
-- [`docs/architecture.md`](../docs/architecture.md): where the agents sit in Jaca.
+- [`ARCHITECTURE.md`](../ARCHITECTURE.md): where the agents sit in Jaca.

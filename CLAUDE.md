@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Jaca is a non-sandboxed SwiftUI macOS app (developer tools): device log streaming, network capture (an in-process agent for Android apps and iOS Simulator apps, a Chrome window on This Mac, and an on-device **companion app** — Compose Multiplatform under `mobile/` — that captures per-app traffic and streams it over gRPC/TLS for desktop-side decryption; the MITM proxy now only backs the companion and Chrome capture), Cloud Logging (GCP, through `gcloud`), and local maintenance areas (Projects — auto-detected Claude projects + their worktrees + user-added folders, with per-checkout cache cleanup; Gradle daemons; Xcode DerivedData). See `README.md` for the product overview and `docs/network-capture.md` for the network-capture deep dive.
 
-For human contributors: setup, tests and PR rules are in `CONTRIBUTING.md`; the component map, the `Sources/` tree and the data paths are in `docs/architecture.md`.
+For human contributors: setup, tests and PR rules are in `CONTRIBUTING.md`; the component map, the `Sources/` tree and the data paths are in `ARCHITECTURE.md`.
 
 ## Build, run, test
 

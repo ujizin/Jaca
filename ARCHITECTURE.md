@@ -1,6 +1,6 @@
 # Architecture
 
-This page shows the parts of Jaca, how they talk, and where the code and the data live. For setup and the PR rules, read [`CONTRIBUTING.md`](../CONTRIBUTING.md). For the index of all docs, read [`docs/README.md`](README.md).
+This page shows the parts of Jaca, how they talk, and where the code and the data live. The [README](README.md) covers what Jaca does and how to install it. For setup and the PR rules, read [`CONTRIBUTING.md`](CONTRIBUTING.md). For the index of all docs, read [`docs/README.md`](docs/README.md).
 
 ## Components
 
@@ -9,11 +9,11 @@ This page shows the parts of Jaca, how they talk, and where the code and the dat
 | Jaca (GUI app) | The SwiftUI macOS app. It runs in the menu bar and opens a window. | `Sources/App`, `Sources/Model`, `Sources/Features`, `Sources/Core` | `project.yml` target `Jaca` |
 | `jacad` (daemon) | A background process. It serves the Core engines over JSON-RPC on a Unix socket. It is embedded at `Jaca.app/Contents/MacOS/jacad`. | `Sources/Core`, `Sources/Daemon/main.swift` | target `jacad` |
 | `jaca` (CLI) | The same `jacad` binary, run through a symlink named `jaca`. It reads logs and captured requests, and manages response overrides. | `Sources/Core/CLI` | `scripts/install-cli.sh` makes the link |
-| `jaca-herdr` (Herdr plugin) | A Go program that shows Jaca areas as Herdr panes. It is a `jacad` client. | [`herdr-plugin/`](../herdr-plugin/README.md) | `go build` |
-| Android agent | An in-process agent that Jaca attaches to a debuggable Android app (JVMTI `.so` and two dex files). | [`agent/`](../agent/README.md) `native`, `java`, `kotlin`, `okhttp`, `okhttp-stubs` | `agent/build.sh`, `agent/build-dex.sh` (`scripts/build.sh` runs them) |
-| iOS Simulator agent | `JacaNetAgent.dylib`, injected into a simulator app at launch. | [`agent/iOS`](../agent/README.md#ios-simulator-agent) | a post-build phase of target `Jaca` |
-| Companion app | An Android app that captures whole-device traffic with a `VpnService` and streams it to the Mac. | [`mobile/`](../mobile/README.md) | `scripts/build-mobile.sh` |
-| gRPC contract | The protocol between the Mac and the companion app. | [`proto/`](../proto/README.md) | `scripts/proto-gen.sh` (Swift), Gradle (Java) |
+| `jaca-herdr` (Herdr plugin) | A Go program that shows Jaca areas as Herdr panes. It is a `jacad` client. | [`herdr-plugin/`](herdr-plugin/README.md) | `go build` |
+| Android agent | An in-process agent that Jaca attaches to a debuggable Android app (JVMTI `.so` and two dex files). | [`agent/`](agent/README.md) `native`, `java`, `kotlin`, `okhttp`, `okhttp-stubs` | `agent/build.sh`, `agent/build-dex.sh` (`scripts/build.sh` runs them) |
+| iOS Simulator agent | `JacaNetAgent.dylib`, injected into a simulator app at launch. | [`agent/iOS`](agent/README.md#ios-simulator-agent) | a post-build phase of target `Jaca` |
+| Companion app | An Android app that captures whole-device traffic with a `VpnService` and streams it to the Mac. | [`mobile/`](mobile/README.md) | `scripts/build-mobile.sh` |
+| gRPC contract | The protocol between the Mac and the companion app. | [`proto/`](proto/README.md) | `scripts/proto-gen.sh` (Swift), Gradle (Java) |
 
 ### How the processes talk
 
@@ -42,8 +42,44 @@ flowchart LR
 - **Socket.** The app, the CLI and the plugin all use newline-delimited JSON-RPC 2.0 on `~/.jaca/jacad.sock`. A client sends `hello` first. Any client starts `jacad` on demand.
 - **Android agent.** The capture host runs `cmd activity attach-agent`, then `adb forward tcp:0 localabstract:squeeze_<random>`, with a new socket name for each attach (`Core/Network/AgentController.swift`). For response overrides, `adb reverse` brings the routed hosts back to a loopback server on the Mac (`Core/AgentHTTP`).
 - **iOS Simulator agent.** The capture host relaunches the app with `SIMCTL_CHILD_DYLD_INSERT_LIBRARIES` and `SIMCTL_CHILD_JACA_NET_PORT` (`Core/Network/SimulatorAgentLaunch.swift`). The agent connects back to `127.0.0.1` on that port, because the simulator shares the Mac's loopback.
-- **Companion.** The phone is the gRPC server and the Mac is the client (`Core/Companion/CompanionLink.swift`). The phone sends intercepted TLS to the Mac's MITM proxy, so the CA private key stays on the Mac. See [`companion-architecture.md`](companion-architecture.md).
+- **Companion.** The phone is the gRPC server and the Mac is the client (`Core/Companion/CompanionLink.swift`). The phone sends intercepted TLS to the Mac's MITM proxy, so the CA private key stays on the Mac. See [`companion-architecture.md`](docs/companion-architecture.md).
 - **Capture host.** The Android and iOS Simulator agents are driven by the app, or by `jacad` when the `network` daemon area is on. Companion capture always stays in the app.
+
+## Repository layout
+
+```text
+Jaca/
+├── project.yml        XcodeGen spec (targets Jaca, jacad, JacaTests, JacaAgentTests, JacaUITests)
+├── Sources/
+│   ├── App/           Jaca GUI: entry point, menu-bar item, root view, assets
+│   ├── Model/         Jaca GUI: @Observable state (AppModel, sessions, area models)
+│   ├── Features/      Jaca GUI: SwiftUI views, one folder per feature
+│   ├── Core/          Shared engine, no SwiftUI: devices, logs, network, overrides,
+│   │                  daemon server (Core/Daemon), the jaca CLI (Core/CLI), areas
+│   └── Daemon/        Entry point of jacad (and of jaca, through a symlink)
+├── agent/             In-process network agents: Android (native/, java/, kotlin/,
+│                      okhttp/, okhttp-stubs/) and iOS Simulator (iOS/)
+├── mobile/            Android companion app (Compose Multiplatform)
+├── proto/             gRPC contract between the Mac and the companion app
+├── herdr-plugin/      Herdr plugin (Go), a client of jacad
+├── docs/              Design docs and plans
+├── scripts/           Build, run, install and diagnostic scripts
+├── Tests/             XCTest unit and live tests (Tests/ObjC tests the iOS agent)
+├── UITests/           XCUITest smoke tests
+├── Config/            Extra Info.plist keys for the app and jacad
+├── Resources/         Build outputs copied into the app (agent, companion APK); not committed
+└── art/               logo.png, the app icon at 1024 px
+```
+
+The Xcode project is generated from `project.yml` and is not committed. Each component has its own README:
+
+| Component | Read |
+|---|---|
+| Android and iOS Simulator agents | [agent/README.md](agent/README.md) |
+| Companion app | [mobile/README.md](mobile/README.md) |
+| gRPC contract | [proto/README.md](proto/README.md) |
+| Herdr plugin | [herdr-plugin/README.md](herdr-plugin/README.md) |
+| Scripts | [scripts/README.md](scripts/README.md) |
 
 ## Source tree
 
@@ -101,7 +137,17 @@ Sources/
 
 </details>
 
-Other top-level folders: `Config/` (the Info.plist that allows plain `http://` for the proxy), `Resources/` (build outputs that the scripts copy in), `Tests/` (`JacaTests`; `Tests/ObjC` is `JacaAgentTests`), `UITests/` (`JacaUITests`), `scripts/` ([`scripts/README.md`](../scripts/README.md)).
+Other top-level folders: `Config/` (the Info.plist that allows plain `http://` for the proxy), `Resources/` (build outputs that the scripts copy in), `Tests/` (`JacaTests`; `Tests/ObjC` is `JacaAgentTests`), `UITests/` (`JacaUITests`), `scripts/` ([`scripts/README.md`](scripts/README.md)).
+
+## Network capture sources
+
+| Source | Targets | How it works |
+|---|---|---|
+| In-process agent | Debuggable Android apps, iOS Simulator apps | Jaca injects an agent into the app and reads requests before TLS. No proxy and no CA. Works with certificate pinning. Records the call stack on Android. |
+| Chrome browser | This Mac | Jaca opens a separate Chrome window with its own profile and sends its traffic through a loopback proxy. |
+| Companion stream | Android phones (experimental) | The Jaca companion app captures all device traffic with a `VpnService` and streams it to the Mac over gRPC/TLS. The Mac decrypts TLS. Turn it on in Settings → Network inspection → "HTTPS debugging". |
+
+Details: [docs/network-capture.md](docs/network-capture.md), [docs/agent-https-debugging-android.md](docs/agent-https-debugging-android.md), [docs/agent-https-debugging-ios.md](docs/agent-https-debugging-ios.md), [docs/companion-architecture.md](docs/companion-architecture.md).
 
 ## Layering rules
 
@@ -116,7 +162,7 @@ Other top-level folders: `Config/` (the Info.plist that allows plain `http://` f
 - Put pure logic in free functions or enums and unit-test it.
 - Do not edit `Sources/Core/Companion/Generated/` by hand. Run `scripts/proto-gen.sh`.
 
-The full rules (area pattern, cache-first areas, migration-safe `Codable`, design system, animation) are in [`CLAUDE.md`](../CLAUDE.md) and [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+The full rules (area pattern, cache-first areas, migration-safe `Codable`, design system, animation) are in [`CLAUDE.md`](CLAUDE.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Daemon areas
 
@@ -133,7 +179,7 @@ defaults write dev.srsouza.Jaca daemonAreas -array gradle xcode projects devices
 - The database browser has no area flag. The app's Database tab is always in-process; `jacad`'s `database.*` methods serve the Herdr pane.
 - The `jaca` CLI sees log and network sessions only when they run in `jacad`.
 
-Status, protocol and design decisions: [`daemon-plan.md`](daemon-plan.md).
+Status, protocol and design decisions: [`daemon-plan.md`](docs/daemon-plan.md).
 
 ## Data on disk
 
@@ -146,3 +192,32 @@ Status, protocol and design decisions: [`daemon-plan.md`](daemon-plan.md).
 | UserDefaults `dev.srsouza.Jaca` | Settings, `openTabs`, `daemonAreas`. `jacad` reads the same domain. |
 
 Older builds kept the CA private key in the Keychain. The app reads the Keychain once to move the key into the file.
+
+## The in-app updater
+
+The updater acts on a source checkout, not on a download.
+
+- **When it is on:** each build writes `~/Library/Application Support/Jaca/build-info.json` with the checkout path and the commit. The last checkout you built, also a worktree, becomes the update source. If that file or that checkout does not exist, the updater is off.
+- **How it checks:** it runs `git fetch origin main` in that checkout. It shows "Update available" in the sidebar and an "Update Jaca" item in the menu-bar menu when `origin/main` has new commits.
+- **What an update does to the checkout:**
+  1. If the working tree has changes, it runs `git stash push -u` (untracked files are included).
+  2. If you are not on `main`, it runs `git checkout main`.
+  3. It runs `git pull --ff-only origin main`.
+  4. It runs `scripts/all.sh --install --no-run`, which replaces `/Applications/Jaca.app`. It adds `--no-agent` when `agent/out` already has files.
+  5. It checks out your branch again and runs `git stash pop`.
+- **If a step fails:** it checks out your branch and pops the stash, then shows the error.
+- **Worktrees:** `main` can be checked out in one worktree only. For a build from a linked worktree, the menu offers "Switch to Main Checkout & Update…".
+
+The updater follows the `origin` remote of the checkout. If you cloned `https://github.com/ujizin/Jaca.git`, it follows this repository.
+
+## Third-party components
+
+| Component | Where | License |
+|---|---|---|
+| [Lemonade design system](https://github.com/teya-engineering/lemonade-design-system) | Sibling checkout (`../lemonade-design-system`); `com.teya.foundation:lemonade-ui` in `mobile/` | Apache-2.0 |
+| AOSP slicer, from the dexter project | Vendored in `agent/native/third_party/slicer` | Apache-2.0 (file headers; the folder has no license file) |
+| `jvmti.h` | `agent/native/include` | GPLv2 with the Classpath exception (file header) |
+| zdtun | Vendored in `mobile/composeApp/src/androidMain/jni/zdtun` | LGPL-3.0 or later (`COPYING`) |
+| uthash | Vendored in `mobile/composeApp/src/androidMain/jni/zdtun/third_party/uthash.h` | BSD (file header) |
+| [swift-nio](https://github.com/apple/swift-nio), [swift-nio-ssl](https://github.com/apple/swift-nio-ssl), [swift-certificates](https://github.com/apple/swift-certificates), [swift-crypto](https://github.com/apple/swift-crypto), [swift-asn1](https://github.com/apple/swift-asn1), [swift-protobuf](https://github.com/apple/swift-protobuf) | Swift packages in `project.yml` | See each repository |
+| [grpc-swift](https://github.com/grpc/grpc-swift) | Swift package in `project.yml` | See its repository |

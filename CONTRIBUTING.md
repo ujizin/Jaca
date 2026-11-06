@@ -3,7 +3,7 @@
 Jaca is built from source. This guide tells you how to set up a checkout, build it, test it and
 send a change.
 
-- Read [docs/architecture.md](docs/architecture.md) before you change the app.
+- Read [ARCHITECTURE.md](ARCHITECTURE.md) before you change the app.
 - Report a security problem as [SECURITY.md](SECURITY.md) tells you, not in a public issue.
 - Send issues and pull requests to [ujizin/Jaca](https://github.com/ujizin/Jaca).
 
@@ -181,7 +181,7 @@ linked worktree, the app offers to switch to the main checkout and update there.
 
 ## Architecture rules
 
-[docs/architecture.md](docs/architecture.md) has the full text. These rules apply to every change:
+[ARCHITECTURE.md](ARCHITECTURE.md) has the full text. These rules apply to every change:
 
 | Rule | What to do | Reference |
 |---|---|---|
@@ -195,7 +195,7 @@ linked worktree, the app offers to switch to the main checkout and update there.
 | No sandbox | Do not add the App Sandbox entitlement. The app starts `adb`, `xcrun` and `git` as processes. | `project.yml` |
 
 To add a top-level area, read one area end to end first (Projects or Xcode). The steps are in
-[docs/architecture.md](docs/architecture.md).
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ### Contracts and generated code
 

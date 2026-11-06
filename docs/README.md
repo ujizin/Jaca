@@ -6,7 +6,7 @@ Start with the [project README](../README.md). To build and send a change, read 
 
 | Doc | What it covers |
 |---|---|
-| [`architecture.md`](architecture.md) | The components, how the processes talk, the `Sources/` tree, the layering rules, the daemon areas and the data on disk. |
+| [`ARCHITECTURE.md`](../ARCHITECTURE.md) | The components, how the processes talk, the `Sources/` tree, the layering rules, the daemon areas and the data on disk. |
 | [`scripts/README.md`](../scripts/README.md) | Every build, run, install and diagnostic script, with its flags. |
 | [`CLAUDE.md`](../CLAUDE.md) | The full code conventions: the area pattern, cache-first areas, migration-safe `Codable`, shared state. |
 
