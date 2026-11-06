@@ -7,7 +7,6 @@ import AppKit
 struct DeviceSidebarView: View {
     @Bindable var model: AppModel
     @State private var showHistory = false
-    @State private var showSettings = false
     @State private var showConnect = false
 
     var body: some View {
@@ -37,11 +36,11 @@ struct DeviceSidebarView: View {
                     onClick: { showHistory = true }, size: .xSmall
                 )
                 .accessibilityIdentifier("historyButton")
-                Button(action: { showSettings = true }) {
-                    Image(systemName: "gearshape")
-                        .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
-                }
-                .buttonStyle(.plain)
+                // The sidebar shows in every area, so this one gear opens Settings from all of them.
+                LemonadeUi.IconButton(
+                    icon: .gear, contentDescription: "Settings",
+                    onClick: { model.openSettings() }, size: .xSmall
+                )
                 .help("Settings")
                 .accessibilityIdentifier("settingsButton")
             }
@@ -91,9 +90,6 @@ struct DeviceSidebarView: View {
         .background(LemonadeTheme.colors.background.bgElevated)
         .sheet(isPresented: $showHistory) {
             HistoryView(model: model)
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsView(model: model)
         }
         .sheet(isPresented: $showConnect) {
             CompanionSetupSheet(model: model.companionSetup)

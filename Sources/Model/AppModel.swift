@@ -17,6 +17,23 @@ final class AppModel {
     /// Top-level area the app is showing: the device/session view or the worktrees area.
     var mode: WorkspaceMode = .devices
 
+    /// The Settings pane on screen, or nil while Settings is closed. Every entry point (the
+    /// sidebar gear, ⌘,, the status-bar menu) goes through `openSettings`, and `RootView`
+    /// presents the sheet from this value.
+    var settingsRoute: SettingsPane? {
+        didSet { if let settingsRoute { lastSettingsPane = settingsRoute } }
+    }
+
+    /// The last pane shown, so Settings reopens there while the app runs.
+    private(set) var lastSettingsPane: SettingsPane = .general
+
+    /// Opens Settings at `pane`, or at the last pane shown when `pane` is nil.
+    func openSettings(_ pane: SettingsPane? = nil) {
+        settingsRoute = SettingsPane.opening(pane, last: lastSettingsPane)
+    }
+
+    func closeSettings() { settingsRoute = nil }
+
     /// Agent HTTPS debugging (the default, with response overrides) or HTTPS debugging as a
     /// man-in-the-middle via the companion app — one or the other; see
     /// `FeatureFlags.networkInspectionMode`. Persisted across launches.

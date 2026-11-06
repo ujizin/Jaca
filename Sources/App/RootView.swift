@@ -18,6 +18,15 @@ struct RootView: View {
                 .animation(.easeInOut(duration: 0.15), value: model.mode)
         }
         .sheet(isPresented: $showCopyFormat) { LogCopyFormatSheet() }
+        .sheet(isPresented: Binding(
+            get: { model.settingsRoute != nil },
+            set: { if !$0 { model.closeSettings() } }
+        )) {
+            SettingsView(model: model)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
+            model.openSettings()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openLogCopyFormat)) { _ in
             showCopyFormat = true
         }
