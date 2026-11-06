@@ -1,6 +1,6 @@
 # Documentation
 
-Start with the [project README](../README.md). To build and send a change, read [`CONTRIBUTING.md`](../CONTRIBUTING.md). To report a vulnerability, read [`SECURITY.md`](../SECURITY.md).
+Start with the [project README](../README.md) and the [user guide](usage.md). To build and send a change, read [`CONTRIBUTING.md`](../CONTRIBUTING.md). To report a vulnerability, read [`SECURITY.md`](../SECURITY.md).
 
 ## Architecture
 
