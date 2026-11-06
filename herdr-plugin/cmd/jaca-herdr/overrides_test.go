@@ -207,11 +207,11 @@ func TestDerivedRoutedHosts(t *testing.T) {
 		matcher ruleMatcher
 		want    []string
 	}{
-		{"a literal host", ruleMatcher{Pattern: "https://api.teya.xyz/lending/**"}, []string{"api.teya.xyz"}},
-		{"a literal host without a scheme", ruleMatcher{Pattern: "api.teya.xyz/lending/**"}, []string{"api.teya.xyz"}},
-		{"a host with a port, in any case", ruleMatcher{Pattern: " https://API.teya.xyz:8443/x "}, []string{"api.teya.xyz"}},
+		{"a literal host", ruleMatcher{Pattern: "https://api.example.com/lending/**"}, []string{"api.example.com"}},
+		{"a literal host without a scheme", ruleMatcher{Pattern: "api.example.com/lending/**"}, []string{"api.example.com"}},
+		{"a host with a port, in any case", ruleMatcher{Pattern: " https://API.example.com:8443/x "}, []string{"api.example.com"}},
 		{"a wildcard for the whole host", ruleMatcher{Pattern: "**/product-state"}, nil},
-		{"a wildcard inside the host", ruleMatcher{Pattern: "*.teya.xyz/v1/**"}, nil},
+		{"a wildcard inside the host", ruleMatcher{Pattern: "*.example.com/v1/**"}, nil},
 		{"a regex never derives a host", ruleMatcher{Pattern: ".*", Kind: "regex"}, nil},
 		{"an empty pattern", ruleMatcher{}, nil},
 	}
@@ -612,7 +612,7 @@ func TestSeeding(t *testing.T) {
 	t.Setenv("JACA_OVERRIDES_DIR", t.TempDir())
 	status := 201
 	txn := netTransaction{
-		Method: "get", URL: "https://api.teya.xyz/lending/v1/state?locale=en&x=1", Host: "api.teya.xyz", Scheme: "https",
+		Method: "get", URL: "https://api.example.com/lending/v1/state?locale=en&x=1", Host: "api.example.com", Scheme: "https",
 		StatusCode: &status, ResponseContentType: "application/json; charset=utf-8",
 		ResponseHeaders: []headerPair{
 			{"Content-Type", "application/json"}, {"Content-Length", "17"}, {"content-encoding", "gzip"},
@@ -623,14 +623,14 @@ func TestSeeding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rule.Matcher.Pattern != "https://api.teya.xyz/lending/v1/state" || rule.Matcher.Kind != "glob" ||
+	if rule.Matcher.Pattern != "https://api.example.com/lending/v1/state" || rule.Matcher.Kind != "glob" ||
 		!reflect.DeepEqual(rule.Matcher.Methods, []string{"GET"}) {
 		t.Errorf("matcher = %+v", rule.Matcher)
 	}
 	if rule.Name != "get state" || !rule.Enabled || !isUUID(rule.ID) || rule.CreatedAt == "" {
 		t.Errorf("rule = %+v", rule)
 	}
-	if !reflect.DeepEqual(rule.RoutedHosts, []string{"api.teya.xyz"}) {
+	if !reflect.DeepEqual(rule.RoutedHosts, []string{"api.example.com"}) {
 		t.Errorf("routed hosts = %v", rule.RoutedHosts)
 	}
 	wantBody := "{\n  \"a\": {\n    \"c\": [\n      1,\n      2.50\n    ]\n  },\n  \"b\": 1\n}"
@@ -642,7 +642,7 @@ func TestSeeding(t *testing.T) {
 
 	// A rule seeded from a request matches that request, and the same path with another query.
 	set := compileRules([]overrideRule{rule}, true)
-	for _, url := range []string{txn.URL, "https://api.teya.xyz/lending/v1/state?locale=fr&extra=9"} {
+	for _, url := range []string{txn.URL, "https://api.example.com/lending/v1/state?locale=fr&extra=9"} {
 		if _, ok := set.firstMatch(url, "GET", "", ""); !ok {
 			t.Errorf("the seeded rule doesn't match %s", url)
 		}

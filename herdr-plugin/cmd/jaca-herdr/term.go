@@ -127,15 +127,6 @@ func onPanel(row string, w int) string {
 	return panelStyle + strings.ReplaceAll(row, sgrReset, sgrReset+panelStyle) + fill + sgrReset
 }
 
-// rowAt sets row n (1-based) of a frame, adding empty rows above it as needed.
-func rowAt(rows []string, n int, s string) []string {
-	for len(rows) < n {
-		rows = append(rows, "")
-	}
-	rows[n-1] = s
-	return rows
-}
-
 // Cleanups to run when a signal ends the process (deferred calls don't run then). Each must bound
 // its own time, so the process still exits.
 var (
@@ -477,47 +468,6 @@ func skipEscape(rs []rune, i int) int {
 		return j - 1
 	}
 	return i + 1
-}
-
-// key is one decoded keypress.
-type key int
-
-const (
-	keyNone key = iota
-	keyUp
-	keyDown
-	keyQuit
-	keyKill
-	keyRefresh
-)
-
-// readKeys decodes stdin bytes into keys until stdin closes.
-func readKeys(out chan<- key) {
-	buf := make([]byte, 16)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			close(out)
-			return
-		}
-		b := buf[:n]
-		switch {
-		case n >= 3 && b[0] == 0x1b && b[1] == '[' && b[2] == 'A':
-			out <- keyUp
-		case n >= 3 && b[0] == 0x1b && b[1] == '[' && b[2] == 'B':
-			out <- keyDown
-		case b[0] == 'k':
-			out <- keyUp
-		case b[0] == 'j':
-			out <- keyDown
-		case b[0] == 'q' || b[0] == 0x03:
-			out <- keyQuit
-		case b[0] == 'x':
-			out <- keyKill
-		case b[0] == 'r':
-			out <- keyRefresh
-		}
-	}
 }
 
 // readRawKeys forwards keypresses, one per send: a key, an escape sequence (arrows, a mouse

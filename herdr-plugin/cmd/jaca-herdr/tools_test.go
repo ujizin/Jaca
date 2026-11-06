@@ -357,6 +357,27 @@ func TestToolsPickerFitsThePane(t *testing.T) {
 	}
 }
 
+// The device picker never draws a row wider than the pane, nor more rows than it has.
+func TestDevicePickerFitsThePane(t *testing.T) {
+	d := &devicePicker{loaded: true}
+	d.setDevices([]device{
+		{ID: "emulator-5554", Platform: "android", Model: "Pixel 9 Pro XL with a long name", State: "unauthorized"},
+		{ID: "A1", Platform: "iosSimulator", Model: "iPhone 17 Pro Max", State: "shutdown"},
+	})
+	for _, rows := range []int{1, 2, 3, 4, 10, 24} {
+		for cols := 1; cols <= 120; cols++ {
+			for _, sel := range []int{0, 1} {
+				d.selected = sel
+				checkWidths(t, "device picker", d.frame(rows, cols), rows, cols)
+			}
+		}
+	}
+	d.selected = 0
+	if text := frameText(d.frame(10, 100)); !strings.Contains(text, "Unauthorized") || !strings.Contains(text, "Android") {
+		t.Errorf("a wide picker reads:\n%s", text)
+	}
+}
+
 func TestToolsPickerKeys(t *testing.T) {
 	quit := &pane{work: make(chan func()), done: make(chan struct{})}
 	close(quit.done)

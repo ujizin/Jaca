@@ -116,6 +116,23 @@ func TestLogViewerRowsFitThePane(t *testing.T) {
 	}
 }
 
+// At 80 columns both text fields are drawn, at either toolbar height: the chips lose their
+// padding before a field is left out.
+func TestLogToolbarKeepsBothFields(t *testing.T) {
+	for _, platform := range []string{"android", "iosSimulator"} {
+		v := &logViewer{device: device{ID: "x", Platform: platform, Model: "Pixel 9"}, follow: true}
+		for _, height := range []int{1, 3} {
+			got := sgr.ReplaceAllString(strings.Join(v.toolbar(80, height), "\n"), "")
+			// The package field can be too narrow for its whole placeholder.
+			for _, want := range []string{"Filter text", "Packag"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("%s, a %d-row toolbar at 80 columns has no %q field: %q", platform, height, want, got)
+				}
+			}
+		}
+	}
+}
+
 func TestAppValueByPlatform(t *testing.T) {
 	name := "Example"
 	v := &logViewer{apps: []appEntry{{ID: "com.example", Name: &name}}}
@@ -241,6 +258,32 @@ func TestHelpPopup(t *testing.T) {
 				if w := cellWidth(sgr.ReplaceAllString(row, "")); w > cols {
 					t.Fatalf("a popup row is %d cells in a %d-cell pane", w, cols)
 				}
+			}
+		}
+	}
+	// A help popup too tall for the pane gives up its blank rows, then takes two columns, before
+	// it cuts keys: Quit, the last key, stays.
+	nv := testNetViewer(t)
+	cv, _ := testCloudViewer(t)
+	for _, c := range []struct {
+		name       string
+		keys       [][2]string
+		rows, cols int
+	}{
+		{"network", nv.helpKeys(), 24, 80},
+		{"cloud", cv.helpKeys(), 20, 160},
+	} {
+		box := keysBox(c.keys, c.rows, c.cols)
+		if len(box) == 0 || len(box) > c.rows {
+			t.Fatalf("the %s help is %d rows in a %d-row pane", c.name, len(box), c.rows)
+		}
+		got := sgr.ReplaceAllString(strings.Join(box, "\n"), "")
+		if !strings.Contains(got, "Quit") {
+			t.Errorf("the %s help at %dx%d has no Quit:\n%s", c.name, c.rows, c.cols, got)
+		}
+		for i, row := range box {
+			if w := plainWidth(row); w != plainWidth(box[0]) || w > c.cols {
+				t.Errorf("the %s help: row %d is %d cells, the border %d", c.name, i, w, plainWidth(box[0]))
 			}
 		}
 	}
@@ -678,6 +721,32 @@ name = "not the theme"
 			if _, ok := colorParams(color, false); !ok {
 				t.Errorf("%s.%s = %q isn't a color", name, token, color)
 			}
+		}
+	}
+}
+
+// A Copy format popup cut to fit a short pane keeps Save, and Save's click target is on the row
+// that shows it.
+func TestShortFormatEditorKeepsSave(t *testing.T) {
+	editor := newFormatEditor(defaultCopyFormat)
+	save := len(copyPresets) + editSave
+	for rows := 5; rows <= 24; rows++ {
+		box := editor.box(rows, 80)
+		if len(box) == 0 || len(box) > rows {
+			t.Fatalf("at %d rows the popup is %d rows", rows, len(box))
+		}
+		found := false
+		for _, h := range editor.hits {
+			if h.row >= len(box) {
+				t.Errorf("at %d rows a click target is on row %d of a %d-row box", rows, h.row, len(box))
+				continue
+			}
+			if h.focus == save {
+				found = strings.Contains(sgr.ReplaceAllString(box[h.row], ""), "Save")
+			}
+		}
+		if !found {
+			t.Errorf("at %d rows Save isn't clickable where it is drawn:\n%s", rows, sgr.ReplaceAllString(strings.Join(box, "\n"), ""))
 		}
 	}
 }

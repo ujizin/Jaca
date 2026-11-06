@@ -1536,9 +1536,13 @@ type barBuilder struct {
 	used, cols       int
 	tall             bool
 	hits             []hit
+	chipPadding      int // the cells each side of a chip's label; 0 for the height's default
 }
 
 func (b *barBuilder) pad() int {
+	if b.chipPadding > 0 {
+		return b.chipPadding
+	}
 	if b.tall {
 		return 3
 	}
@@ -1622,9 +1626,31 @@ func (v *netViewer) overridesBadge() (text, style string) {
 }
 
 // toolbar is the app's: start/stop, Clear, the app being inspected, the filter, Overrides and
-// Export HAR, with the capture mode at the right where there is room.
+// Export HAR, with the capture mode at the right where there is room. Where the filter doesn't
+// fit, the chips lose their padding first, then Export HAR goes (it stays on S); the filter is
+// left out only after that.
 func (v *netViewer) toolbar(cols, height int) []string {
-	b := &barBuilder{cols: cols, tall: height >= 3}
+	b, complete := v.toolbarAt(cols, height, 0)
+	if !complete {
+		b, complete = v.toolbarAt(cols, height, 1)
+	}
+	if !complete {
+		if compact, ok := v.toolbarAt(cols, height, 2); ok {
+			b = compact
+		}
+	}
+	v.hits = b.hits
+	return b.rows()
+}
+
+// toolbarAt builds the toolbar at a level of compaction: 0 as roomy as the height allows, 1 with
+// one cell of padding each side of a chip's label, 2 also without Export HAR. It reports whether
+// the filter field is drawn.
+func (v *netViewer) toolbarAt(cols, height, level int) (b *barBuilder, complete bool) {
+	b = &barBuilder{cols: cols, tall: height >= 3}
+	if level >= 1 {
+		b.chipPadding = 1
+	}
 	if v.state.IsRunning {
 		b.chip("■", badgeStyle(colorRed), v.toggle)
 	} else {
@@ -1643,7 +1669,7 @@ func (v *netViewer) toolbar(cols, height int) []string {
 		if pkg := v.state.TargetPackage; pkg != "" {
 			app = pkg[strings.LastIndex(pkg, ".")+1:]
 		}
-		b.chip(app+" ▼", sgrBold, v.openApps)
+		b.chip(clip(sanitize(app), 28)+" ▼", sgrBold, v.openApps)
 	}
 
 	overrides := "Overrides"
@@ -1652,18 +1678,24 @@ func (v *netViewer) toolbar(cols, height int) []string {
 		overrides += " " + badge
 	}
 	const export = "Export HAR"
-	trailing := b.chipWidth(overrides) + 1 + b.chipWidth(export) + 1
+	withExport := level < 2
+	trailing := b.chipWidth(overrides) + 1
+	if withExport {
+		trailing += b.chipWidth(export) + 1
+	}
 	if w := min(64, cols-b.used-1-trailing); w >= 16 {
 		b.field(&v.filter, "Filter by URL, host, method…", v.focus == netSearch, w, func() { v.focus = netSearch })
+		complete = true
 	}
 	b.chip(overrides, tint, v.openOverridesList)
-	b.chip(export, "", v.exportHAR)
+	if withExport {
+		b.chip(export, "", v.exportHAR)
+	}
 	if room := cols - b.used - 2 - len(mode); room >= 0 { // the mode, flush right
 		lead := strings.Repeat(" ", room+1)
 		b.add(room+1+len(mode), lead, lead[:room+1]+sgrDim+mode+sgrReset, lead, nil)
 	}
-	v.hits = b.hits
-	return b.rows()
+	return b, complete
 }
 
 // autoReattachKey is the app's setting for relaunching a simulator app without asking
@@ -2126,7 +2158,19 @@ func (v *netViewer) detailColumn(w, n int) []string {
 	var tabs strings.Builder
 	used := 1
 	tabs.WriteString(" ")
+	// A strip too narrow for every tab starts late enough to keep the active tab in view.
+	first, through := 0, 1
+	for _, name := range netTabs[:min(v.tab+1, len(netTabs))] {
+		through += len(name) + 3
+	}
+	for first < v.tab && through > w {
+		through -= len(netTabs[first]) + 3
+		first++
+	}
 	for i, name := range netTabs {
+		if i < first {
+			continue
+		}
 		if used+len(name)+3 > w {
 			break
 		}

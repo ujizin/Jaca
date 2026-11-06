@@ -36,6 +36,35 @@ type boxHit struct {
 	drag        func(col int) // what dragging onto it with the button held does; nil for nothing
 }
 
+// cutPopup fits a closed popup box into rows: one too tall loses the rows above its last row
+// and border, and the spans on them. The spans under the cut move up with their rows. moved maps
+// a row of the uncut box to its row in the cut one, and reports false for a row that was cut.
+func cutPopup(box []string, hits []boxHit, rows int) (cut []string, kept []boxHit, moved func(int) (int, bool)) {
+	over := len(box) - rows
+	if over <= 0 {
+		return box, hits, func(row int) (int, bool) { return row, true }
+	}
+	keep := len(box) - 2
+	from := max(1, keep-over)
+	moved = func(row int) (int, bool) {
+		switch {
+		case row < from:
+			return row, true
+		case row >= keep:
+			return row - (keep - from), true
+		}
+		return 0, false
+	}
+	cut = append(box[:from:from], box[keep:]...)
+	for _, h := range hits {
+		if at, ok := moved(h.row); ok {
+			h.row = at
+			kept = append(kept, h)
+		}
+	}
+	return cut, kept, moved
+}
+
 // popupBox builds a popup row by row inside a border, recording clickable spans.
 type popupBox struct {
 	w, inner int
@@ -62,6 +91,29 @@ func (b *popupBox) button(row *string, label, style string, act func()) {
 	x := cellWidth(stripSGR(*row))
 	b.hit(x, x+cellWidth(stripSGR(label))-1, func(int) { act() })
 	*row += style + label + sgrReset
+}
+
+// footerButton is one button of a popup's footer, after gap from the button before it.
+type footerButton struct {
+	gap, label, style string
+	act               func()
+}
+
+// buttonRows adds a footer of buttons, wrapping a button that doesn't fit onto another row.
+func (b *popupBox) buttonRows(buttons []footerButton) {
+	row := ""
+	for _, btn := range buttons {
+		if row != "" {
+			if cellWidth(stripSGR(row))+len(btn.gap)+cellWidth(btn.label) > b.inner {
+				b.add(row)
+				row = ""
+			} else {
+				row += btn.gap
+			}
+		}
+		b.button(&row, btn.label, btn.style, btn.act)
+	}
+	b.add(row)
 }
 
 func (b *popupBox) close() []string {
@@ -656,7 +708,8 @@ func (v *netViewer) ruleAt(row int) (int, bool) {
 func (v *netViewer) overridesBox(rows, cols int) (box []string, top, left int) {
 	ui := &v.ovui
 	var b *popupBox
-	if v.focus == netEditor && ui.draft != nil {
+	editor := v.focus == netEditor && ui.draft != nil
+	if editor {
 		b = v.editorBox(rows, cols)
 	} else {
 		b = v.listBox(rows, cols)
@@ -666,13 +719,22 @@ func (v *netViewer) overridesBox(rows, cols int) (box []string, top, left int) {
 		ui.hits = nil
 		return nil, 0, 0
 	}
-	box = b.close()
-	if over := len(box) - rows; over > 0 {
-		// Too tall: rows are cut above the footer, which holds Save and why it can't be saved.
-		keep := len(box) - 2
-		box = append(box[:keep-over], box[keep:]...)
+	// Too tall: rows are cut above the footer, which holds Save and why it can't be saved. The
+	// click targets under the cut move up with their rows.
+	var moved func(int) (int, bool)
+	box, ui.hits, moved = cutPopup(b.close(), b.hits, rows)
+	if !editor { // ruleRows and selRow belong to the list; the editor leaves them as the list drew them
+		ruleRows := map[int]int{}
+		for row, n := range ui.ruleRows {
+			if at, ok := moved(row); ok {
+				ruleRows[at] = n
+			}
+		}
+		ui.ruleRows = ruleRows
+		if at, ok := moved(ui.selRow); ok {
+			ui.selRow = at
+		}
 	}
-	ui.hits = b.hits
 	ui.top, ui.left = max(0, (rows-len(box))/2), max(0, (cols-b.w)/2)
 	if v.focus == netOverrides && ui.menu != nil {
 		// The rule menu draws over the list, in the same overlay.
@@ -728,15 +790,12 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 		b.add("") // a drawn rule ends in its padding row
 	}
 	v.drawStatus(b)
-	footer := ""
-	b.button(&footer, " New override ", sgrBold+sgrRev, v.newOverride)
+	footer := []footerButton{{label: " New override ", style: sgrBold + sgrRev, act: v.newOverride}}
 	if v.overrides.HasGroups {
-		footer += "  "
-		b.button(&footer, " New group ", sgrRev, v.newGroup)
+		footer = append(footer, footerButton{gap: "  ", label: " New group ", style: sgrRev, act: v.newGroup})
 	}
-	footer += "   "
-	b.button(&footer, "Show log", sgrUnder, showLog)
-	b.add(footer)
+	footer = append(footer, footerButton{gap: "   ", label: "Show log", style: sgrUnder, act: showLog})
+	b.buttonRows(footer)
 	v.drawActivity(b)
 	return b
 }
@@ -746,7 +805,7 @@ func (v *netViewer) listBox(rows, cols int) *popupBox {
 // Esc goes back to the list of everything.
 func (v *netViewer) groupBox(g overrideGroup, w, rows int) *popupBox {
 	ui := &v.ovui
-	b := newPopupBox(sanitize(g.displayName()), w)
+	b := newPopupBox(clip(sanitize(g.displayName()), w-8), w)
 	b.closeRow(v.closeGroup)
 	ui.ruleRows = map[int]int{}
 
@@ -772,15 +831,12 @@ func (v *netViewer) groupBox(g overrideGroup, w, rows int) *popupBox {
 	}
 	v.drawRows(b, list, rows)
 	v.drawStatus(b)
-	footer := ""
-	b.button(&footer, " New override ", sgrBold+sgrRev, v.newOverride)
-	footer += "  "
-	b.button(&footer, " Rename group ", sgrRev, func() { v.startRename(g) })
-	footer += "  "
-	b.button(&footer, " Delete group ", sgrRev, func() { v.removeGroup(g.ID) })
-	footer += "   "
-	b.button(&footer, "Show log", sgrUnder, showLog)
-	b.add(footer)
+	b.buttonRows([]footerButton{
+		{label: " New override ", style: sgrBold + sgrRev, act: v.newOverride},
+		{gap: "  ", label: " Rename group ", style: sgrRev, act: func() { v.startRename(g) }},
+		{gap: "  ", label: " Delete group ", style: sgrRev, act: func() { v.removeGroup(g.ID) }},
+		{gap: "   ", label: "Show log", style: sgrUnder, act: showLog},
+	})
 	v.drawActivity(b)
 	return b
 }

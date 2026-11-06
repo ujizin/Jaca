@@ -244,6 +244,11 @@ func (e *formatEditor) compactBox(rows, cols int) []string {
 	}
 	blank := strings.Repeat(" ", inner)
 	current := e.format()
+	var spare []int // rows a short pane drops first: the blank rows, then the EXAMPLE heading
+	addBlank := func() {
+		spare = append(spare, len(box))
+		add(blank)
+	}
 
 	const save = "Save"
 	closeStyle := ""
@@ -262,7 +267,7 @@ func (e *formatEditor) compactBox(rows, cols int) []string {
 		add(rowMarker(e.focus == i) + radio + " " + fit(preset.name, nameW) + " " +
 			sgrDim + fit(sanitize(preset.format.renderSample()), inner-nameW-5))
 	}
-	add(blank)
+	addBlank()
 	add(sgrDim + fit("CUSTOM", inner))
 	field := func(label string, t *textInput, placeholder string, focus int) {
 		hit(0, inner-1, focus)
@@ -275,16 +280,54 @@ func (e *formatEditor) compactBox(rows, cols int) []string {
 		legend[i] = "{" + token + "}"
 	}
 	add(sgrCyan + fit(strings.Join(legend, " "), inner))
-	add(blank)
+	addBlank()
+	example := len(box)
 	add(sgrDim + fit("EXAMPLE", inner))
 	add(fit(sanitize(current.renderSample()), inner))
-	add(blank)
+	addBlank()
 	hit(inner-len(save)-2, inner-1, len(copyPresets)+editSave)
 	add(strings.Repeat(" ", inner-len(save)-2) + button(save, len(copyPresets)+editSave))
 	box = append(box, "╰"+rule+"╯")
-	if len(box) > rows {
-		box = append(box[:rows-1], box[len(box)-1])
+	// Too tall: the blank rows go first, then the EXAMPLE heading, then the rows above Save.
+	// The click targets move with their rows.
+	if over := len(box) - rows; over > 0 {
+		drop := map[int]bool{}
+		for _, row := range append(spare, example) {
+			if len(drop) < over {
+				drop[row] = true
+			}
+		}
+		box, e.hits = dropEditorRows(box, e.hits, drop)
+	}
+	if over := len(box) - rows; over > 0 {
+		keep := len(box) - 2 // Save and the bottom border
+		drop := map[int]bool{}
+		for row := max(1, keep-over); row < keep; row++ {
+			drop[row] = true
+		}
+		box, e.hits = dropEditorRows(box, e.hits, drop)
 	}
 	e.top, e.left = max(0, (rows-len(box))/2)+1, max(0, (cols-w)/2)+1
 	return box
+}
+
+// dropEditorRows takes the rows in drop out of box, with their click targets; the targets below
+// them move up.
+func dropEditorRows(box []string, hits []editorHit, drop map[int]bool) ([]string, []editorHit) {
+	moved := make([]int, len(box)) // a row's index once the dropped rows are gone
+	kept := make([]string, 0, len(box))
+	for i, row := range box {
+		moved[i] = len(kept)
+		if !drop[i] {
+			kept = append(kept, row)
+		}
+	}
+	var keptHits []editorHit
+	for _, h := range hits {
+		if h.row >= 0 && h.row < len(box) && !drop[h.row] {
+			h.row = moved[h.row]
+			keptHits = append(keptHits, h)
+		}
+	}
+	return kept, keptHits
 }

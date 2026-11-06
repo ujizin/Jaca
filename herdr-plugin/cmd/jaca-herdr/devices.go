@@ -250,7 +250,17 @@ func (d *devicePicker) leave(bool) {}
 
 func (d *devicePicker) draw() {
 	rows, cols := termSize()
-	var frame []string
+	paintRows(panelFrame(d.frame(rows, cols), rows, cols))
+}
+
+// frame is the picker's rows, at most rows of them: the close button at the top right, then the
+// devices, or the chosen device's options.
+func (d *devicePicker) frame(rows, cols int) (frame []string) {
+	defer func() { frame = frame[:min(len(frame), max(0, rows))] }()
+	if cols < 3 { // no room for a row's indent and one cell of it
+		d.closeX0, d.closeX1 = 0, 0
+		return nil
+	}
 	line := func(s string) { frame = append(frame, s) }
 
 	room := rows - 3
@@ -283,8 +293,7 @@ func (d *devicePicker) draw() {
 			}
 			line(listRow(clip(option.title, max(0, cols-2)), i == d.option, cols))
 		}
-		paintRows(panelFrame(frame, rows, cols))
-		return
+		return frame
 	}
 
 	// No heading: the popup's border already carries the pane's title.
@@ -293,20 +302,34 @@ func (d *devicePicker) draw() {
 	switch {
 	case !d.loaded:
 	case len(d.devices) == 0:
-		line("No devices connected")
+		line(clip("No devices connected", cols))
 	default:
+		// A row is the name, the platform and the state, inside the list's two-cell indent. A
+		// narrow pane gives up the platform before the name goes under 10 cells.
+		const platformW, stateW = 14, 12
+		nameW := min(max(10, cols/2-4), cols-2-2-platformW-2-stateW)
+		withPlatform := nameW >= 10
+		if !withPlatform {
+			nameW = min(max(10, cols/2-4), max(1, cols-2-2-stateW), max(0, cols-2))
+		}
 		start := listWindow(d.selected, room)
 		for i := start; i < len(d.devices) && i < start+room; i++ {
 			dev := d.devices[i]
-			name := sgrBold + fit(sanitize(dev.displayModel()), max(10, cols/2-4)) + sgrReset
-			state := dev.stateLabel()
+			row := sgrBold + fit(sanitize(dev.displayModel()), nameW) + sgrReset
+			if cols-2-nameW >= 2 {
+				row += "  "
+			}
+			if withPlatform {
+				row += fit(dev.platformName(), platformW) + "  "
+			}
+			state := clip(dev.stateLabel(), max(0, cols-2-cellWidth(stripSGR(row))))
 			if !dev.isReady() {
 				state = sgrDim + state + sgrReset
 			}
-			line(listRow(name+"  "+fit(dev.platformName(), 14)+"  "+state, i == d.selected, cols))
+			line(listRow(row+state, i == d.selected, cols))
 		}
 	}
-	paintRows(panelFrame(frame, rows, cols))
+	return frame
 }
 
 // panelFrame fills a whole pane with the panel background, as the picker's popup shows it.

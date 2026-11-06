@@ -98,8 +98,8 @@ func TestEditorEscapeGoesBack(t *testing.T) {
 // before it gives up the path.
 func TestNetListKeepsThePathReadable(t *testing.T) {
 	v := testNetViewer(t)
-	v.upsert([]netTransaction{{ID: "D", Method: "GET", Host: "private-api.teya.xyz", StatusCode: intPtr(200),
-		URL: "https://private-api.teya.xyz/v1/merchants/99392627-aaaa-bbbb-cccc/loan-applications/step"}})
+	v.upsert([]netTransaction{{ID: "D", Method: "GET", Host: "payments.example.com", StatusCode: intPtr(200),
+		URL: "https://payments.example.com/v1/customers/12345678-aaaa-bbbb-cccc/card-applications/step"}})
 	rows := v.listColumn(67, 8)
 	header := stripSGR(rows[0])
 	if strings.Contains(header, "HOST") || strings.Contains(header, "SIZE") || !strings.Contains(header, "TIME") {
@@ -190,5 +190,61 @@ func TestAttachBanner(t *testing.T) {
 	v.bannerHits = nil
 	if rows := v.banner(150, true, 4); strings.Contains(stripSGR(rows[1]), "automatically") {
 		t.Errorf("the Android banner offers the simulator setting: %q", rows[1])
+	}
+}
+
+// The network toolbar keeps its filter at 80 columns, at either height: the chips lose their
+// padding, then Export HAR goes, before the filter is left out. A long app name is clipped, and
+// no row is wider than the pane.
+func TestNetToolbarKeepsTheFilter(t *testing.T) {
+	v := testNetViewer(t)
+	for _, height := range []int{1, 3} {
+		got := stripSGR(strings.Join(v.toolbar(80, height), "\n"))
+		if !strings.Contains(got, "Filter by URL") {
+			t.Errorf("a %d-row toolbar at 80 columns has no filter: %q", height, got)
+		}
+	}
+	v.state.TargetPackage = "com.example." + strings.Repeat("myapplication", 4)
+	if got := stripSGR(strings.Join(v.toolbar(120, 1), "\n")); !strings.Contains(got, "…") {
+		t.Errorf("a long app name isn't clipped: %q", got)
+	}
+	for cols := 1; cols <= 200; cols++ {
+		for _, height := range []int{1, 3} {
+			for _, row := range v.toolbar(cols, height) {
+				if w := cellWidth(stripSGR(row)); w > cols {
+					t.Fatalf("a %d-row toolbar is %d cells in a %d-cell pane", height, w, cols)
+				}
+			}
+		}
+	}
+}
+
+// A detail too narrow for every tab keeps the active tab in view, with a click target on it.
+func TestNetDetailKeepsTheActiveTab(t *testing.T) {
+	v := testNetViewer(t)
+	setTermSize(t, 30, 80)
+	v.handleKey([]byte{'\r'})
+	v.draw()
+	w := 80 - v.listW - 1
+	for _, tab := range []int{tabResponse, tabTiming, tabOverview} {
+		v.setTab(tab)
+		row := stripSGR(v.detailColumn(w, 20)[1])
+		name := netTabs[tab]
+		at := strings.Index(row, name+" ")
+		if at < 1 {
+			t.Errorf("at 80 columns the active tab %s isn't drawn: %q", name, row)
+			continue
+		}
+		// The detail starts past the list and its divider; the target starts on the tab's leading space.
+		x0 := v.listW + 2 + len([]rune(row[:at])) - 1
+		found := false
+		for _, h := range v.tabHits {
+			if h.x0 == x0 && h.x1 == x0+len(name)+1 {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("at 80 columns no click target is on the %s tab (x %d): %+v", name, x0, v.tabHits)
+		}
 	}
 }

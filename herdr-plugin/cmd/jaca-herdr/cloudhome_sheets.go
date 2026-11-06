@@ -25,24 +25,7 @@ func (f *sheetFrame) place(b *popupBox, rows, cols int) (box []string, top, left
 	if f.hidden {
 		return nil, 0, 0
 	}
-	box = b.close()
-	hits := b.hits
-	if over := len(box) - rows; over > 0 {
-		keep := len(box) - 2
-		from := max(1, keep-over)
-		box = append(box[:from:from], box[keep:]...)
-		hits = nil
-		for _, h := range b.hits {
-			switch {
-			case h.row < from:
-				hits = append(hits, h)
-			case h.row >= keep:
-				h.row -= keep - from
-				hits = append(hits, h)
-			}
-		}
-	}
-	f.hits = hits
+	box, f.hits, _ = cutPopup(b.close(), b.hits, rows)
 	f.top, f.left = max(0, (rows-len(box))/2), max(0, (cols-b.w)/2)
 	return box, f.top, f.left
 }
