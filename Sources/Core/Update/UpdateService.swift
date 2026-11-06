@@ -131,8 +131,8 @@ struct UpdateService: Sendable {
     /// Reuses the repo's canonical installer — builds Release and copies it to
     /// `/Applications/Jaca.app` — so an in-app update lands exactly like a manual
     /// `./scripts/all.sh --install`. Skips the slow Android agent build when its
-    /// artifacts already exist, and builds it only when missing (best-effort —
-    /// `all.sh` continues if the Android toolchain isn't installed). Runs through a
+    /// artifacts already exist, and builds it only when missing (then `all.sh` fails
+    /// if the Android toolchain isn't installed). Runs through a
     /// login shell so Homebrew's `xcodegen` is on PATH (GUI apps don't inherit it).
     private func buildAndResolveAppPath(_ repo: String) async throws -> String {
         let script = """

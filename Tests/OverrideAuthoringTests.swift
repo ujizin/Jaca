@@ -227,12 +227,12 @@ final class OverrideAuthoringTests: XCTestCase {
     /// request it was seeded from — including when that request carried a query string.
     func test_ruleSeededFromARequestMatchesThatRequest() {
         var txn = NetworkTransaction(method: "GET",
-                                     url: "https://api.teya.xyz/lending/v1/state?locale=en&x=1",
-                                     host: "api.teya.xyz", scheme: "https")
+                                     url: "https://api.example.com/lending/v1/state?locale=en&x=1",
+                                     host: "api.example.com", scheme: "https")
         txn.statusCode = 200
 
         let pattern = OverrideSeeding.pattern(for: txn)
-        XCTAssertEqual(pattern, "https://api.teya.xyz/lending/v1/state")
+        XCTAssertEqual(pattern, "https://api.example.com/lending/v1/state")
 
         let rule = OverrideRule(matcher: OverrideMatcher(pattern: pattern, methods: ["GET"]))
         let set = OverrideCompiler.compile([rule], masterEnabled: true)
@@ -257,13 +257,13 @@ final class OverrideAuthoringTests: XCTestCase {
     /// its path names, and answers the same endpoint behind the portal's dev proxy as well.
     func test_ruleOnAnyBaseURLKeepsItsRoutedHostAndPathAndMatchesTheDevProxy() {
         var txn = NetworkTransaction(method: "GET",
-                                     url: "https://private-api.teya.xyz/lending/v1/companies/42/deals?x=1",
-                                     host: "private-api.teya.xyz", scheme: "https")
+                                     url: "https://private-api.example.com/lending/v1/companies/42/deals?x=1",
+                                     host: "private-api.example.com", scheme: "https")
         txn.statusCode = 200
         let rule = OverrideSeeding.onAnyBaseURL(OverrideSeeding.rule(for: txn, responseBody: Data()))
 
         XCTAssertEqual(rule.matcher.pattern, "**/lending/v1/companies/42/deals")
-        XCTAssertEqual(rule.routedHosts, ["private-api.teya.xyz"])
+        XCTAssertEqual(rule.routedHosts, ["private-api.example.com"])
 
         let set = OverrideCompiler.compile([rule], masterEnabled: true)
         for url in [txn.url, "http://localhost:3000/private-api/lending/v1/companies/42/deals"] {
@@ -272,7 +272,7 @@ final class OverrideAuthoringTests: XCTestCase {
         }
         XCTAssertNil(set.firstMatch(facts: OverrideMatching.facts(url: "http://localhost:3000/private-api/lending/v1/companies/7/deals")!,
                                     method: "GET", deviceID: nil, appID: nil), "the company id it names is kept")
-        XCTAssertEqual(set.routedHosts(deviceID: nil, appID: nil), ["private-api.teya.xyz"])
+        XCTAssertEqual(set.routedHosts(deviceID: nil, appID: nil), ["private-api.example.com"])
     }
 
     func test_anyBaseURLTwiceChangesNothing() {

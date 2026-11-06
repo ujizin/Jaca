@@ -38,11 +38,6 @@ final class UiAutomatorDriver: @unchecked Sendable {
         return Self.parse(r.stdout)
     }
 
-    func foregroundActivity() async -> String {
-        let r = try? await CommandRunner.run(adbURL, ["-s", serial, "shell", "dumpsys", "activity", "activities"])
-        return r?.stdout ?? ""
-    }
-
     // MARK: - Acting
 
     func tap(_ node: Node) async {

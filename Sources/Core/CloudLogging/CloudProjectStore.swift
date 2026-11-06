@@ -60,11 +60,6 @@ struct CloudProject: Codable, Sendable, Hashable, Identifiable {
         favoriteLabelKeysByLogName[selectedLogName ?? ""] ?? []
     }
 
-    /// Label example rules for the currently selected log name.
-    var currentLabelExampleRules: [String: LabelExampleRule] {
-        labelExampleRulesByLogName[selectedLogName ?? ""] ?? [:]
-    }
-
     enum CodingKeys: String, CodingKey {
         case projectID, displayName, selectedLogName, logNames, labelKeysByLogName,
              favoriteLabelKeysByLogName, labelExampleRulesByLogName

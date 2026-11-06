@@ -19,7 +19,7 @@ final class MacBrowserCaptureTests: XCTestCase {
     }
 
     func test_lockTarget_givesThePid() {
-        XCTAssertEqual(ChromeBrowser.pid(fromLockTarget: "Lucass-MacBook-Pro.local-4242"), 4242)
+        XCTAssertEqual(ChromeBrowser.pid(fromLockTarget: "Example-MacBook-Pro.local-4242"), 4242)
         XCTAssertEqual(ChromeBrowser.pid(fromLockTarget: "host-with-dashes-7"), 7)
         for bad in ["", "host", "host-", "host-x", "host-0"] {
             XCTAssertNil(ChromeBrowser.pid(fromLockTarget: bad), bad)

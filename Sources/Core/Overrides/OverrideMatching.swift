@@ -392,7 +392,7 @@ enum OverrideMatching {
     /// matches its path on any base URL.
     ///
     /// This is what lets one rule answer the same endpoint from a device
-    /// (`https://private-api.teya.xyz/lending/v1/…`) and from a browser running the portal
+    /// (`https://private-api.example.com/lending/v1/…`) and from a browser running the portal
     /// against its dev server (`http://localhost:3000/private-api/lending/v1/…`): `**` crosses
     /// `/`, so it absorbs the scheme, the host, the port and the dev server's proxy prefix.
     /// Rewrite the pattern captured from the **device**, which carries no such prefix.

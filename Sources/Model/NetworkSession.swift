@@ -429,7 +429,7 @@ final class NetworkSession: WorkspaceTab {
 
     /// Choose a capture source and start it. The single entry point for every source.
     func select(_ descriptor: CaptureSourceDescriptor, package: String? = nil) {
-        statusMessage = nil   // a message the tab set itself (a CA push) belongs to the last run
+        statusMessage = nil   // a message from the last run does not apply to the new source
         feed.select(sourceID: descriptor.id, package: package)
     }
 
@@ -698,21 +698,7 @@ final class NetworkSession: WorkspaceTab {
         return CurlExport.command(for: txn)
     }
 
-    // MARK: - CA (proxy mode)
-
-    func pushCAToDevice() {
-        guard device.platform == .android, let adbURL else { return }
-        let serial = device.id
-        let caURL = ca.storageDirectory.appendingPathComponent("rootCA.pem")
-        Task {
-            let ok = await ProxyConfigurator.pushCACertToAndroid(adbURL: adbURL, serial: serial, caPEM: caURL)
-            await MainActor.run {
-                statusMessage = ok
-                    ? "CA pushed to /sdcard/Download/JacaProxyCA.pem — install it in Settings."
-                    : "Failed to push CA certificate."
-            }
-        }
-    }
+    // MARK: - CA install
 
     func prepareCAInstall() async {
         guard device.platform == .android, let adbURL else { return }

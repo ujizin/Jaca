@@ -38,9 +38,7 @@ struct Project: Identifiable, Equatable, Codable {
     }
 
     var totalSizeMB: Int { checkouts.reduce(0) { $0 + $1.sizeMB } }
-    var totalCacheMB: Int { checkouts.reduce(0) { $0 + $1.cacheMB } }
     var sizesComputed: Bool { !checkouts.isEmpty && checkouts.allSatisfy(\.sizeComputed) }
-    var orphanCount: Int { checkouts.filter(\.orphan).count }
 
     /// Most recent activity across the root and all checkouts — drives ordering.
     var effectiveLastActive: Date? {
