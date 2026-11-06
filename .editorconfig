@@ -1,0 +1,58 @@
+# Editor settings that match the existing code. See https://editorconfig.org.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Swift, Objective-C, Kotlin, Java, C (JNI) and CMake: 4 spaces.
+[*.{swift,m,h,kt,kts,java,c}]
+indent_style = space
+indent_size = 4
+
+[CMakeLists.txt]
+indent_style = space
+indent_size = 4
+
+[*.xml]
+indent_style = space
+indent_size = 4
+
+# The Android agent's native C++: 2 spaces.
+[agent/native/*.{cc,h}]
+indent_style = space
+indent_size = 2
+
+# Go: tabs, as gofmt writes them.
+[{*.go,go.mod}]
+indent_style = tab
+
+# Shell scripts, YAML, TOML, protobuf and JSON: 2 spaces.
+[*.{sh,yml,yaml,toml,proto,json}]
+indent_style = space
+indent_size = 2
+
+# Property lists use tabs, as Xcode writes them.
+[*.plist]
+indent_style = tab
+
+# Markdown uses two trailing spaces for a line break.
+[*.md]
+trim_trailing_whitespace = false
+
+# Gradle wrapper scripts are generated.
+[mobile/{gradlew,gradlew.bat}]
+indent_style = unset
+indent_size = unset
+end_of_line = unset
+
+# Vendored and generated code keeps its upstream style.
+[{agent/native/third_party/**,agent/native/include/**,mobile/composeApp/src/androidMain/jni/zdtun/**,Sources/Core/Companion/Generated/**}]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset
