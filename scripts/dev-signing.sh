@@ -4,8 +4,10 @@
 #
 # Why: macOS binds a keychain item's "Always Allow" to the requesting app's code signature.
 # Ad-hoc builds (CODE_SIGN_IDENTITY="-") get a new signature every rebuild, so "Always Allow"
-# for the CA private key never sticks and you're re-prompted on every launch. With a stable
-# identity you approve the prompt once and it holds.
+# never sticks and you're re-prompted on every launch. With a stable identity you approve a
+# prompt once and it holds. Current builds keep the CA private key in a file
+# (~/Library/Application Support/Jaca/ca/rootCA.key.pem), so the CA no longer needs this; a
+# build that still reads a key from the Keychain does.
 #
 # The identity lives in a DEDICATED keychain with a known password, so this is fully
 # non-interactive and never touches your login keychain or its search list. build.sh re-signs

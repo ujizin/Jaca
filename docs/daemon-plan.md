@@ -1,12 +1,13 @@
-# Jaca daemon: experimental plan
+# Jaca daemon: plan and status
 
 Move Jaca's business logic into a long-running background process (`jacad`) so more than one
 front end can drive it. The SwiftUI app becomes one client. A Herdr plugin, rendering Jaca's
 areas as terminal panes, becomes a second one.
 
-Status: experimental, on branches `exp/daemon` and `exp/daemon-overrides` (the latter also
-carries response overrides; see the last section). Nothing merges to `main` until an area works
-end to end through the daemon. Last updated: 2026-10-07.
+Status: the daemon, the `jaca` command line, response overrides and the Herdr plugin are on
+`main`. Daemon areas stay opt-in per area and off by default (see "Trying it"). The work started
+on the branches `exp/daemon` and `exp/daemon-overrides`; the sections below that name those
+branches are history. Last updated: 2026-11-06.
 
 ## Progress
 
@@ -15,14 +16,14 @@ end to end through the daemon. Last updated: 2026-10-07.
 | 0. Core compiles on its own | Done, with a different approach (see "Changes from the first draft"). |
 | 1. Protocol and daemon skeleton | Done. |
 | 2. Gradle, Xcode, Projects | Done. |
-| 3. Herdr plugin prototype | Done (Gradle pane + two actions). Not linked into Herdr yet. |
+| 3. Herdr plugin prototype | Done. `herdr-plugin/herdr-plugin.toml` now declares 9 panes and 2 actions (see phase 8). |
 | 4. Devices | Done. |
 | 5. Log streaming | Done. Physical iOS untested (no device here); the private frameworks load in `jacad`. |
 | 6. Cloud logging | Done. Tested with a scripted poller, not against GCP. |
 | 7. Network capture | Done for the in-process agent. Companion capture stays in the app (see below). |
-| 7b. Response overrides | Done on branch `exp/daemon-overrides` (see below). |
-| 7c. Database browsing | Daemon side written (`DatabaseArea`, see "Database browsing in the daemon"). Not built or run yet; the app still browses in-process. |
-| 8. Herdr plugin, full | Partly done: `devices` (a picker popup), `logs` (the log tab's filters, package picker and status bar), `network` (agent capture with response overrides), `gradle` and `projects` panes, `tools` (a picker for Gradle and Xcode), `xcode` and `cloud` (the home and the log sessions) panes, two actions. |
+| 7b. Response overrides | Done; merged into `main` (see below). |
+| 7c. Database browsing | Done in the daemon: `DatabaseArea` (see "Database browsing in the daemon") builds in `jacad`, `DatabaseAreaTests` tests it, and the Herdr `database` pane uses it. The app still browses in-process. |
+| 8. Herdr plugin, full | Partly done: `devices` (a picker popup), `logs` (the log tab's filters, package picker and status bar), `network` (agent capture with response overrides), `database` (one app's SQLite databases), `gradle` and `projects` panes, `tools` (a picker for Gradle and Xcode), `xcode` and `cloud` (the home and the log sessions) panes, two actions. |
 | 9. `jaca` command line | Done (see "The `jaca` command line"). Run against an in-process daemon and, read-only, against a live one; not against a device capture. |
 
 ### Trying it
@@ -150,7 +151,8 @@ What has to change:
 1. **One module.** The `Jaca` target in `project.yml` globs all of `Sources/`. A daemon needs
    Core as its own target that both binaries link.
 2. **One compile-time Core → Model dependency.** `CaptureContext` and `CaptureSourceDescriptor`
-   take a `DeviceContext`, which lives in `Sources/Model/DeviceContext.swift`
+   take a `DeviceContext`, which lived in `Sources/Model/DeviceContext.swift` (now
+   `Sources/Core/Devices/DeviceContext.swift`)
    (`CaptureSource.swift:10,48`, `CaptureSourceRegistry.swift:48,57`).
 3. **Main-actor types inside Core.** `CaptureContext`, `CaptureSink`, `CaptureSource`,
    `CaptureSourceDescriptor` (`Core/Capture/CaptureSource.swift`) and `CompanionHub`
@@ -257,9 +259,9 @@ exists.
 
 **Wire types.** Every type that crosses the socket gets `Codable` with the same tolerant decode
 as persisted models, so a newer daemon and an older client (or the reverse) degrade instead of
-failing. Golden JSON fixtures under `Tests/Fixtures/jacad/` pin the encoding. The protocol is
-described in a hand-written JSON Schema at `proto/jacad.schema.json`, and a test checks every
-fixture against it. `jacad call api.schema` prints it, like `herdr api schema`.
+failing. The schemas are hand-written in Swift (`Sources/Core/Daemon/DaemonSchema.swift`,
+`DaemonSchemas.swift`), `api.describe` carries them, and `Tests/DaemonSchemaTests.swift` checks
+them against encoded values (see "Schemas" under "The `jaca` command line").
 
 ## Phases
 
@@ -291,7 +293,8 @@ and `Sources/Core` fails to compile if it imports a Model type.
 - Idle shutdown and the stale-socket check (a leftover socket file with nothing listening is
   removed, then bound).
 - `jacad call` for one-shot requests.
-- A small Swift client in the app (`Model/Daemon/DaemonClient.swift`): connect or spawn,
+- A small Swift client (`Sources/Core/Daemon/DaemonClient.swift`, in Core so that `jacad` and
+  the CLI can use it too): connect or spawn,
   handshake, request/response by id, an `AsyncStream` per event topic, and reconnect.
 - The config file and the one-time `UserDefaults` import.
 - A setting to turn daemon mode on per area, off by default.
@@ -439,9 +442,11 @@ Phase 8 depends on how far the TUI goes.
 - Whether `jacad` should also run outside the app bundle (installed with Homebrew next to
   `herdr`) for users who only want the plugin.
 
-## Response overrides in the daemon (branch `exp/daemon-overrides`)
+## Response overrides in the daemon
 
-`exp/daemon-overrides` is `feat/override-http-ios` at `407e9ae` with `exp/daemon` merged in
+This work is merged into `main`. The branch history below is kept as history.
+
+`exp/daemon-overrides` was `feat/override-http-ios` at `407e9ae` with `exp/daemon` merged in
 (`05df09b`), followed by review fixes. It replaced an earlier version (kept as
 `exp/daemon-overrides-v1`) that cherry-picked three override commits onto `exp/daemon`.
 
@@ -589,8 +594,15 @@ jaca net list
 jaca net requests [SESSION] [-n COUNT] [--host HOST] [--status STATUS] [--method METHOD] [--failed]
 jaca net show REQUEST
 jaca overrides list
-jaca overrides add --from REQUEST [--name NAME] [--status CODE] [--body-file PATH] [--disabled]
-jaca overrides enable | disable | rm RULE
+jaca overrides add --from REQUEST [--name NAME] [--status CODE] [--body-file PATH] [--disabled] [--generalize]
+jaca overrides generalize RULE
+jaca overrides enable | disable RULE | --group GROUP
+jaca overrides rm RULE
+jaca overrides groups
+jaca overrides mkgroup NAME
+jaca overrides rmgroup GROUP
+jaca overrides group RULE GROUP
+jaca overrides ungroup RULE
 jaca call | watch | status | stop | describe          (as jacad)
 jaca ... [--json] [--raw] [--no-spawn] [--help]
 ```

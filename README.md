@@ -1,318 +1,276 @@
+<div align="center">
+
+<img src="art/logo.png" alt="Jaca logo" width="128">
+
 # Jaca
 
-A native macOS app for watching what your connected devices are doing — their
-logs and their network traffic — in a fast, multi-tab "terminal" UI.
+A native macOS tool for mobile developers: device logs, network capture, response overrides and local build-cache cleanup.
 
-Point it at an Android emulator, a physical Android phone, or an iOS simulator,
-pick a device, and start a stream. Open as many tabs as you want: several devices
-at once, or the same device with different filters side by side. Built with
-SwiftUI and the [Lemonade design system](../lemonade-design-system).
+![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)
+![Swift 5.9](https://img.shields.io/badge/Swift-5.9-orange)
 
-> Status: working tool, actively built. Android logging and network capture are
-> solid; iOS logging works; a couple of pieces (gRPC capture, device-ABI agent
-> auto-select) are still being rounded out. See [Limitations](#limitations).
+</div>
 
----
+## What is Jaca
 
-## What it does
+Jaca is a SwiftUI app for macOS. It shows what your Android devices, emulators, iOS simulators and physical iOS devices do: their logs and their network traffic. You can open many tabs at the same time, for several devices or for one device with different filters. Jaca also cleans the local caches that mobile builds leave behind, and it reads Google Cloud Logging.
 
-**Device logs**
-- Auto-discovers Android devices/emulators (`adb`), iOS simulators (`simctl`),
-  and physical iOS devices (`devicectl`), live in the sidebar.
-- Streams logcat (`adb logcat -v threadtime`) and iOS unified logs
-  (`simctl spawn … log stream`), parsed into a structured, colour-coded list.
-- Each tab is an independent session with an editable name. Filter by level,
-  free text or regex, and by app — there's a searchable **app/package dropdown**
-  populated from the device (`pm list packages` / `simctl listapps`).
-- History of every session is saved to SQLite (with full-text search) and
-  browsable per device + app, across runs.
-- **App-crash detector** — counts real crashes (`FATAL EXCEPTION` / native fatal
-  signal) in the stream, drops a red marker inline at each one, and a toolbar
-  badge jumps you to the most recent.
-- Follow-tail that **freezes the scrollback while you read** (incoming logs never
-  jump your position), a Liquid-Glass "jump to latest" button, and a never-clear
-  reconnect loop that survives app restarts/reinstalls (death/restart markers
-  injected inline).
-- Multi-line **copy** (message text only, no timestamps/tags), draggable tabs,
-  `Shift`+`Tab` to cycle tabs, per-session **clear** and **export**.
+Jaca runs from the menu bar. A background daemon, `jacad`, serves the same features to the `jaca` command line and to a plugin for the Herdr terminal workspace.
 
-**Network inspection** — three ways to capture:
-1. **In-process agent** (debuggable Android apps): injects into the app process
-   and reads requests/responses *before* TLS — no proxy, no CA, immune to cert
-   pinning, and it even captures the **call stack** that made each request. Hooks
-   `HttpURLConnection`/`HttpsURLConnection` (http and https) and both **OkHttp3
-   and OkHttp2**, including request bodies. This is how Android Studio's Network
-   Inspector works; Jaca reimplements it.
-2. **MITM proxy** (everything else): a local HTTPS-intercepting proxy. Works for
-   any app that trusts the proxy's CA; blocked by pinning. Captures full
-   request/response, headers, bodies, and timing.
-3. **On-device companion app** (Android, no cable): a Compose Multiplatform app you
-   install on the phone captures *all* its traffic with a `VpnService` + a userspace
-   TCP/IP stack, attributes each flow to the owning app, and streams it to Jaca
-   desktop over gRPC/TLS on the LAN. TLS is decrypted on the **desktop** — the CA
-   private key never leaves the Mac; the phone tunnels intercepted TLS to the
-   desktop's proxy. Works over Wi-Fi without ADB, even on emulators, and the app
-   guides you through installing the CA (no manual download).
+There are no prebuilt releases. Build Jaca from source with the [Quick start](#quick-start).
 
-All modes share a detail view: method/URL/status/timing, request & response
-**headers with one-click copy**, bodies with a **JSON tree ⇄ raw** toggle, a
-drag-to-select request **timeline**, and HAR export (proxy).
+## Features
 
----
+### Devices
 
-## How it works
+The sidebar finds Android devices and emulators (`adb`), iOS simulators (`simctl`), physical iOS devices (`devicectl`) and "This Mac". The device menu has "Start Logcat", "Inspect Network" and "Browse Database".
 
-### The app
+| Feature | What it does |
+|---|---|
+| **Logs** | Streams `adb logcat` and simulator logs into a filtered, colour-coded list. Physical iOS devices stream structured logs (level, subsystem, category). Filter by level, text, regex or app (the app list comes from the device). Jaca marks crashes inline and counts them. When the app dies or restarts, the stream reconnects and puts a marker in the list. A follow tail holds the scroll position while you read. You can set the copy format, clear the list and export it. |
+| **Network capture** | Three capture sources (see below). Each tab has a request list, a timeline with drag-to-filter, headers, bodies with a JSON tree, "Copy as cURL" and "Export HAR". |
+| **Response overrides** | Right-click a request and choose "Override response…". A rule matches a method and a URL pattern and answers with your status, headers and body. Rules can go in groups, and one switch pauses all of them. |
+| **Database browser** | Opens the SQLite databases of a debuggable Android app or an iOS Simulator app from a read-only snapshot. Shows table pages, runs SQL and shows row detail. |
+| **History** | Saves every log session to SQLite with full-text search. Browse it by device, app and session. Settings sets the retention (default 7 days). |
 
-A single non-sandboxed SwiftUI app (so it can shell out to `adb`/`xcrun`). The
-code splits cleanly:
+The three network capture sources:
 
-- `Sources/Core/` — no SwiftUI. Device discovery, log sources, the SQLite store,
-  the proxy and the agent controller. Everything sits behind small protocols
-  (`DeviceProvider`, `LogSource`) so a new platform is just another implementation.
-- `Sources/Model/` — `AppModel` (devices + open tabs) and the `@Observable`
-  session types (`LogSession`, `NetworkSession`) that back the UI.
-- `Sources/Features/` — the SwiftUI views (sidebar, tab strip, log list, network
-  list/detail/timeline, history, settings).
+| Source | Targets | How it works |
+|---|---|---|
+| In-process agent | Debuggable Android apps, iOS Simulator apps | Jaca injects an agent into the app and reads requests before TLS. No proxy and no CA. Works with certificate pinning. Records the call stack on Android. |
+| Chrome browser | This Mac | Jaca opens a separate Chrome window with its own profile and sends its traffic through a loopback proxy. |
+| Companion stream | Android phones (experimental) | The Jaca companion app captures all device traffic with a `VpnService` and streams it to the Mac over gRPC/TLS. The Mac decrypts TLS. Turn it on in Settings → Network inspection → "HTTPS debugging". |
 
-Log lines are accumulated off the main thread and flushed into the observed view
-on a ~30 ms timer, so a chatty device doesn't stutter the UI.
+Details: [docs/network-capture.md](docs/network-capture.md), [docs/agent-https-debugging-android.md](docs/agent-https-debugging-android.md), [docs/agent-https-debugging-ios.md](docs/agent-https-debugging-ios.md), [docs/companion-architecture.md](docs/companion-architecture.md).
 
-### Network capture: the in-process agent
+### Maintenance areas
 
-This is the interesting part. For a **debuggable** Android app we don't proxy at
-all — we run code inside the app and instrument its HTTP stack. The mechanism
-mirrors AOSP's App Inspection and is built from open-source pieces:
+| Area | What it does |
+|---|---|
+| **Projects** | Lists the projects Claude Code ran in (`~/.claude/projects`) and folders you add, each with its git worktrees. Shows disk sizes, cleans build caches (`.gradle/`, `build/`, the matching DerivedData), deletes worktrees and opens a checkout in Finder, Zed or Herdr. |
+| **Gradle** | Lists running Gradle daemons (JDK, heap, CPU, uptime) and kills them. Shows the folders of `~/.gradle/caches` with sizes and deletes them. |
+| **Xcode** | Lists DerivedData folders with size and kind (live, stale or shared) and deletes them. |
+| **Cloud Logging** | Reads Google Cloud Logging through `gcloud`. Session tabs have a time range, severity, filters, live polling and SQL over the loaded entries. |
 
-1. A small **native JVMTI agent** (`agent/native`, built with the NDK) is attached
-   to the running app over adb with `cmd activity attach-agent` — which works on
-   debuggable apps **without root**.
-2. It uses AOSP's [**slicer**](https://android.googlesource.com/platform/tools/dexter)
-   (vendored) to rewrite `java.net.URL.openConnection()` at load time so the method
-   calls our hook on return (a JVMTI `ClassFileLoadHook` + `RetransformClasses`).
-3. The hook returns a transparent **wrapper** around the returned connection —
-   `HttpsURLConnection` *and* plain (cleartext) `HttpURLConnection` — that tees the
-   request/response streams and records method, URL, headers, bodies, timing, and
-   the initiating call stack.
-4. For OkHttp it also hooks `OkHttpClient.networkInterceptors()` (an app class,
-   found via `GetLoadedClasses`/`RetransformClasses`) and **injects a capture
-   interceptor** — built as a reflective `java.lang.reflect.Proxy` of the
-   `Interceptor` interface so the agent needn't compile against the app's OkHttp.
-   Both **okhttp3** and **okhttp2** (`com.squareup.okhttp`) are hooked (routed by
-   the declaring class in the exit-hook signature); request bodies are captured by
-   writing the `RequestBody` into a fresh okio `Buffer`.
-5. Each transaction is streamed as one JSON line over an adb-forwarded
-   `localabstract` socket back to Jaca.
+### Daemon, CLI and Herdr plugin
 
-The interceptor is written to be **transparent to the app** — it mirrors AOSP's
-`OkHttp3Interceptor`: it never consumes a one-shot/duplex request body, and it
-rethrows the *real* exception on a cancelled/failed call (so a `StreamResetException`
-can't crash the app). Response bodies are captured with a **lazy tee**, never an
-eager `peekBody`: the response body's `okio.Source` is wrapped in a reflective proxy
-that copies bytes (up to 1 MB) *as the app reads them* and reports the transaction at
-EOF/close. Reading ahead on a live HTTP/2 stream — which the old eager peek did for
-any response without a `Content-Length` (common with Ktor/OkHttp over HTTP/2) — could
-block, time out, and reset the stream with `CANCEL`, which then crashed the app's own
-read; the tee never advances the stream past the app, so it can't. The tee also
-unwraps reflection's `InvocationTargetException`, so a real read error reaches the app
-as its original `IOException` rather than an `UndeclaredThrowableException`. Streaming
-content types (`text/event-stream`, gRPC, long-poll) are reported up-front with no
-body, since teeing a never-ending stream would defer the transaction until it closes.
+| Component | What it does |
+|---|---|
+| **`jacad`** | A background daemon inside `Jaca.app`. It serves each area over newline-delimited JSON-RPC on `~/.jaca/jacad.sock`. The app can run an area in the daemon instead of in-process (opt-in per area). See [docs/daemon-plan.md](docs/daemon-plan.md). |
+| **`jaca` CLI** | The same binary, run as `jaca`. It lists devices, tails logs, searches captured requests and manages response overrides from a terminal. |
+| **Herdr plugin** | Shows the Jaca areas as Herdr panes. See [herdr-plugin/README.md](herdr-plugin/README.md). |
 
-There's a classloader subtlety that drove the design. The hook trampoline has to
-live on the **bootstrap** classloader (so an instrumented boot class like `URL`
-can resolve it) — but you can't put Kotlin's stdlib there without shadowing the
-host app's. So the layer is split exactly like AOSP does it:
+## Quick start
 
-- `agent/java` — a tiny **Java** trampoline + bridge interface on the bootstrap
-  loader. No Kotlin, nothing to shadow.
-- `agent/kotlin` — the actual capture logic in **Kotlin**, loaded on a separate
-  `DexClassLoader` (with its own bundled stdlib, isolated from the app's).
+### Requirements
 
-### Network capture: the proxy
+| Item | Requirement |
+|---|---|
+| macOS | 14 or later. An Apple Silicon Mac is recommended: the Android agent and the iOS Simulator agent ship arm64 builds only. |
+| Xcode | A full Xcode 26 or later (not only the Command Line Tools), with the iOS Simulator platform installed. The build compiles the iOS Simulator agent and fails without that platform. |
+| XcodeGen | `brew install xcodegen` |
+| Lemonade | The design system, a local Swift package. Clone it next to the Jaca checkout (see below). |
+| Android agent toolchain | NDK 27.2.12479018, CMake 3.22.1, platform `android-36`, build-tools (for `d8`), Kotlin (`brew install kotlin`) and a JDK. If you do not have it, build with `--no-agent`. |
+| `adb` | Android SDK platform-tools, on your `PATH` or set in Jaca's Settings. Needed for Android devices. |
 
-For any other app, `Sources/Core/Network/ProxyServer.swift` is a swift-nio MITM
-proxy. It generates a root CA and per-host leaf certs on the fly (swift-certificates),
-terminates the client's TLS, and forwards upstream via `URLSession`. `NetworkSession`
-auto-configures the Android device proxy (`10.0.2.2` for emulators, the Mac's LAN
-IP for hardware) and the Setup sheet walks you through installing the CA.
+<details>
+<summary>Optional tools</summary>
 
-`NetworkSession` decides per tab: debuggable target app → agent; otherwise → proxy.
+| Tool | Used for |
+|---|---|
+| `idevicesyslog` (`brew install libimobiledevice`) | Fallback for physical iOS logs when Apple's LoggingSupport framework does not load. |
+| `gcloud` | Cloud Logging. |
+| `claude` (Claude Code) | "Ask Claude" in Cloud Logging, and Open in Herdr in Projects. |
+| `herdr` | Open in Herdr, and the Herdr plugin. |
+| Google Chrome | Network capture on This Mac. |
+| Zed | Open in Zed in Projects. |
+| JDK 17, NDK 27.2.12479018, CMake 3.22.1 | Building the companion APK (`./scripts/build-mobile.sh`). |
+| Go 1.22+ | Building the Herdr plugin. |
 
----
+</details>
 
-## Build & install from source
+### Build and run
 
-### Prerequisites
+1. Clone Lemonade and Jaca into the same parent folder. The Xcode project expects Lemonade at `../lemonade-design-system`.
 
-| For | You need |
-|-----|----------|
-| Building the macOS app | A full **Xcode** (not just Command Line Tools) — macOS 14+ deployment target — and **XcodeGen** (`brew install xcodegen`). |
-| The project's Swift packages | The **remote** packages (swift-nio, swift-certificates, …) are fetched automatically by Xcode on first build. **Lemonade is a *local* package and is *not* fetched automatically** — clone it next to this repo so `../lemonade-design-system` resolves: `git clone git@github.com:saltpay/lemonade-design-system.git`. Keep it on an up-to-date `main`: a stale checkout can fail to compile against the current app (it must build for macOS). |
-| Android devices/logs/proxy | **Android SDK platform-tools** (`adb`) on your `PATH`, or set its path in Jaca's Settings. |
-| iOS simulators/devices | Xcode's `simctl`; for **physical iOS logs**, `idevicesyslog` (`brew install libimobiledevice`). |
-| Rebuilding the in-process agent | Android **NDK 27.2.12479018** + **CMake 3.22.1** (`sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"`), **Kotlin** (`brew install kotlin`), an installed **platform** (`android-36`) and **build-tools** (for `d8`). |
-| Building the companion mobile app | Android **NDK 27.2.12479018** + **CMake 3.22.1** (the on-device capture is a zdtun JNI library) and a **JDK 17+**; built with Gradle via `./scripts/build-mobile.sh`. Plus a device/emulator to install it on. |
+   ```bash
+   git clone https://github.com/teya-engineering/lemonade-design-system.git
+   git clone https://github.com/ujizin/Jaca.git
+   cd Jaca
+   ```
 
-### Quick start — one script for everything
+2. Build and launch:
+
+   ```bash
+   ./scripts/all.sh
+   ```
+
+`all.sh` generates the Xcode project with XcodeGen, builds the Android agent and the app (Debug), and launches it. Lemonade is not version-pinned. Keep your Lemonade checkout on an up-to-date `main`, because an old checkout can fail to compile.
+
+| Flag | Effect |
+|---|---|
+| `--release` | Build the Release configuration. |
+| `--install` | Build Release, install to `/Applications/Jaca.app`, link the `jaca` CLI, then launch. |
+| `--no-agent` | Build without the in-process Android agent. Use it when the Android toolchain is not installed. |
+| `--no-run` | Build only. Do not launch. |
+
+The other scripts (`run.sh`, `build.sh`, `gen.sh`, `uitest.sh`, `build-mobile.sh` and more) are listed in [scripts/README.md](scripts/README.md).
+
+## Install to /Applications
 
 ```bash
-# Lemonade (the design system) is a LOCAL package — clone it next to jaca first.
-# Keep it on an up-to-date `main`.
-git clone git@github.com:saltpay/lemonade-design-system.git
-git clone <repo-url> jaca && cd jaca
-./scripts/all.sh                  # build the agent + the app, then launch
+./scripts/all.sh --install
 ```
 
-`scripts/all.sh` is the whole workflow in one command: it builds the **Android
-in-process agent** (`.so` + dexes), generates the Xcode project, builds the macOS
-app, and launches it. The agent step is **best-effort** — if its NDK/Kotlin
-toolchain isn't installed it's skipped with a hint, and the app still builds (proxy
-capture works without the agent). Useful flags:
+This command does these steps:
+
+1. It builds the companion APK, if it can, so that the app can serve it for QR onboarding.
+2. It builds Release and quits a running Jaca.
+3. It replaces `/Applications/Jaca.app` and links the `jaca` CLI.
+4. It launches the app. Add `--no-run` to skip the launch.
+
+Jaca starts as a menu-bar app. To show it in the Dock and in ⌘-Tab, use Settings.
+
+<details>
+<summary>Optional: a stable code signature for local builds</summary>
+
+Local builds are ad-hoc signed, so each rebuild gets a new code signature. Run this script once to create a self-signed "Jaca Dev" identity in a separate keychain:
 
 ```bash
-./scripts/all.sh --release        # optimized build
-./scripts/all.sh --install        # build Release + copy into /Applications + launch
-./scripts/all.sh --no-agent       # skip the agent build
-./scripts/all.sh --no-run         # build only, don't launch
+./scripts/dev-signing.sh
 ```
 
-### Individual steps
+After that, `build.sh` re-signs each build with that identity. The separate keychain has a known password, written in the script. To remove it, run the undo command at the top of `scripts/dev-signing.sh`.
 
-The repo has no committed Xcode project — it's generated from `project.yml` by
-XcodeGen. The `scripts/` set `DEVELOPER_DIR` to Xcode automatically (handy when
-`xcode-select` points at the CLT).
+</details>
+
+### The in-app updater
+
+The updater acts on your source checkout. Read this before you click "Update".
+
+- **When it is on:** each build writes `~/Library/Application Support/Jaca/build-info.json` with the checkout path and the commit. The last checkout you built, also a worktree, becomes the update source. If that file or that checkout does not exist, the updater is off.
+- **How it checks:** it runs `git fetch origin main` in that checkout. It shows "Update available" in the sidebar and an "Update Jaca" item in the menu-bar menu when `origin/main` has new commits.
+- **What an update does to the checkout:**
+  1. If the working tree has changes, it runs `git stash push -u` (untracked files are included).
+  2. If you are not on `main`, it runs `git checkout main`.
+  3. It runs `git pull --ff-only origin main`.
+  4. It runs `scripts/all.sh --install --no-run`, which replaces `/Applications/Jaca.app`. It adds `--no-agent` when `agent/out` already has files.
+  5. It checks out your branch again and runs `git stash pop`.
+- **If a step fails:** it checks out your branch and pops the stash, then shows the error.
+- **Worktrees:** `main` can be checked out in one worktree only. For a build from a linked worktree, the menu offers "Switch to Main Checkout & Update…".
+
+The updater follows the `origin` remote of the checkout. If you cloned `https://github.com/ujizin/Jaca.git`, it follows this repository.
+
+### The `jaca` CLI
+
+`./scripts/all.sh --install` links `jaca` for you. To link it by hand:
 
 ```bash
-./scripts/run.sh           # generate the project, build (Debug), and launch
-./scripts/gen.sh           # regenerate Jaca.xcodeproj from project.yml (XcodeGen)
-./scripts/build.sh         # build only (Debug)
-./scripts/build.sh Release # build optimized
-./scripts/uitest.sh        # run the XCUITest UI suite (clears stray instances first)
+./scripts/install-cli.sh                  # links /Applications/Jaca.app/Contents/MacOS/jacad as jaca
+./scripts/install-cli.sh /path/to/Jaca.app
+JACA_BIN_DIR=~/bin ./scripts/install-cli.sh
 ```
 
-To **install** the built app, copy the `.app` into `/Applications`:
+The link goes to `$JACA_BIN_DIR`, else to `/usr/local/bin` when it is writable, else to `~/.local/bin`. If you get `~/.local/bin`, make sure that folder is on your `PATH`.
+
+Some commands:
 
 ```bash
-./scripts/build.sh Release
-APP=$(ls -d ~/Library/Developer/Xcode/DerivedData/Jaca-*/Build/Products/Release/Jaca.app | head -1)
-cp -R "$APP" /Applications/
-open /Applications/Jaca.app
+jaca devices
+jaca logs tail --grep timeout --follow
+jaca net requests --failed
+jaca net show REQUEST
+jaca overrides add --from REQUEST --status 503
+jaca overrides disable --group GROUP
 ```
 
-> The app is intentionally **non-sandboxed** so it can shell out to `adb`/`xcrun`.
-> It's signed for local development; macOS Gatekeeper may ask you to allow it the
-> first time (right-click → Open, or System Settings → Privacy & Security).
+Run `jaca --help` for the full list. `--json` prints JSON, and `--raw` shows Authorization and cookie values that are hidden by default. The CLI sees log and network sessions only when the app runs those areas in `jacad`, or when Herdr panes opened them. Network sessions also need Settings → Network inspection on "Agent HTTPS debugging" (the default). In "HTTPS debugging" mode, the app captures in-process and the CLI sees no network session.
 
-### One-time: stop the Keychain prompt (recommended)
+<details>
+<summary>Run app areas in the daemon</summary>
 
-The MITM CA's private key lives in your macOS Keychain. Because ad-hoc debug builds get
-a new code signature on each rebuild, macOS re-asks *"Jaca wants to use … in your
-keychain"* on every launch. Fix it once:
+The app runs every area in-process by default. To run areas in `jacad`, so that `jaca` and Herdr see the same sessions as the app:
 
 ```bash
-./scripts/dev-signing.sh    # creates a stable "Jaca Dev" identity — authorize the one trust prompt
+defaults write dev.srsouza.Jaca daemonAreas -array gradle xcode projects devices logs cloudLogging network
 ```
 
-After that, `build.sh` re-signs the app with that stable identity, so the first **Always
-Allow** you click on the CA-key prompt sticks across rebuilds. It's optional — skip it and
-builds stay ad-hoc (you'll just keep getting the prompt).
+The `JACA_DAEMON_AREAS` environment variable (`all`, or a comma-separated list) overrides this setting. If the app cannot reach the daemon, the area runs in-process. Plan and status: [docs/daemon-plan.md](docs/daemon-plan.md).
 
-### Building the companion mobile app
+</details>
 
-The on-device companion (Android) lives under `mobile/` (Compose Multiplatform). Build and
-bundle its APK into the desktop app — which serves it for QR onboarding — with:
+### The Herdr plugin
 
-```bash
-./scripts/build-mobile.sh        # assembles the APK + copies it into Resources/
-./scripts/proto-gen.sh           # regenerate gRPC stubs after editing proto/companion.proto
-```
-
-Needs the Android **NDK 27.2.12479018** + **CMake 3.22.1** (the capture path is a zdtun JNI
-library) and a **JDK 17+**. Install it by scanning the QR in Jaca's **Connect a device**
-sheet, or `adb install Resources/jaca-mobile.apk`. Open the app, start capture, and it shows
-up in Jaca's device list automatically; the desktop pushes its CA over the link and the app
-walks you through trusting it — no manual download.
-
-### Building the Android agent (optional — only for the in-process capture mode)
-
-The proxy capture mode needs nothing extra. The **in-process agent** needs its
-native `.so` + two dexes built once; the app loads them from `agent/out/` (or, if
-present, its own bundle). These artifacts are **not checked in** — build them with:
-
-```bash
-cd agent
-./build.sh         # native JVMTI .so per ABI (arm64-v8a, x86_64), via NDK + vendored slicer
-./build-dex.sh     # boot dex (javac) + capture dex (kotlinc + d8)
-./deploy.sh [pkg] [serial]   # build + attach to a debuggable app + tail — for iteration
-```
-
-`build.sh` honours `ABIS="arm64-v8a x86_64"` and `API=28`; `deploy.sh` defaults to
-`com.example.app.dev` on `emulator-5554` (override with the two args, or `ANDROID_SERIAL`).
-
----
+The plugin shows devices, logs, network, database, Cloud Logging, Gradle, Xcode and Projects as Herdr panes. It needs Go 1.22+, Herdr 0.9.0+ and a `Jaca.app` that contains `jacad`. Follow [herdr-plugin/INSTALL.md](herdr-plugin/INSTALL.md).
 
 ## Repository layout
 
+```text
+Jaca/
+├── project.yml        XcodeGen spec (targets Jaca, jacad, JacaTests, JacaAgentTests, JacaUITests)
+├── Sources/
+│   ├── App/           Jaca GUI: entry point, menu-bar item, root view, assets
+│   ├── Model/         Jaca GUI: @Observable state (AppModel, sessions, area models)
+│   ├── Features/      Jaca GUI: SwiftUI views, one folder per feature
+│   ├── Core/          Shared engine, no SwiftUI: devices, logs, network, overrides,
+│   │                  daemon server (Core/Daemon), the jaca CLI (Core/CLI), areas
+│   └── Daemon/        Entry point of jacad (and of jaca, through a symlink)
+├── agent/             In-process network agents: Android (native/, java/, kotlin/,
+│                      okhttp/, okhttp-stubs/) and iOS Simulator (iOS/)
+├── mobile/            Android companion app (Compose Multiplatform)
+├── proto/             gRPC contract between the Mac and the companion app
+├── herdr-plugin/      Herdr plugin (Go), a client of jacad
+├── docs/              Design docs and plans
+├── scripts/           Build, run, install and diagnostic scripts
+├── Tests/             XCTest unit and live tests (Tests/ObjC tests the iOS agent)
+├── UITests/           XCUITest smoke tests
+├── Config/            Extra Info.plist keys for the app and jacad
+├── Resources/         Build outputs copied into the app (agent, companion APK); not committed
+└── art/               logo.png, the app icon at 1024 px
 ```
-jaca/
-  project.yml              XcodeGen spec (Lemonade + swift-nio/certificates deps)
-  scripts/                 gen / build / run / uitest
-  Sources/
-    App/                   SwiftUI entry, root shell, app icon
-    Core/Devices/          DeviceProvider + Android/iOS backends, installed-apps
-    Core/Logs/             LogSource, logcat/ndjson/syslog parsers, LogFilter, CrashDetector
-    Core/Persistence/      HistoryStore (libsqlite3 + FTS5)
-    Core/Process/          ProcessRunner (Process -> AsyncStream)
-    Core/Network/          ProxyServer, CertificateAuthority, AgentController, AgentArtifacts, …
-    Features/              SwiftUI views (sidebar, tabs, log list, network detail, …)
-    Model/                 AppModel, LogSession, NetworkSession
-  Tests/                   unit + live integration (XCTest)
-  UITests/                 XCUITest
-  agent/
-    native/                JVMTI agent (C++) + vendored AOSP slicer (third_party/)
-    java/                  bootstrap trampoline + bridge interface (Java)
-    kotlin/                capture logic (Kotlin): OkHttpHook, Tracked*URLConnection, SqueezeTracker, …
-    out/                   built artifacts (.so + dexes) — generated, not committed
-```
 
-### Notable dependencies
+The Xcode project is generated from `project.yml` and is not committed. Each component has its own README:
 
-- **Lemonade** — the design system (local SwiftUI package, `saltpay/lemonade-design-system`; clone as a sibling directory).
-- **swift-nio / swift-nio-ssl / swift-certificates / swift-crypto** — the MITM proxy.
-- **libsqlite3** — history store (system library, no wrapper).
-- **AOSP slicer** — vendored dex rewriter for the agent (`agent/native/third_party`).
+| Component | Read |
+|---|---|
+| Architecture of the app, the engine and the daemon | [docs/architecture.md](docs/architecture.md) |
+| Android and iOS Simulator agents | [agent/README.md](agent/README.md) |
+| Companion app | [mobile/README.md](mobile/README.md) |
+| gRPC contract | [proto/README.md](proto/README.md) |
+| Herdr plugin | [herdr-plugin/README.md](herdr-plugin/README.md) |
+| Scripts | [scripts/README.md](scripts/README.md) |
 
----
+## Documentation
+
+The index of all docs is [docs/README.md](docs/README.md).
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the setup, how to run the tests, and the code rules. Open issues and pull requests on [ujizin/Jaca](https://github.com/ujizin/Jaca).
+
+## Security
+
+Jaca runs a man-in-the-middle proxy, creates a root CA and injects code into apps. Read [SECURITY.md](SECURITY.md) for what that means for your machine and your devices, and for how to report a vulnerability.
 
 ## Limitations
 
-Honest about what each capture mode can and can't do:
+- **No releases.** You build Jaca from source.
+- **Android agent:** works only with debuggable apps. It captures `HttpURLConnection`, `HttpsURLConnection`, OkHttp3 and OkHttp2, and no other HTTP stacks. It ships for `arm64-v8a` only. Captured bodies stop at 1 MB. Streaming responses (server-sent events, gRPC) show without a body. OkHttp2 responses show without a body.
+- **iOS Simulator agent:** captures `URLSession` traffic only. It does not see `WKWebView`, background sessions or raw sockets. It has no call stacks.
+- **Physical iOS devices:** no network capture and no database browser.
+- **Companion stream (HTTPS debugging):** experimental and Android only. Apps that pin certificates are not decrypted and can stop working. QUIC (HTTP/3) traffic is not decrypted.
+- **Private Apple frameworks:** physical iOS logs use the private LoggingSupport framework. A macOS or Xcode update can break them. In that case Jaca falls back to `idevicesyslog`.
 
-- **Agent (in-process):** debuggable apps only (a debug build — re-signing a
-  release build to attach trips signature/attestation checks, so it's out of
-  scope). Hooks `HttpURLConnection`/`HttpsURLConnection` and **OkHttp3 + OkHttp2**
-  (incl. ktor-over-OkHttp), which covers the bulk of modern apps; **gRPC** is still
-  on the list. Captured bodies are capped at ~1 MB each. Currently pushes the
-  `arm64-v8a` build (device-ABI auto-select is pending). It's the only mode that
-  gives you the request call stack.
-- **Proxy:** works for any app, but the app must trust the installed CA — release
-  builds that pin certificates or don't trust user CAs can't be decrypted. No call
-  stack (impossible from outside the process).
-- **iOS network:** there is no system-level inspector like Android's, so iOS is
-  proxy-only with the same CA/pinning caveats.
-- **Physical iOS logs:** need `idevicesyslog` (`brew install libimobiledevice`);
-  you get the device syslog, not a clean per-app stream like Android.
+## Acknowledgements
 
----
+Jaca uses these third-party components:
 
-## Tests
-
-```bash
-xcodebuild -scheme Jaca -only-testing:JacaTests test   # logic + live integration
-./scripts/uitest.sh                                          # UI flows
-```
-
-The suite includes live tests that exercise real devices when present (Android
-emulator, iOS simulator, the MITM proxy via curl, and the in-process agent against
-a debuggable app), and skip cleanly when they aren't.
+| Component | Where | License |
+|---|---|---|
+| [Lemonade design system](https://github.com/teya-engineering/lemonade-design-system) | Sibling checkout (`../lemonade-design-system`); `com.teya.foundation:lemonade-ui` in `mobile/` | Apache-2.0 |
+| AOSP slicer, from the dexter project | Vendored in `agent/native/third_party/slicer` | Apache-2.0 (file headers; the folder has no license file) |
+| `jvmti.h` | `agent/native/include` | GPLv2 with the Classpath exception (file header) |
+| zdtun | Vendored in `mobile/composeApp/src/androidMain/jni/zdtun` | LGPL-3.0 or later (`COPYING`) |
+| uthash | Vendored in `mobile/composeApp/src/androidMain/jni/zdtun/third_party/uthash.h` | BSD (file header) |
+| [swift-nio](https://github.com/apple/swift-nio), [swift-nio-ssl](https://github.com/apple/swift-nio-ssl), [swift-certificates](https://github.com/apple/swift-certificates), [swift-crypto](https://github.com/apple/swift-crypto), [swift-asn1](https://github.com/apple/swift-asn1), [swift-protobuf](https://github.com/apple/swift-protobuf) | Swift packages in `project.yml` | See each repository |
+| [grpc-swift](https://github.com/grpc/grpc-swift) | Swift package in `project.yml` | See its repository |

@@ -2,7 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Jaca is a non-sandboxed SwiftUI macOS app (developer tools): device log streaming, network capture (in-process Android agent, MITM proxy, and an on-device **companion app** — Compose Multiplatform under `mobile/` — that captures per-app traffic and streams it over gRPC/TLS for desktop-side decryption), and local maintenance areas (Projects — auto-detected Claude projects + their worktrees + user-added folders, with per-checkout cache cleanup; Gradle daemons; Xcode DerivedData). See `README.md` for the product/network-capture deep dive.
+Jaca is a non-sandboxed SwiftUI macOS app (developer tools): device log streaming, network capture (an in-process agent for Android apps and iOS Simulator apps, a Chrome window on This Mac, and an on-device **companion app** — Compose Multiplatform under `mobile/` — that captures per-app traffic and streams it over gRPC/TLS for desktop-side decryption; the MITM proxy now only backs the companion and Chrome capture), Cloud Logging (GCP, through `gcloud`), and local maintenance areas (Projects — auto-detected Claude projects + their worktrees + user-added folders, with per-checkout cache cleanup; Gradle daemons; Xcode DerivedData). See `README.md` for the product overview and `docs/network-capture.md` for the network-capture deep dive.
+
+For human contributors: setup, tests and PR rules are in `CONTRIBUTING.md`; the component map, the `Sources/` tree and the data paths are in `docs/architecture.md`.
 
 ## Build, run, test
 
@@ -14,7 +16,7 @@ The Xcode project is **not committed** — it's generated from `project.yml` by 
 ./scripts/gen.sh            # regenerate Jaca.xcodeproj from project.yml
 ./scripts/uitest.sh         # XCUITest suite (kills stray instances first)
 ./scripts/all.sh [--release|--install|--no-agent|--no-run]  # agent + app + launch
-./scripts/dev-signing.sh    # one-time: stable code-signing so the Keychain CA prompt stops
+./scripts/dev-signing.sh    # optional, one-time: a stable code signature across debug rebuilds
 ./scripts/build-mobile.sh   # build the companion APK + bundle it into Resources/
 ./scripts/proto-gen.sh      # regenerate gRPC stubs from proto/companion.proto
 ./scripts/install-cli.sh    # link `jaca` (the daemon CLI) onto PATH; `all.sh --install` runs it
@@ -26,7 +28,7 @@ The scripts set `DEVELOPER_DIR` to Xcode (needed when `xcode-select` points at t
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild \
   -project Jaca.xcodeproj -scheme Jaca -configuration Debug -destination 'platform=macOS' \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES \
-  -only-testing:JacaTests/ClaudeProjectGroupingTests/test_group_nestsWorktreesUnderTheirParentRepo test
+  -only-testing:JacaTests/ProjectsGroupingTests/test_isWorktreePath_andParentExtraction test
 ```
 
 If `defaults read dev.srsouza.Jaca daemonAreas` is set on the machine, add
@@ -34,25 +36,31 @@ If `defaults read dev.srsouza.Jaca daemonAreas` is set on the machine, add
 app, which otherwise connects to the real `~/.jaca/jacad.sock` and replaces a running daemon that
 is older than the build under test.
 
-`JacaTests` includes **live** tests (`LiveAndroidTests`, `LiveSimulatorTests`, `LiveAgentCaptureTests`) that need a real device/emulator/agent and **fail** when absent — skip them with `-skip-testing:JacaTests/LiveAgentCaptureTests` etc. when verifying logic locally. `LiveChromeOverrideTests` starts a headless Google Chrome (skipped when Chrome isn't installed).
+`JacaTests` includes **live** tests that need a real device/emulator/agent. `LiveAndroidTests`, `LiveSimulatorTests` and `AppModelIntegrationTests` skip when nothing is attached. These ones **fail** instead — skip them with `-skip-testing:JacaTests/<Class>` when verifying logic locally:
+
+- `LiveCompanionGrpcTests` — needs the companion app at `127.0.0.1:8889` (`adb forward tcp:8889 tcp:8889`).
+- `LiveAgentCaptureTests` (in `AgentCaptureTests.swift`) — fails without adb, or when the agent is built but no device has the debuggable test app `com.example.app.dev`.
+- `CrashDetectorLiveTests` (in `CrashDetectorTests.swift`) — fails without adb.
+
+`LiveChromeOverrideTests` starts a headless Google Chrome (skipped when Chrome isn't installed).
 
 ### Building from a `.claude/worktrees/` worktree
 
 `project.yml` declares Lemonade as `path: ../lemonade-design-system`, resolved from the repo root. That works from the main checkout but **not** from a worktree two levels down — XcodeGen fails with *"Invalid local package Lemonade"*. To build in-worktree, symlink it first, then remove it after (the built `.app` is self-contained; the link is only needed at build time):
 
 ```bash
-ln -sf "$HOME/workspace/lemonade-design-system" "$(git rev-parse --show-toplevel)/../lemonade-design-system"
+ln -sf "<path to your lemonade-design-system checkout>" "$(git rev-parse --show-toplevel)/../lemonade-design-system"
 ```
 
 (If a `clean` removes it, just re-create the symlink — it's only needed at build time.)
 
-### Stable code-signing (stops the recurring Keychain prompt)
+### Stable code-signing (optional)
 
-The MITM CA private key lives in the macOS Keychain, and macOS binds a key's "Always Allow" to the requesting app's code signature. Ad-hoc debug builds (`CODE_SIGN_IDENTITY="-"`) get a new signature every rebuild, so the CA-key prompt returns on each launch. Run `./scripts/dev-signing.sh` **once** to create a stable self-signed `Jaca Dev` identity in a dedicated keychain (authorize the single trust prompt — codesign refuses an untrusted identity); `build.sh` then re-signs the app with it via `dev-resign.sh`, so one "Always Allow" sticks across rebuilds. Optional — without it the build stays ad-hoc.
+The MITM CA private key is a 0600 file, `~/Library/Application Support/Jaca/ca/rootCA.key.pem`, next to `rootCA.pem` (`Core/Network/CertificateAuthority.swift`). Older builds kept the key in the macOS Keychain; the app reads the Keychain once to move the key into the file (one last prompt), then uses the file. So the per-launch Keychain prompt is gone for current builds. macOS binds a Keychain "Always Allow" to the requesting app's code signature, and ad-hoc debug builds (`CODE_SIGN_IDENTITY="-"`) get a new signature every rebuild. If you still need a fixed signature across rebuilds, run `./scripts/dev-signing.sh` **once** to create a stable self-signed `Jaca Dev` identity in a dedicated keychain (authorize the single trust prompt — codesign refuses an untrusted identity); `build.sh` then re-signs the app with it via `dev-resign.sh`. Without it the build stays ad-hoc.
 
 ### The companion mobile app (`mobile/`)
 
-A Compose Multiplatform app (`mobile/composeApp`, package `dev.srsouza.jaca`) that captures on-device traffic with a `VpnService` + a userspace TCP/IP stack (zdtun JNI, `androidMain/jni/`) and streams per-app flow metadata to the desktop over **gRPC + TLS** (contract: `proto/companion.proto`; phone = server, desktop = client). TLS is decrypted on the **desktop** — the CA private key never reaches the phone; the phone tunnels intercepted TLS to the desktop's MITM proxy. The gRPC server runs from app open (`CompanionServer`) so the desktop can push its CA (`InstallCa`) and the app guides the user to install it before any capture. `./scripts/build-mobile.sh` assembles + bundles the APK (needs the NDK/CMake in the README table); the desktop serves it for QR onboarding and reads its commit hash for update detection.
+A Compose Multiplatform app (`mobile/composeApp`, package `dev.srsouza.jaca`) that captures on-device traffic with a `VpnService` + a userspace TCP/IP stack (zdtun JNI, `androidMain/jni/`) and streams per-app flow metadata to the desktop over **gRPC + TLS** (contract: `proto/companion.proto`; phone = server, desktop = client). TLS is decrypted on the **desktop** — the CA private key never reaches the phone; the phone tunnels intercepted TLS to the desktop's MITM proxy. The gRPC server runs from app open (`CompanionServer`) so the desktop can push its CA (`InstallCa`) and the app guides the user to install it before any capture. `./scripts/build-mobile.sh` assembles + bundles the APK (needs JDK 17 and the NDK/CMake listed in `mobile/README.md`); the desktop serves it for QR onboarding and reads its commit hash for update detection.
 
 Full end-to-end flow + sequence/state diagrams: **`docs/companion-architecture.md`** — keep it current when the flow or the wire protocol changes.
 
@@ -64,7 +72,7 @@ Three layers, enforced by directory:
 - **`Sources/Model/`** — `@Observable @MainActor` state. `AppModel` owns the device list, open tabs, and one model instance per top-level area. Session types (`LogSession`, `NetworkSession`) conform to `WorkspaceTab`.
 - **`Sources/Features/`** — SwiftUI views, one folder per feature.
 
-### The daemon (`jacad`, experimental — branch `exp/daemon`)
+### The daemon (`jacad`, opt-in per area)
 
 `Sources/Core` also compiles into a second target, `jacad` (`Sources/Daemon/main.swift`, embedded at
 `Jaca.app/Contents/MacOS/jacad`): a background daemon serving each area over newline-delimited
@@ -83,7 +91,7 @@ a ticket. The agent workflow is `.claude/skills/jaca-cli/`.
 
 ### The top-level "area" pattern
 
-The left sidebar switches the main pane between **areas** via `AppModel.mode: WorkspaceMode` (`devices`, `projects`, `gradle`, `xcode`). Adding an area means touching a consistent set of files — read one existing area end-to-end (e.g. Projects or Xcode) before adding one:
+The left sidebar switches the main pane between **areas** via `AppModel.mode: WorkspaceMode` (`devices`, `projects`, `gradle`, `xcode`, `cloudLogging`). Adding an area means touching a consistent set of files — read one existing area end-to-end (e.g. Projects or Xcode) before adding one:
 
 1. A case in `enum WorkspaceMode` (in `AppModel.swift`) + a model instance `let foo = FooModel()` on `AppModel`.
 2. A `Core/<Area>/` service (does the filesystem/process/git work, off the main actor).
@@ -91,7 +99,7 @@ The left sidebar switches the main pane between **areas** via `AppModel.mode: Wo
 4. `Features/<Area>/` — a sidebar header (`onTapGesture { model.mode = .foo }`, styled like the others) and an area view.
 5. Wire both into `App/RootView.swift`: add the header to the sidebar `VStack` and a branch to the `detail` switch.
 
-Long-running work (logcat, the proxy) accumulates off the main thread and flushes into the observed model on a timer so a chatty device doesn't stutter the UI. Network capture picks **agent vs proxy** per tab (`NetworkSession`); the in-process Android agent lives under `agent/` (built separately — see README).
+Long-running work (logcat, the proxy) accumulates off the main thread and flushes into the observed model on a timer so a chatty device doesn't stutter the UI. Network capture picks a source per tab (`NetworkSession`) from `CaptureSourceRegistry` (companion, agent, browser). `scripts/build.sh` builds the in-process Android agent in `agent/` when it is missing or stale, and an Xcode post-build phase builds the iOS Simulator agent (`agent/iOS`). See `agent/README.md`.
 
 ## Conventions
 

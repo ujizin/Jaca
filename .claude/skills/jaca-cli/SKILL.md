@@ -91,8 +91,8 @@ jaca overrides rmgroup Deals                                   # its rules stay,
   and `--name` replace those parts.
 - `--generalize` (and `overrides generalize RULE`) rewrite the base URL of the pattern to `**`
   and keep the path as written, so one rule answers the endpoint from the device
-  (`https://private-api.teya.xyz/lending/v1/…`) and from a browser on a dev server that proxies
-  it under another base URL (`http://localhost:3000/private-api/lending/v1/…`). The device's
+  (`https://api.example.com/v1/…`) and from a browser on a dev server that proxies
+  it under another base URL (`http://localhost:3000/api/v1/…`). The device's
   host stays routed. An id the path names stays: a rule per mock deal keeps telling its deals
   apart. Generalize the rule made from the **device's** request, not the browser's: the
   browser's path carries the proxy prefix, which the device's path does not.

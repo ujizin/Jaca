@@ -1,0 +1,33 @@
+name: herdr-plugin
+
+on:
+  push:
+    paths:
+      - "herdr-plugin/**"
+      - ".github/workflows/herdr-plugin.yml"
+  pull_request:
+    paths:
+      - "herdr-plugin/**"
+      - ".github/workflows/herdr-plugin.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: herdr-plugin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: herdr-plugin/go.mod
+          cache: false
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...

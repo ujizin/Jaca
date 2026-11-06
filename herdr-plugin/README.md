@@ -1,149 +1,392 @@
 # Jaca for Herdr
 
-Jaca's areas as Herdr panes and actions. The plugin holds no state of its own: every pane and
-action is a client of `jacad`, the Jaca daemon, over `~/.jaca/jacad.sock`. The Jaca app and
-these panes see the same data because they read the same daemon. See `docs/daemon-plan.md`.
+This plugin shows Jaca's areas as Herdr panes and actions.
+The plugin holds no state of its own. Every pane and action is a client of `jacad`, the Jaca
+daemon, over `~/.jaca/jacad.sock`. The Jaca app and these panes read the same daemon, so they
+show the same data. For the daemon, see [docs/daemon-plan.md](../docs/daemon-plan.md).
 
-Experimental. Standard library Go only.
+Status: experimental. The plugin uses only the Go standard library.
 
-## What it adds
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Panes and actions](#panes-and-actions)
+- [Herdr key bindings](#herdr-key-bindings)
+- [Keys in every pane](#keys-in-every-pane)
+- Panes: [Devices](#devices) · [Logs](#logs) · [Network](#network) · [Tools, Gradle and Xcode](#tools-gradle-and-xcode) · [Cloud Logging](#cloud-logging) · [Projects](#projects) · [Database](#database)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
 
-| Kind | Id | What it does |
-|---|---|---|
-| pane | `devices` | A popup with the device list. `Enter` on a ready device shows its options (logs, network inspection, the database browser); `Enter` on an option opens it in a new tab named `Jaca log - <device>`, `Jaca network - <device>` or `Jaca database - <device>` and closes the popup. `j`/`k` or arrows move, `Esc` goes back a step and closes the popup from the device list, `q` quits. |
-| pane | `logs` | The log viewer for the device chosen in `devices`, with the app log tab's tools. `1`–`6` set the minimum level (V…F), `/` edits the filter text, `r` toggles regex, `s` toggles system logs (not on Android), `P` edits the package id, `a` lists the installed apps to pick one, `c` clears the view, `C` clears the device buffer (Android), `p` or `space` pauses/resumes the stream, `j`/`k` and `PgUp`/`PgDn` scroll, `Shift+PgDn` (or `G`) follows the tail again, and scrolling up leaves it, `S` exports the lines the filter keeps to the file chosen in the macOS save dialog (named after the device, starting in Downloads), `y` opens the app's Copy format sheet as a popup (presets with an example each, the template and date format to edit, a live example; arrows or `Tab` move, `Enter` chooses, `Ctrl+S` or `⌘S` saves, `Esc` cancels, nothing is saved before Save), `?` shows the keys (any of `Esc`, `Enter`, `q`, `?` or a click closes it), `q` quits. The level chips, `.*`, `System logs`, `Export` and both fields are clickable, as are the arrow at the end of the package field (the installed apps) and `Help` and `Copy format` at the right of the status bar, the apps list too, and the wheel scrolls. A click on a log line selects it, and dragging extends the selection line by line; past the top or bottom of the lines the view scrolls that way. Letting go copies the selected lines whole, in the app's copy format (with `pbcopy`). The view holds still under a selection, and `Esc`, any key or a click outside the lines drops it. A right click opens the app's row menu on the selected lines (`Copy Line`, `Copy Message only`, `Copy Format…`, `Select All`); `Copy Format…` opens the Copy format popup, which saves to `~/.jaca/log-copy-format.json`, the file the app reads. For that menu the pane asks Herdr to send it right clicks (`herdr pane input --right-click pane`), so Herdr's own pane menu doesn't open on a right click in this pane. The pane draws this selection itself because it has the mouse for the toolbar, so the terminal can't select in it. In a field, `Enter` or `Esc` leaves it and `Ctrl-U` empties it; the package id applies on `Enter`. Opened without a device, it shows the picker first and streams in the same pane (`Esc` goes back). |
-| pane | `network` | The app's network tab for the in-process agent ("Inspect Network (Agent HTTP)" in the device picker, Android and iOS Simulator), or for a Chrome window on this Mac ("This Mac", then "Inspect Network (Chrome)"), with response overrides. See [Network and overrides](#network-and-overrides). |
-| pane | `tools` | A popup listing `Gradle` and `Xcode`. `Enter` or a click opens the chosen pane in a new tab named `Gradle - Jaca` or `Xcode - Jaca` and closes the popup. `j`/`k` or arrows move, `Esc` or `q` closes. Run outside Herdr, the chosen pane shows in place (`Esc` goes back). |
-| pane | `database` | The app's Browse Database ("Browse Database" in the device picker): one app's local SQLite databases, read from a pulled snapshot. See [Database](#database). |
-| pane | `cloud` | The app's Cloud Logging area: the home (gcloud sign-in, projects) and, in tabs it opens, the log sessions. See [Cloud Logging](#cloud-logging). |
-| pane | `gradle` | The app's Gradle area: the folders of `~/.gradle/caches` with their sizes, then the live daemons from the daemon's `gradle.daemons` topic. See [Gradle and Xcode](#gradle-and-xcode). |
-| pane | `xcode` | The app's Xcode area: the DerivedData folders with their sizes and kind (`LIVE`, `STALE`, `SHARED`). See [Gradle and Xcode](#gradle-and-xcode). |
-| pane | `projects` | The app's Projects area: the projects Claude Code has run in and the folders you added, each opening to its checkouts, with the app's actions. See [Projects](#projects). |
-| action | `gradle-kill-all` | Kills every running Gradle daemon. |
-| action | `projects-clear-cache` | Clears build caches for the worktree in the Herdr context (the workspace's worktree, else the focused pane's directory). |
-| startup | | `jaca-herdr ensure`: starts `jacad` if it isn't running. |
+## Requirements
 
-## Install
+| Need | Version |
+|---|---|
+| macOS | The plugin declares `platforms = ["macos"]`. |
+| Herdr | 0.9.0 or newer, with its server running (`herdr status`). |
+| Go | 1.22 or newer (`brew install go`). |
+| Jaca | A `Jaca.app` that ships `jacad` (`Jaca.app/Contents/MacOS/jacad`). Builds from `main` ship it. |
 
-Full steps, including uninstalling: **[INSTALL.md](INSTALL.md)**. The short version:
+## Quick start
 
-Needs Go 1.22+ and a Jaca build that ships `jacad` (`Jaca.app/Contents/MacOS/jacad`).
+Do these steps from the repo root. For the full path, updates and uninstall, read
+[INSTALL.md](INSTALL.md).
 
-```bash
-cd herdr-plugin
-go build -o bin/jaca-herdr ./cmd/jaca-herdr
-herdr plugin link "$PWD"
-herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint devices
-```
+1. Build and install Jaca with `jacad`. Skip this step if `/Applications/Jaca.app/Contents/MacOS/jacad` exists.
 
-To open the device picker with a key, add a binding to `~/.config/herdr/config.toml` (pick a free
-key) and run `herdr server reload-config`:
+   ```bash
+   ./scripts/all.sh --install --no-agent
+   ```
+
+2. Build the plugin and link it into Herdr.
+
+   ```bash
+   cd herdr-plugin
+   go build -o bin/jaca-herdr ./cmd/jaca-herdr
+   herdr plugin link "$PWD"
+   ```
+
+3. Open the device picker.
+
+   ```bash
+   herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint devices
+   ```
+
+To remove the plugin, run `herdr plugin unlink dev.srsouza.jaca`.
+
+## Panes and actions
+
+Open a pane with `herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint <id>`.
+
+| Kind | Id | Opens as | What it shows |
+|---|---|---|---|
+| pane | `devices` | popup | The device list. A device opens logs, network or the database in a new tab. |
+| pane | `logs` | tab | The log stream of one device, with the app log tab's tools. |
+| pane | `network` | tab | The network requests of one app (agent) or of a Chrome window on this Mac, with response overrides. |
+| pane | `database` | tab | The local SQLite databases of one app, from a pulled snapshot. |
+| pane | `tools` | popup | A picker for the `gradle` and `xcode` panes. |
+| pane | `gradle` | tab | The `~/.gradle/caches` folders with their sizes, and the live Gradle daemons. |
+| pane | `xcode` | tab | The DerivedData folders with their size and kind (`LIVE`, `STALE`, `SHARED`). |
+| pane | `cloud` | popup | Cloud Logging: the home (gcloud sign-in, projects). Log sessions open in tabs. |
+| pane | `projects` | tab | The Projects area: Claude Code projects, the folders you added, and their checkouts. |
+| action | `gradle-kill-all` | | Kills every running Gradle daemon. |
+| action | `projects-clear-cache` | | Clears the build caches of the worktree in the Herdr context. |
+| startup | | | `jaca-herdr ensure` starts `jacad` if it does not run. |
+
+Notes:
+
+- `projects-clear-cache` uses the workspace's worktree. If there is none, it uses the directory
+  of the focused pane.
+- Opened without a device, `logs`, `network` and `database` show the device picker first and
+  then show the pane in the same place (`Esc` goes back).
+
+## Herdr key bindings
+
+Add the bindings to `~/.config/herdr/config.toml`, then run `herdr server reload-config`. Pick
+keys that are free in your config.
 
 ```toml
 [[keys.command]]
 key = "prefix+d"
 type = "shell"
 command = "herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint devices"
-```
 
-The picker for the Gradle and Xcode panes takes a binding the same way:
-
-```toml
 [[keys.command]]
 key = "prefix+shift+b"
 type = "shell"
 command = "herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint tools"
+
+[[keys.command]]
+key = "prefix+l"
+type = "shell"
+command = "herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint cloud"
+
+[[keys.command]]
+key = "prefix+f"
+type = "shell"
+command = "herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint projects --focus --env JACA_HERDR_OWN_TAB=1"
 ```
 
-`jacad` is looked up at `$JACAD_PATH`, then `/Applications/Jaca.app` and `~/Applications/Jaca.app`.
-`JACA_DAEMON_DIR` points every piece (app, daemon, plugin) at another socket directory, which is
-how to try a development build without touching the real one:
+`JACA_HERDR_OWN_TAB=1` tells the `projects` pane that it has a tab of its own. The pane then
+names the tab `Projects - Jaca`. Without it, the pane does not change the name of the tab it
+runs in.
 
-```bash
-export JACA_DAEMON_DIR=~/.jaca/dev JACAD_PATH=/path/to/Debug/Jaca.app/Contents/MacOS/jacad
-bin/jaca-herdr pane gradle
-```
+## Keys in every pane
 
-Remove it with `herdr plugin unlink dev.srsouza.jaca`.
+| Key | Action |
+|---|---|
+| `?` | Shows the keys of the pane. `Esc`, `Enter`, `q`, `?` or a click closes the list. |
+| `q` | Quits the pane. |
+| `Ctrl+C` | Quits the pane. In an editor (override body, database SQL, Cloud Logging SQL) it copies the selection. |
+| `Help` (click) | The button at the right of the status bar shows the keys. |
 
-## Network and overrides
+The `devices` and `tools` popups have no `?` list. In them, `q` and `Ctrl+C` close the popup.
 
-The `network` pane captures one app's requests with the in-process agent and applies response
-overrides, the app's "Agent HTTPS debugging". It is a client of jacad's `network.*` and
-`overrides.*` methods; nothing was added to the daemon for it.
+**Copied notice.** In the logs, network, database and Cloud Logging session panes, every copy
+(a button, a key, a menu item, a released selection) shows `Copied` near the bottom of the pane
+for a moment. If the copy fails, the pane shows the error.
 
-- **Start**: `a` (or the app button) lists the installed apps; choosing one starts the capture.
-  `p` or `space` stops and starts it. On the iOS Simulator starting relaunches the app.
-- **Attach banner**: when the app came back without the agent (the user reopened it), a
-  warning block under the toolbar says so, with a ` R  Relaunch & re-attach ` button (`R`). On
-  the iOS Simulator, in Agent HTTPS debugging, a switch beside it turns on the app's
-  `Re-attach to iOS Simulator apps automatically` setting (written with `defaults`; jacad reads
-  it each time it decides), so jacad relaunches the app without asking. It is off by default, as
-  in the app: a relaunch throws away where the user was in their app.
-- **List**: the path is cut in the middle, as in the app, so the end of an endpoint stays
-  readable; a narrow list leaves out Size, then Host, then Time before it cuts the path short.
-  `j`/`k` select, `Shift` with `↑`, `↓`, `PgUp` or `PgDn` selects a run of requests,
-  `Backspace` deletes the selected ones from the list (here only; jacad keeps them, so they
-  are still in an exported HAR), `/` filters by URL, host or method, `c` clears, `S` exports a
-  HAR through the macOS save dialog, `C` copies the selected request's response body, `G` goes
-  back to following new requests.
-- **Timeline**: the strip above the list draws each request from its start to its end.
-  Dragging across it shows only the requests in that time range; a click on it, the `×` at
-  its right or `Esc` clears the range. It shows in panes of 24 rows or more.
-- **Detail**: `Enter` (or `→`) opens the request beside the list, with the app's tabs
-  (Overview, Headers, Request, Response, Timing), and gives it the keys: the arrows and `j`/`k`
-  scroll it, `PgUp`/`PgDn` page it, `←`/`→`, `Tab` or `1`–`5` switch tabs. `Esc` closes the
-  detail and gives the keys back to the list, which keeps the selection. A click on a request
-  opens its detail with the keys on the list; a click in the detail gives it the keys. The side
-  that has the keys has its headings in the accent, and the selected request is quieter while
-  the detail has them. In the Request tab `C` copies the request body. Any text in the
-  detail can be copied with the mouse: a drag selects it and copies on release (a value that
-  wrapped over several lines comes back in one piece), a double click copies the whole value
-  under the pointer, and a right click offers `Copy` for it. The `Copy` buttons of the bodies
-  and header sections sit at the right of their line, drawn like the popups' close button.
-- **Request menu**: a right click (or `m`) shows the app's menu: `Override response…` (or
-  `Edit override “…”` and `Add another override…` when a rule already answers it), `Copy as cURL`,
-  `Copy URL`, `Copy response body`, `Filter by this host`.
-- **This Mac**: the device picker always lists This Mac. Its capture starts at once: jacad
-  opens a separate Chrome window with its own profile, sends its traffic through a proxy on
-  127.0.0.1 and applies the overrides to it. `b` (or the `Open Chrome` button) opens the window
-  again after it was closed; stopping the capture closes it. There is no app to choose.
-- **Copy as cURL**: `u`, the menu item, or the detail's `Copy cURL` button (at the right of the
-  tabs) copies the request as a curl command that runs as-is, as the app's `CurlExport` builds it.
-  The pane fetches the request body first when it doesn't hold it.
-- **Overrides**: `o` (or the Overrides button) opens the rules: `Enter` edits, `n` is New
-  override, `space` or `Shift+Enter` (or a click on a rule's switch) enables or disables, `d` duplicates, `x` or `Backspace` deletes, `K`/`J` move a rule up
-  or down (the first enabled match wins), `m` pauses or resumes all of them.
-  `P` does this from the request list and the request detail.
-- **Override groups**: with a jacad that has groups, the list shows each group as one row above
-  the rules in no group, and `N` (or the New group button) creates one and starts renaming it. On
-  a group row, `Enter` (or a click on its name) opens the group's own popup, `space` or
-  `Shift+Enter` turns the group and all its rules on or off, `r` renames it (`Enter` saves, `Esc`
-  cancels), `x` or `Backspace` deletes it (its rules stay, in no group), and `K`/`J` move it. On a
-  rule row, `g` moves the rule into a group or out of one. A right click on a row shows these as a
-  menu.
-- **A group's popup**: titled with the group's name, it holds the group's switch (`m`), its rules
-  with the same keys as the list (`K`/`J` move a rule inside the group), and the New override
-  (which makes a rule in the group), Rename group (`r`) and Delete group buttons. `Esc` goes back
-  to the list.
-- **Override a request**: `O` on a selected request opens the editor filled from it (its URL as
-  the pattern, its method, and the response it got), or on the rule that already answers it.
-- **Editor**: `Tab`/`Shift+Tab` move between fields, the arrows move inside a group of chips and
-  `space` picks, `Ctrl+S` (or `⌘S`) saves, `Esc` closes without saving. Closing goes back to
-  where the editor was opened from: the rules list, or the requests. In the body `Tab` indents two
-  spaces (every selected line, when several are) and `Shift+Tab` takes a level off, so `Esc`
-  first hands the keys back to moving between fields (then `Tab` and `Shift+Tab` move again),
-  and a second `Esc` closes. The body is a multi-line editor:
-  `Shift` with the arrows, `Home`, `End`, `PgUp` or `PgDn` selects, as does dragging with the
-  mouse; typing or `Backspace` replaces the selection; `Alt` or `Ctrl` with `←`/`→` moves by
-  word and `Alt+Backspace` deletes one; `Ctrl+A` selects everything, `Ctrl+C` copies and
-  `Ctrl+X` cuts the selection; `Ctrl+Z` undoes and `Ctrl+Y` redoes. `⌘A`, `⌘C`, `⌘X`, `⌘Z` and `⇧⌘Z` do the
-  same where the terminal passes them on (see below). One-line fields edit at a cursor the arrows move. In a
-  pane of 120 columns and 30 rows or more the editor is the app's two-column sheet.
+**Two-press buttons.** Some buttons take two presses, as in the app: Kill, Delete and Clean in
+the Gradle and Xcode panes, Remove in the Cloud Logging home and the Projects pane, and Delete
+worktree in Projects. The first press arms the button for 3 seconds. A second press in that
+time confirms. Each row arms on its own.
 
-**⌘ keys.** A terminal keeps `⌘A`, `⌘C` and `⌘Z` for itself by default, so they never reach
-the pane. Herdr forwards a `⌘` key it receives to the focused pane, and the editor reads it, so
-the terminal only has to let them through. In Ghostty (`~/.config/ghostty/config`):
+<details>
+<summary>How the panes tell a second press from a held key</summary>
+
+A confirming press must be a separate press. The repeats of a held key do not confirm what its
+first press armed. This applies to every two-press button. In the Projects pane, a held key
+acts once: the pane drops its repeats.
+
+- The pane reads how this Mac repeats keys (`InitialKeyRepeat` and `KeyRepeat`) when it starts.
+- The pane takes the same key for a repeat when a repeat is due: right after the last one, one
+  interval after, or the first delay after it.
+- The first delay is 375 ms unless changed. The window goes from 40 ms before it to 60 ms
+  after it. A second press that lands in this window must be made again.
+- Any other second press of the same key waits a moment (150 ms at the usual repeat rate). The
+  pane drops it when a repeat follows it.
+- After the wait, the press acts on the row it was pressed on. If that row moved, it does nothing.
+- A click on a row that an update moved before the pane drew it is dropped.
+
+One case stays ambiguous: a key held just past its first repeat and released, when that
+repeat came more than 40 ms early or 60 ms late.
+
+</details>
+
+## Devices
+
+The `devices` pane is a popup with the device list. `Enter` on a ready device shows its options.
+`Enter` on an option opens it in a new tab and closes the popup.
+
+| Option | Shown for | Opens | Tab name |
+|---|---|---|---|
+| `Start Logcat` | every device except This Mac | `logs` | `Jaca log - <device>` |
+| `Inspect Network (Agent HTTP)` | Android, iOS Simulator | `network` | `Jaca network - <device>` |
+| `Browse Database` | every device except This Mac | `database` | `Jaca database - <device>` |
+| `Inspect Network (Chrome)` | This Mac (always listed) | `network` | `Jaca network - <device>` |
+
+| Key | Action |
+|---|---|
+| `j` `k` or `↑` `↓` | Move. |
+| `Enter` | Show the options of a ready device, or open the selected option. |
+| `Esc` | Go back one step. From the device list, close the popup. |
+| `q` | Quit. |
+| Click on ` esc close ` | Same as `Esc`. |
+
+## Logs
+
+The `logs` pane is the log viewer for the device chosen in `devices`, with the tools of the
+app's log tab. The device picker passes the device in `JACA_HERDR_DEVICE`.
+
+| Key | Action |
+|---|---|
+| `1`–`6` | Set the minimum level (V…F). |
+| `/` | Edit the filter text. |
+| `r` | Turn regex on or off. |
+| `s` | Show or hide system logs (not on Android). |
+| `P` | Edit the package id. It applies on `Enter`. |
+| `a` | List the installed apps to pick one. |
+| `p` or `space` | Pause or resume the stream. |
+| `Enter` | Start the stream when the pane shows its start prompt. |
+| `c` | Clear the view. |
+| `C` | Clear the device buffer (Android). |
+| `j` `k`, `↑` `↓`, `PgUp` `PgDn` | Scroll. Scrolling up stops following the tail. |
+| `Shift+PgDn` or `G` | Follow the tail again. |
+| `S` or `e` | Export the lines the filter keeps. The macOS save dialog opens in Downloads with a file named after the device. |
+| `y` | Open the app's Copy format sheet as a popup. |
+| `Esc` | Go back to the device picker, when the pane opened without a device. |
+
+**In a field** (filter text, package id): `Enter` or `Esc` leaves the field, `Ctrl-U` empties it.
+
+**Copy format popup** (`y`): it shows presets with an example each, the template and date
+format to edit, and a live example. Nothing is saved before Save. It writes
+`~/.jaca/log-copy-format.json`, the file the app reads.
+
+| Key | Action |
+|---|---|
+| arrows or `Tab` | Move. |
+| `Enter` | Choose. |
+| `Ctrl+S` or `⌘S` | Save. |
+| `Esc` | Cancel. |
+
+**Mouse**
+
+- Click the level chips, `.*`, `System logs`, `Export`, both fields, the arrow at the end of
+  the package field (the installed apps), the apps list, and `Help` and `Copy format` at the
+  right of the status bar. The wheel scrolls.
+- Click a log line to select it. Drag to extend the selection line by line. Past the top or
+  bottom of the lines, the view scrolls that way.
+- Release to copy the selected lines whole, in the app's copy format (with `pbcopy`).
+- The view holds still under a selection. `Esc`, any key, or a click outside the lines drops it.
+- Right-click to open the app's row menu on the selected lines: `Copy Line`,
+  `Copy Message only`, `Copy Format…`, `Select All`. `Copy Format…` opens the Copy format popup.
+
+The pane draws this selection itself because it has the mouse for the toolbar, so the terminal
+cannot select in it. For the row menu, the pane asks Herdr to send it right clicks
+(`herdr pane input --right-click pane`). Herdr's own pane menu then does not open on a right
+click in this pane. That menu's "Send right-clicks to pane" item turns it back.
+
+## Network
+
+The `network` pane is the app's network tab, with response overrides (the app's "Agent HTTPS
+debugging"). It uses jacad's `network.*` and `overrides.*` methods. It captures one of:
+
+- **An app, with the in-process agent.** Choose "Inspect Network (Agent HTTP)" in the device
+  picker (Android and iOS Simulator). `a` (or the app button) lists the installed apps. Choosing
+  one starts the capture. On the iOS Simulator, a start relaunches the app.
+- **A Chrome window on this Mac.** Choose "This Mac", then "Inspect Network (Chrome)". The
+  capture starts at once. jacad opens a separate Chrome window with its own profile, sends its
+  traffic through a proxy on 127.0.0.1 and applies the overrides to it. There is no app to
+  choose. Stopping the capture closes the window.
+
+### Request list
+
+| Key | Action |
+|---|---|
+| `p` or `space` | Start or stop the capture. |
+| `a` | List the installed apps to choose one (agent capture). |
+| `b` | Open the Chrome window again after it was closed (This Mac). Same as the `Open Chrome` button. |
+| `R` | Relaunch the app and attach the agent again. Same as the attach banner's button. |
+| `j` `k` or `↑` `↓` | Select a request. |
+| `Shift` + `↑` `↓` `PgUp` `PgDn` | Select a run of requests. |
+| `PgUp` `PgDn` | Scroll a page. |
+| `Backspace` | Delete the selected requests from the list. jacad keeps them, so an exported HAR still has them. |
+| `/` | Filter by URL, host or method. `Enter` or `Esc` leaves the filter. |
+| `c` | Clear. |
+| `S` or `e` | Export a HAR through the macOS save dialog. |
+| `C` or `y` | Copy the response body of the selected request. In the Request tab of the detail, copy the request body. |
+| `u` | Copy as cURL. |
+| `G` | Follow new requests again. |
+| `Enter` | Open the detail of the selected request and give it the keys. With no request selected, select the newest. |
+| `→` | Give the keys to the open detail. |
+| `m` | Open the request menu. |
+| `o` | Open the overrides list. |
+| `O` | Override the response of the selected request. |
+| `P` | Pause or resume all overrides. |
+| `Esc` | Close the detail, then clear the time range, then go back to the device picker. |
+
+**List layout.** The path is cut in the middle, as in the app, so the end of an endpoint stays
+readable. A narrow list leaves out Size, then Host, then Time, before it cuts the path short.
+
+**Timeline.** The strip above the list draws each request from its start to its end. Drag
+across it to show only the requests in that time range. A click on it, the `×` at its right, or
+`Esc` clears the range. The strip shows in panes of 24 rows or more.
+
+**Attach banner.** If the app came back without the agent (the user opened it again), a warning
+block under the toolbar says so. It has a ` R  Relaunch & re-attach ` button (`R`). On the iOS
+Simulator, in Agent HTTPS debugging, a switch beside it turns on the app's
+`Re-attach to iOS Simulator apps automatically` setting. The pane writes it with `defaults`, and
+jacad reads it each time it decides. With it on, jacad relaunches the app without asking. It is
+off by default, as in the app, because a relaunch loses the user's place in their app.
+
+### Request detail
+
+The detail opens beside the list, with the app's tabs: Overview, Headers, Request, Response,
+Timing. Opened with `Enter` or `→`, the detail has the keys.
+
+| Key | Action |
+|---|---|
+| `↑` `↓` or `j` `k` | Scroll. |
+| `PgUp` `PgDn` | Scroll a page. |
+| `←` `→`, `Tab`, `Shift+Tab`, `1`–`5` | Switch tabs. |
+| `C` | Copy the request body (Request tab). |
+| `Esc` | Close the detail. The list gets the keys back and keeps the selection. |
+
+**Mouse**
+
+- A click on a request opens its detail and leaves the keys on the list. A click in the detail
+  gives it the keys. The side with the keys has its headings in the accent color. The selected
+  request is dimmer while the detail has the keys.
+- Drag over text to select it. Release to copy it. A value that wrapped over several lines
+  comes back in one piece.
+- Double-click to copy the whole value under the pointer. Right-click to get `Copy` for it.
+- The `Copy` buttons of the bodies and header sections sit at the right of their line.
+- The `Copy cURL` button at the right of the tabs copies the request as a curl command.
+
+### Request menu
+
+A right click on a request, or `m`, shows the app's menu:
+
+- `Override response…`. If a rule already answers the request: `Edit override “…”` and
+  `Add another override…`.
+- `Copy as cURL`: a curl command that runs as-is, as the app's `CurlExport` builds it. The pane
+  fetches the request body first if it does not hold it.
+- `Copy URL`
+- `Copy response body`
+- `Filter by this host`
+
+In the menu, `↑` `↓` or `j` `k` move, `Enter` runs the item and `Esc` closes the menu.
+
+### Overrides list
+
+`o` (or the Overrides button) opens the rules. The first enabled rule that matches wins.
+
+| Key | Action |
+|---|---|
+| `j` `k` or `↑` `↓` | Move. |
+| `Enter` | Edit the rule. On a group, open the group's popup. In an empty list, New override. |
+| `n` | New override. |
+| `space` or `Shift+Enter` | Enable or disable the rule (or the group and all its rules). A click on a rule's switch does the same. |
+| `d` | Duplicate the rule. |
+| `x` or `Backspace` | Delete the rule. On a group, delete the group. Its rules stay, in no group. |
+| `K` `J` | Move the rule (or the group) up or down. |
+| `g` | Move the rule into a group or out of one. |
+| `N` | New group, then rename it. Same as the New group button. |
+| `r` | Rename the group. `Enter` saves, `Esc` cancels. |
+| `m` | Pause or resume all overrides. |
+| `L` | Show Jaca's log (`~/.jaca/logs/jaca.log`) in Finder. |
+| `Esc`, `q` or `o` | Close the list. |
+
+The groups show with a jacad that supports them. Each group is one row above the rules in no
+group. A click on a group's name opens the group's popup. A right click on a row shows its
+actions as a menu.
+
+**A group's popup.** The popup has the group's name as its title. It has the group's switch
+(`m`), its rules with the same keys as the list (`K` `J` move a rule inside the group), and the
+New override (makes a rule in the group), Rename group (`r`) and Delete group buttons. `Esc`
+goes back to the list. `q` or `o` closes the overrides.
+
+### Rule editor
+
+`O` on a selected request opens the editor filled from it: its URL as the pattern, its method,
+and the response it got. If a rule already answers the request, `O` opens that rule. Closing
+the editor goes back to where it opened: the rules list or the requests. In a pane of 120
+columns and 30 rows or more, the editor is the app's two-column sheet.
+
+| Key | Action |
+|---|---|
+| `Tab` `Shift+Tab` | Move between fields. |
+| `↑` `↓` | Move between fields. In a one-line field, `Enter` also moves to the next field. |
+| `←` `→` | Move inside a group of chips. In a one-line field, move the cursor. |
+| `space` or `Enter` | Pick a chip or press a button. |
+| `Ctrl+S` or `⌘S` | Save. |
+| `Esc` | Close without saving. In the body, the first `Esc` leaves the text and the second closes. |
+
+**In the body**, the editor has more keys. `⌘A`, `⌘C`, `⌘X`, `⌘Z` and `⇧⌘Z` work like their
+`Ctrl` keys when the terminal passes them on (see [Command keys](#command-keys)).
+
+| Key | Action |
+|---|---|
+| `Tab` | Indent two spaces (every selected line, when there are several). |
+| `Shift+Tab` | Remove one indent level. |
+| `Esc` | Give the keys back to moving between fields. `Tab` and `Shift+Tab` move again. `Enter` returns to the text. |
+| `Shift` + arrows, `Home`, `End`, `PgUp`, `PgDn` | Select. Dragging with the mouse also selects. |
+| typing or `Backspace` | Replace the selection. |
+| `Alt` or `Ctrl` + `←` `→` | Move by word. |
+| `Alt+Backspace` | Delete a word. |
+| `Ctrl+A` | Select all. |
+| `Ctrl+C` | Copy the selection. |
+| `Ctrl+X` | Cut the selection. |
+| `Ctrl+Z` | Undo. |
+| `Ctrl+Y` | Redo. |
+
+Rule bodies over 4 KB go to `~/.jaca/network-overrides/bodies/`. The pane writes them, as the
+app does, because jacad has no method to upload one.
+
+### Command keys
+
+A terminal keeps `⌘A`, `⌘C` and `⌘Z` for itself by default, so they never reach the pane.
+Herdr sends a `⌘` key it receives to the focused pane, and the editor reads it. The terminal
+must let these keys through. In Ghostty (`~/.config/ghostty/config`):
 
 ```
 keybind = super+a=unbind
@@ -153,248 +396,451 @@ keybind = performable:super+c=copy_to_clipboard
 ```
 
 This changes Ghostty everywhere: `⌘A` no longer selects the whole screen and `⌘Z` no longer
-undoes a closed tab; `⌘C` still copies a Ghostty selection when there is one.
+undoes a closed tab. `⌘C` still copies a Ghostty selection when there is one.
 
-Not carried over from the app: the JSON tree view (bodies show as
-pretty-printed text), the match preview's example rows and shadow count, find in the body
-editor, the device proxy section, and companion or proxy capture. Regex patterns use Go's
-engine, not the app's: lookaround and backreferences don't compile here though they run in the
-app and in jacad.
+<details>
+<summary>Not carried over from the app (network)</summary>
 
-Rule bodies over 4 KB are written to `~/.jaca/network-overrides/bodies/` by the pane, as the
-app does; jacad has no method to upload one.
+- The JSON tree view. Bodies show as pretty-printed text.
+- The example rows and the shadow count of the match preview.
+- Find in the body editor.
+- The device proxy section.
+- Companion and proxy capture.
+- The app's regex engine. Patterns use Go's engine here, so lookaround and backreferences do not
+  compile, though they run in the app and in jacad.
 
-## Gradle and Xcode
+</details>
 
-The `gradle` and `xcode` panes work alike. One cursor moves over every row, and each row has a
-button that takes two presses, as in the app: the first arms it for 3 seconds (`Kill` reads
-`Confirm kill?`, `Delete` reads `Confirm?`), the second within that time confirms. Each row is
-armed on its own. The result shows on the line above the status bar for 2.6 seconds, as the
-app's toast does.
+## Tools, Gradle and Xcode
 
-- **Keys**: `j`/`k` or arrows move, `PgUp`/`PgDn` move a page, `Enter`, `x` or `Backspace`
-  press the selected row's button, `r` refreshes, `?` shows the keys (any of `Esc`, `Enter`,
-  `q`, `?` or a click closes it), `q` quits.
-- **Mouse**: a click selects a row, a click on a row's button presses it, the wheel scrolls,
-  and `Help` at the right of the status bar opens the keys.
-- **Gradle**: the cache folders (`gradle.caches`, measured with `du` when the pane opens, so
-  the section reads `Calculating…` at first) and the daemons. Killing dims the daemon's row
-  until jacad answers; a daemon that exited on its own meanwhile goes without a toast. `r` is
-  the app's "Refresh Gradle daemons" and also measures the cache again, which the app does
-  each time its area appears.
-- **Xcode**: `xcode.list` sizes every folder with `du`, so the first scan takes a while. `r`
-  is the app's "Rescan DerivedData". `S` (or the button at the top right, shown while there
-  are stale entries) is the app's `Clean <n> stale`, two presses too: it deletes the stale
-  folders one by one and then removes every stale row, as the app does; the toast counts the
-  folders that were deleted, and a rescan lists any that weren't. jacad has no topic for
-  DerivedData, so the pane removes the rows it deletes and otherwise changes only on a rescan.
+The `tools` pane is a popup that lists `Gradle` and `Xcode`. `Enter` or a click opens the
+chosen pane in a new tab named `Gradle - Jaca` or `Xcode - Jaca` and closes the popup. `j` `k`
+or the arrows move, and `Esc` or `q` closes. Run outside Herdr, the chosen pane shows in place
+(`Esc` goes back).
 
-In a narrow pane the name is cut first, then columns are left out: the JDK, heap and RAM tags, CPU,
-uptime, PID and `BUSY`/`IDLE` in the Gradle pane, the workspace path, kind and size in the Xcode pane. The button goes
-last.
+The `gradle` and `xcode` panes work the same way. One cursor moves over every row. Each row has
+a two-press button: `Kill` reads `Confirm kill?` and `Delete` reads `Confirm?` while it is
+armed. The result shows on the line above the status bar for 2.6 seconds, as the app's toast
+does.
+
+| Key | Action |
+|---|---|
+| `j` `k` or `↑` `↓` | Move. |
+| `PgUp` `PgDn` | Move a page. |
+| `Enter`, `x` or `Backspace` | Press the button of the selected row (`Kill` or `Delete`). |
+| `r` | Gradle: "Refresh Gradle daemons", which also measures the caches again. Xcode: "Rescan DerivedData". |
+| `S` | Xcode: `Clean <n> stale` (two presses). Shown while there are stale entries. |
+| `Esc` | Go back to the tools picker, when the pane shows in place. |
+
+**Mouse.** A click selects a row. A click on the button of a row presses it. The wheel
+scrolls. `Help` at the right of the status bar shows the keys.
+
+**Gradle.** The pane shows the cache folders (`gradle.caches`) and the daemons (the
+`gradle.daemons` topic). It measures the caches with `du` when it opens, so the section reads
+`Calculating…` at first. The app measures them each time its area appears. Killing dims the
+row of the daemon until jacad answers. A daemon that exited on its own in that time goes
+without a toast.
+
+**Xcode.** `xcode.list` sizes every folder with `du`, so the first scan takes a while. `S`, or
+the button at the top right, deletes the stale folders one by one and then removes every stale
+row, as the app does. The toast counts the deleted folders. A rescan lists any that were not
+deleted. jacad has no topic for DerivedData, so the pane removes the rows it deletes and
+otherwise changes only on a rescan.
+
+**Narrow panes.** The name is cut first. Then columns go: in Gradle, the JDK, heap and RAM tags,
+CPU, uptime, PID and `BUSY`/`IDLE`; in Xcode, the workspace path, kind and size. The button
+goes last. While a refresh you asked for runs, the panes show nothing for it, because the app
+has no text for it.
 
 ## Cloud Logging
 
-The `cloud` pane is the app's Cloud Logging area on jacad's `cloud.*` methods. It opens on the
-home, in a popup (`Esc` closes it); opening a session closes the popup and switches to the
-session's own tab, named `Jaca cloud - <project>`.
+The `cloud` pane is the app's Cloud Logging area, on jacad's `cloud.*` methods. It opens on the
+home, in a popup (`Esc` closes it). Opening a session closes the popup and switches to the
+session's own tab, named `Jaca cloud - <project>`. The session tab runs the same entrypoint with
+the session in `JACA_HERDR_CLOUD_SESSION`.
 
-To open it with a key, in `~/.config/herdr/config.toml`:
+### Home
 
-```toml
-[[keys.command]]
-key = "prefix+l"
-type = "shell"
-command = "herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint cloud"
-```
+The header shows what jacad found: `Signed in as …`, `Not signed in` or `gcloud CLI not found`.
+When you are signed out, `Open Terminal` opens a Herdr tab that runs `gcloud auth login`. jacad
+never runs it, because it has no terminal to prompt in. The home then asks jacad to read the
+account again every 3 seconds until the login lands. It does this for 10 minutes after the last
+key or click.
 
-**Home.** The header shows what jacad found: `Signed in as …`, `Not signed in` or
-`gcloud CLI not found`. Signed out, `Open Terminal` opens a Herdr tab running
-`gcloud auth login` (jacad never runs it: it has no terminal to prompt in), and the home asks
-jacad to re-read the account every 3 seconds until the login lands (for 10 minutes after the
-last key or click; `r` asks at any time). `j`/`k` move between
-projects, `←`/`→` or `Tab` choose a row's action and `Enter` presses it; `n` is New session,
-`l` Log names, `e` Rename, `x` or `Backspace` Remove (two presses), `a` Add project, `u` From
-URL…, `r` Re-check.
+| Key | Action |
+|---|---|
+| `j` `k` or `↑` `↓` | Select a project. |
+| `PgUp` `PgDn` | Scroll. |
+| `←` `→`, `Tab`, `Shift+Tab` | Select an action of the row. |
+| `Enter` | Press the selected action. With no projects, Add project. |
+| `n` | New session. |
+| `l` | Log names. |
+| `e` | Rename. |
+| `x` or `Backspace` | Remove (two presses). |
+| `a` | Add project. |
+| `u` | From URL…. |
+| `r` | Re-check (read the account again). |
+| `Esc` | Close the popup. |
 
-**Session.** `p` or `space` starts and stops, `c` clears, `f` toggles Follow tail (`G` turns
-it on), `l` opens the log names, `t` the time range, `u` the share menu, `1`–`6` set the
-minimum severity (All, D, I, W, E, C), `F` opens the Filters bar, `/` searches the loaded
-logs, `↑`/`↓` and `PgUp`/`PgDn` move a selection over the entries (an open details panel
-follows it; `j`/`k` scroll without selecting), `S` exports, `C` copies the selection, `y` sets the copy format. A click or `Enter`
-opens an entry's details beside the list; there `j`/`k` move between fields, `Enter` opens a
-field's actions (filter by a label or severity, open it in a new session, favorite a label),
-and `[` `]` step between entries. Scrolling to the top loads older logs.
+### Session
 
-Changing what is sent to gcloud (the log name, the time range, the severity, the Filters bar's
-conditions) restarts a running session, as in the app; the search box only filters what is
-loaded.
+| Key | Action |
+|---|---|
+| `p` or `space` | Start or stop. |
+| `c` | Clear the view. |
+| `f` | Turn Follow tail on or off. |
+| `G` or `Shift+PgDn` | Turn Follow tail on. |
+| `l` | Choose the log name. |
+| `t` | Time range. |
+| `u` | Share menu: `Copy Logs Explorer URL`, `Open in browser`. |
+| `1`–`6` | Minimum severity (All, D, I, W, E, C). |
+| `F` | Open or close the Filters bar. |
+| `/` | Search the loaded logs. `Enter` or `Esc` leaves the box. |
+| `↑` `↓`, `PgUp` `PgDn` | Move a selection over the entries. An open details panel follows it. |
+| `Shift+↑` `Shift+↓` | Extend the selection. |
+| `j` `k` | Scroll without selecting. |
+| `C` | Copy the selected entries. |
+| `y` | Set the copy format. |
+| `S` or `e` | Export. |
+| `Enter` | Open the details of the entry. |
+| `Tab` | Move the keys between the list and the details. |
+| `Q` | Switch between Logs and SQL. |
+| `s` | Go to the SQL editor. |
+| `Esc` | Close the details, then drop the selection, then go back. |
 
-**SQL.** `Q` switches between Logs and SQL, and `s` goes to the SQL editor. The statement
-runs over the entries loaded in the session (jacad's `cloud.sessions.query`), with `Ctrl+R`,
-or `⌘↩` where the terminal passes it on; once it has run it runs again every 2 seconds, as in
-the app.
-The bar has the app's Schema popup, the Labels menu (inserts a filter on a label), the
-Templates menu (saved templates, starters, From current filter) and `Save…`. In the
-editor `Tab` indents, `Esc` leaves it, and `Ctrl+C` copies the selection. A pane with fewer
-than three rows to spare shows no SQL bar.
+A click opens the details of an entry beside the list. A right click opens the row menu:
+`Copy Entry` (or `Copy <n> Entries`), `Copy Format…`, `Select All`. Scrolling to the top loads
+older logs.
 
-A confirming press has to be a separate press: the repeats of a held key don't confirm what
-its first press armed. The pane reads how this Mac repeats keys (`InitialKeyRepeat` and
-`KeyRepeat`, when it starts) and takes the same key for a repeat when one is due: right after
-the last one, one interval after, or the first delay after (375 ms unless changed, from
-40 ms before it to 60 ms after, so a second press that lands there has to be made again). Any other second press
-of the same key waits a moment (150 ms at the usual repeat rate) and is dropped when a repeat
-follows it. It then acts on the row it was pressed on, or on nothing when that row has moved.
-What this cannot tell from two presses: a key held just past its first repeat and let go,
-when that repeat came more than 40 ms early or 60 ms late.
-This applies to every two-press button (Remove here; Kill, Delete and Clean in the Gradle and
-Xcode panes). A click on a row that an update moved before it was drawn is dropped.
+**Details panel.**
 
-Not carried over from the app: the Ask Claude buttons (SQL and regex) and the label examples
-sheet that sets what they send, the gcloud debug
-console (it reads a log kept inside the app, which jacad has no method for), resizing the
-detail panel, horizontal scrolling of long lines, syntax highlighting and autocomplete in the
-SQL editor, the tab subtitle (`project · log · range`), selecting part of a value in the
-detail panel, and the date pickers of an absolute range (two text fields read as
-`2006-01-02 15:04`). A match mode is changed by pressing it until the wanted one shows, where
-the app opens a menu. A pane does not survive a jacad restart: it exits, and is opened again.
+| Key | Action |
+|---|---|
+| `j` `k` or `↑` `↓` | Move between fields. |
+| `PgUp` `PgDn` | Move half a page. |
+| `Enter` | Open the field's actions: filter by a label or severity, open it in a new session, favorite a label. |
+| `[` `]` or `←` `→` | Go to the previous or next entry. |
+| `Tab` | Give the keys back to the list. |
+| `Esc` | Close the details. |
+
+Changes to what goes to gcloud restart a running session, as in the app. These are the log
+name, the time range, the severity and the conditions of the Filters bar. The search box only
+filters what is loaded.
+
+### SQL
+
+The statement runs over the entries loaded in the session (jacad's `cloud.sessions.query`).
+After it has run once, it runs again every 2 seconds, as in the app. The bar has the app's
+Schema popup, the Labels menu (inserts a filter on a label), the Templates menu (saved
+templates, starters, From current filter) and `Save…`. A pane with fewer than three rows to
+spare shows no SQL bar.
+
+| Key | Action |
+|---|---|
+| `Ctrl+R`, or `⌘↩` if the terminal passes it on | Run the statement, from anywhere in SQL mode. |
+| `Tab` | In the editor: indent. On the bar: next stop. |
+| `Shift+Tab`, `←` `→`, `↑` `↓` | On the bar: move between the stops. |
+| `Enter` or `space` | On the bar: press the stop. |
+| `Esc` | In the editor: leave the text. On the bar: give the keys back to the list. |
+| `Ctrl+C` or `⌘C` | Copy the selection in the editor. |
+| `Ctrl+X` or `⌘X` | Cut the selection in the editor. |
+
+<details>
+<summary>Not carried over from the app (Cloud Logging)</summary>
+
+- The Ask Claude buttons (SQL and regex) and the label examples sheet that sets what they send.
+- The gcloud debug console. It reads a log kept inside the app, and jacad has no method for it.
+- Resizing the detail panel.
+- Horizontal scrolling of long lines.
+- Syntax highlighting and autocomplete in the SQL editor.
+- The tab subtitle (`project · log · range`).
+- Selecting part of a value in the detail panel.
+- The date pickers of an absolute range. The pane has two text fields read as
+  `2006-01-02 15:04`.
+- The match mode menu. Press the match mode until the one you want shows.
+- Surviving a jacad restart. The pane exits; open it again.
+
+</details>
 
 ## Projects
 
-The `projects` pane is the app's Projects area on jacad's `projects.*` methods and its retained
-`projects.state` topic. It opens in a tab; with the binding below the tab is named
-`Projects - Jaca`.
+The `projects` pane is the app's Projects area, on jacad's `projects.*` methods and its retained
+`projects.state` topic. It opens in a tab. With the [key binding](#herdr-key-bindings), the tab is
+named `Projects - Jaca`.
 
-```toml
-[[keys.command]]
-key = "prefix+f"
-type = "shell"
-command = "herdr plugin pane open --plugin dev.srsouza.jaca --entrypoint projects --focus --env JACA_HERDR_OWN_TAB=1"
-```
+Each row has two lines: the name with its tags and size, then the path. For a checkout, the
+second line has the path, `from <base>` or `detached HEAD` / `branch gone`, and its age. The
+selected row shows its actions as buttons on the second line. Projects start closed.
 
-- **List**: projects start closed. `Enter`, `Space` or a click on a project's name line opens
-  and closes it; `→` opens, `←` closes, and `←` on a nested row goes to its parent. `t` (or
-  `Tree` / `List` in the header) switches between the tree, which nests a project under the
-  project whose folder contains it, and the flat list in jacad's order. The choice is the app's
-  `jaca.projectsViewMode` setting, so the pane and the app share it.
-- **Rows**: each row is two lines, the name with its tags and size, then the path (for a
-  checkout the path, `from <base>` or `detached HEAD` / `branch gone`, and its age). The
-  selected row shows its actions as buttons on the second line.
-- **Actions**: `o` Open in Finder, `z` Open in Zed (when Zed is installed), `y` Copy name
-  (checkouts), `c` Cache & worktree actions (checkouts), `h` Open in Herdr (Claude projects),
-  `x` or `Backspace` Remove (folders you added; two presses, as in the app). `m`, `Enter` on a
-  checkout, or a right click opens a menu with the same actions.
-- **Cache & worktree actions**: `Clean cache` runs at once and closes the sheet, as in the app.
-  `Delete worktree` takes two presses within 3 seconds. `Tab` moves between the buttons and
-  `Enter` presses the focused one (`Close` at first), `Esc` closes. The main checkout has no
-  delete. The sheet shows whole or not at all: a pane too short for it does not open it.
-- **Disk usage**: the bar asks before sizes are computed. `C` is Calculate, `N` is Not now, `S`
-  stops a running scan. The answer lasts until the pane closes; after Calculate, each
-  completed rescan is sized again.
-- **Folders**: `a` opens the macOS folder chooser and adds the folder. `r` rescans. The pane
-  rescans by itself when it opens and the last scan is missing or older than 30 seconds.
-- **Open in Herdr**: asks for the session name, then finds or creates the project's Space,
-  opens a tab named after the session and runs the Claude command there. On a project root
-  that is a git repo it fetches, fast-forwards and starts `--worktree <name>`; in a linked
-  worktree, or a root without git, it runs the command in the folder. The first launch also
-  asks for the command; `s` (or `Herdr settings`) changes it later. It is stored in the app's
-  `jaca.herdr.claudeCommand` setting.
-- A held key acts once: its repeats are dropped, and a second press of the same key acts after
-  a moment (see Cloud Logging).
+| Key | Action |
+|---|---|
+| `j` `k` or `↑` `↓` | Move. |
+| `PgUp` `PgDn` | Move half a page. |
+| `Enter` or `space` | Open or close a project. On a checkout, open the row menu. With no projects, add a project folder. |
+| `→` | Open a project. |
+| `←` | Close a project. On a nested row, go to its parent. |
+| `t` | Switch between Tree and List. |
+| `o` | Open in Finder. |
+| `z` | Open in Zed (when Zed is installed). |
+| `y` | Copy name (checkouts). |
+| `c` | Cache & worktree actions (checkouts). |
+| `h` | Open in Herdr (Claude projects). |
+| `x` or `Backspace` | Remove (folders you added, two presses). |
+| `m` | Row menu with the same actions. A right click opens it too. |
+| `a` | Add a project folder (the macOS folder chooser). |
+| `r` | Rescan projects. |
+| `s` | Herdr settings: change the command that Open in Herdr runs. |
+| `C` / `N` | Calculate / Not now, while the disk usage bar asks. |
+| `S` | Stop a running size scan. |
 
-Not carried over from the app: the icons and avatars; action buttons on every row (only the
-selected row shows them, since the labels are the app's tooltips and a terminal has no room for
-them on each row); the hover-only Remove; animations (a worktree being deleted is dimmed, a
-freed size is green); the toast icons; the multi-line command field (one line here). The
-chooser has the app's message but not its `Add` button label, which AppleScript's
-`choose folder` cannot set. Ages that jacad does not send are written as `3 min ago`, `2 hr ago`
-and so on, in fixed-length units: the app's formatter follows the system's language and
-region, and a date near a unit boundary can read one unit apart from its.
+**Mouse.** A click on the name line of a project opens or closes it. `Tree` / `List` in the
+header switch the view. A right click opens the row menu.
+
+**Tree and List.** The tree nests a project under the project whose folder contains it. The
+list is flat, in jacad's order. The choice is the app's `jaca.projectsViewMode` setting, so the
+pane and the app share it.
+
+**Cache & worktree actions.** `Clean cache` runs at once and closes the sheet, as in the app.
+`Delete worktree` takes two presses within 3 seconds. `Tab` moves between the buttons and
+`Enter` presses the focused one (`Close` at first). `Esc` closes. The main checkout has no
+delete. The sheet shows whole or not at all: a pane too short for it does not open it.
+
+**Disk usage.** The bar asks before the pane computes sizes. The answer lasts until the pane
+closes. After Calculate, the pane sizes each completed rescan again.
+
+**Rescans.** The pane rescans by itself when it opens and the last scan is missing or older
+than 30 seconds.
+
+**Open in Herdr.** The pane asks for the session name. Then it finds or creates the Space of
+the project, opens a tab named after the session, and runs the Claude command there.
+
+- On a project root that is a git repo, it fetches, fast-forwards and starts
+  `--worktree <name>`.
+- In a linked worktree, or a root without git, it runs the command in the folder.
+- The first launch also asks for the command. `s` (or `Herdr settings`) changes it later. The
+  app's `jaca.herdr.claudeCommand` setting stores it.
+
+<details>
+<summary>Not carried over from the app (Projects)</summary>
+
+- The icons and avatars.
+- Action buttons on every row. Only the selected row shows them, because the labels are the
+  app's tooltips and a terminal has no room for them on each row.
+- The hover-only Remove.
+- Animations (a worktree that is being deleted is dimmed, a freed size is green).
+- The toast icons.
+- The multi-line command field. It is one line here.
+- The `Add` button label of the folder chooser. The chooser has the app's message, but
+  AppleScript's `choose folder` cannot set the button label.
+- Locale-aware ages. Ages that jacad does not send are written as `3 min ago`, `2 hr ago` and so
+  on, in fixed-length units. The app's formatter follows the system's language and region, so a
+  date near a unit boundary can read one unit apart.
+
+</details>
 
 ## Database
 
-The `database` pane is the app's Database tab on jacad's `database.*` methods. It opens on the
-installed apps; picking one lists its databases, pulls the first and shows the first table,
-100 rows a page. What it shows is a snapshot: `Refresh` pulls the database again and goes back
-to the first table. It reads only: jacad refuses a statement that is not read-only.
+The `database` pane is the app's Database tab, on jacad's `database.*` methods. It opens on the
+installed apps. When you pick one, it lists the app's databases, pulls the first and shows the
+first table, 100 rows a page. What it shows is a snapshot: `Refresh` pulls the database again
+and goes back to the first table. It only reads: jacad refuses a statement that is not
+read-only.
 
-- **Toolbar**: `a` (or the app button) lists the apps, `d` opens the DB menu, `t` the Table menu
-  (each table with its row count), `r` is Refresh.
-- **SQL**: `s` (or a click) goes to the SQL box. `Enter` runs it, as in the app; `Ctrl+R`, or `⌘↩`
-  where the terminal passes it on, runs it from anywhere. `Alt+Enter` breaks the line (the box
-  grows to three rows), `Esc` leaves it, `Ctrl+C` copies the selection. A query lets go of the
-  table: the Table control reads `—` and the pagination bar goes.
-- **Rows**: `↑`/`↓` (or `j`/`k`), `PgUp`/`PgDn`, `Home`/`End` move the selection, `←`/`→` (or
-  `h`/`l`, the wheel sideways or with `Shift`) scroll by column, the wheel scrolls. `[` or `p`
-  is Prev, `]` or `n` is Next.
-- **Row detail**: `Enter` or a click opens the row beside the grid, and again closes it. `Tab` or
-  `1`/`2` switch between Fields and JSON, `PgUp`/`PgDn` scroll it, `C` (or the button) is Copy
-  JSON, `Esc` closes it. Text in it is copied with the mouse as in the network pane's detail.
-- `?` shows the keys, `q` quits. Opened without a device it shows the picker first.
+| Key | Action |
+|---|---|
+| `a` | Pick an app. |
+| `d` | DB menu. |
+| `t` | Table menu (each table with its row count). |
+| `r` | Refresh. |
+| `s` or `/` | Go to the SQL box. |
+| `Ctrl+R`, or `⌘↩` if the terminal passes it on | Run the statement, from anywhere. |
+| `↑` `↓` or `j` `k` | Move the selection. |
+| `PgUp` `PgDn` | Move a page. With the row detail open, scroll the detail. |
+| `Home` `End` or `g` `G` | Go to the first or last row. |
+| `←` `→` or `h` `l` | Scroll by column. |
+| `[` or `p` | Prev page. |
+| `]` or `n` | Next page. |
+| `Enter` | Open or close the row detail. |
+| `Tab`, `Shift+Tab`, `1` `2` | Switch between Fields and JSON in the row detail. |
+| `C` | Copy JSON. |
+| `Esc` | Close the row detail, then go back to the device picker. |
 
-As in the app, the option is offered for every ready device; a physical iOS device answers
-`Database browsing isn't supported on this platform yet.`, and an Android app has to be
+**In the SQL box.** `Enter` runs the statement, as in the app. `Alt+Enter` adds a line break
+(the box grows to three rows). `Esc` leaves the box. `Ctrl+C` or `⌘C` copies the selection, and
+`Ctrl+X` or `⌘X` cuts it. A query lets go of the table: the Table control reads `—` and the
+pagination bar goes.
+
+**Mouse.** A click on the SQL box goes to it. The toolbar buttons are clickable. A click on a
+row opens its detail, and a second click closes it. The wheel scrolls; sideways, or with `Shift`, it
+scrolls by column. Text in the row detail copies with the mouse, as in the network detail.
+
+**Platforms.** As in the app, every ready device offers the option. A physical iOS device
+answers `Database browsing isn't supported on this platform yet.` An Android app must be
 debuggable.
 
-jacad bounds what a read returns, which the app does not: a query stops at 50000 rows, any
-result at 64 MB, and a statement after 30 seconds. Its messages for these
+**Limits.** jacad bounds what a read returns, which the app does not. A query stops at 50000
+rows, any result at 64 MB, and a statement after 30 seconds. The pane asks jacad for one listing
+or pull at a time. It opens its session again every 4 minutes so jacad does not reap it, and it
+pulls again when jacad says the session or the copy is gone.
+
+<details>
+<summary>Not carried over from the app (Database)</summary>
+
+- The tab's name (`DB · <app>`).
+- The checkmark on the picked app.
+- The cell borders of the grid.
+- Selecting text in the grid.
+- The `Copied` label on the Copy JSON button. The pane shows its `Copied` notice instead.
+- Exact JSON for some numbers and keys. A number between 1e15 and 2^54 is quoted, and the keys
+  of a nested object outside Latin-1 are in code point order.
+
+</details>
+
+## Configuration
+
+| Variable | Effect |
+|---|---|
+| `JACAD_PATH` | The `jacad` binary to start. Set it in the Herdr server's environment: a variable you export in your shell does not reach panes, which the Herdr server starts. |
+| `JACA_DAEMON_DIR` | The directory of the socket (default `~/.jaca`). The app, the daemon and the plugin all read it. |
+
+The plugin looks for `jacad` in this order:
+
+1. `$JACAD_PATH`
+2. `/Applications/Jaca.app/Contents/MacOS/jacad`
+3. `~/Applications/Jaca.app/Contents/MacOS/jacad`
+4. The newest Xcode build, `~/Library/Developer/Xcode/DerivedData/Jaca-*/Build/Products/*/Jaca.app/Contents/MacOS/jacad`
+
+Key bindings live in Herdr's config. See [Herdr key bindings](#herdr-key-bindings).
+
+### Colors
+
+Herdr does not pass its theme to plugins, so the panes find it the way Herdr does:
+
+- The built-in theme named under `[theme]` in `~/.config/herdr/config.toml`, with the colors of
+  `[theme.custom]` on top.
+- Popups use the colors of Herdr's own overlays: `text` on `panel_bg`, an `accent` border, and
+  a clickable ` esc close ` button at the top right.
+- The log colors are the theme's `red`, `green`, `yellow`, `blue`, `teal` and `mauve`.
+- A theme that the table does not have, or `terminal`, keeps the colors of the terminal palette.
+- A pane reads the config when it starts, so a theme change shows in panes opened after it.
+- `auto_switch` and `[theme.custom.light]` / `[theme.custom.dark]` are not applied.
+
+The built-in palettes are in `cmd/jaca-herdr/herdrthemes.go`, taken from Herdr v0.9.1's
+`src/app/state.rs`. The repo has no generator script for this file. When Herdr adds or changes
+a theme, update the table from Herdr's source.
+
+## Troubleshooting
+
+| Message or symptom | Fix |
+|---|---|
+| `jacad not found: install Jaca.app in /Applications or set JACAD_PATH` | Install a Jaca build that ships `jacad`, or set `JACAD_PATH`. See [Configuration](#configuration). |
+| `jacad closed the connection` | The daemon stopped. `jacad status` starts it again. `~/.jaca/jacad.log` says why it stopped. |
+| `protocol N requested, daemon speaks M` | A daemon from another build runs. Run `jacad stop`, then open the pane again. |
+| `<method>: no reply from jacad after <time>` | jacad did not answer in time. Read `~/.jaca/jacad.log`. |
+| An action does nothing, or the startup hook failed | Run `herdr plugin log list --plugin dev.srsouza.jaca`. It shows the output and exit code of each command. |
+
+More help:
+
+- `~/.jaca/jacad.log` is the daemon's own log (starts, stops, errors).
+- `jacad describe` lists every method and topic. `jacad call METHOD [PARAMS_JSON]` and
+  `jacad watch TOPIC...` talk to the daemon directly.
+
+## Development
+
+```bash
+cd herdr-plugin
+go vet ./...
+go test ./...
+go build -o bin/jaca-herdr ./cmd/jaca-herdr
+```
+
+- Run a pane against a development daemon without touching the real one:
+
+  ```bash
+  export JACA_DAEMON_DIR=~/.jaca/dev JACAD_PATH=/path/to/Debug/Jaca.app/Contents/MacOS/jacad
+  bin/jaca-herdr pane gradle
+  ```
+
+- `jaca-herdr` with no arguments prints the usage: `ensure`, `pane <id>` and `action <id>`.
+- The protocol is newline-delimited JSON-RPC 2.0 on the socket. `protocolVersion` in
+  `cmd/jaca-herdr/rpc.go` must match `DaemonProtocol.version` in
+  `Sources/Core/Daemon/DaemonProtocol.swift`.
+- Each screen has a test that draws it at many pane sizes and checks that it fits (for example
+  `TestLogViewerRowsFitThePane`). Add one for a new layout.
+
+<details>
+<summary>Where the text in the panes comes from</summary>
+
+Every string a pane shows comes from the app: the Gradle, Xcode, device list, device menu, log
+and Projects views, the sidebar titles, `DeviceState.label`, `LogLevel.short` and the Projects
+toasts. The exceptions below have no app copy. They are placeholders that need specified copy.
+
+**All panes**
+
+- The `?` popup labels `Scroll`, `Help` (also the popup's title and the status bar button) and
+  `Quit`.
+- The client's own error lines: `<method>: no reply from jacad after <time>`,
+  `jacad closed the connection`, and the lines it writes when Herdr or jacad returns something
+  it cannot read (`herdr tab create: no pane_id`, and the decode errors in `cloudwire.go`).
+- The ` esc close ` and ` esc back ` buttons stand where the app's sheets have `Cancel`.
+
+**Logs**
+
+- The `?` popup labels `Minimum level`, `Filter text`, `Regex`, `Package id` and
+  `Pause / unpause`.
+- The toolbar's field placeholders are the app's, with a capital first letter.
+
+**Network**
+
+- The `?` popup labels `Delete request`, `Select requests`, `Select request`,
+  `Inspect request`, `Switch tab`, `Request menu`, `Follow new requests` and `Back`.
+- The `network` pane title.
+- The `R` in the ` R  Relaunch & re-attach ` button is the key, like `esc` in ` esc close `. The
+  label after it is the app's.
+- The switch beside it uses the app's Settings title for the same setting,
+  `Re-attach to iOS Simulator apps automatically`.
+
+**Database**
+
+- The `?` popup label `Row details`. The other labels are the app's, or placeholders that the
+  other panes use.
+- The `database` pane title and the tab name `Jaca database - <device>`.
+
+**Gradle and Xcode**
+
+- The `?` popup label `Select row`. The other labels are the app's buttons and tooltips, or the
+  placeholders of the log viewer.
+- The `tools` pane title, `Jaca`.
+
+**Cloud Logging**
+
+- The `?` popup labels `Select row`, `Select action`, `Press`, `Start / Stop`, `Time range`,
+  `Minimum severity`, `Select entries`, `Details / row actions`, `Previous / next entry`,
+  `Switch between list and details`, `Close / back`, `Logs / SQL`, `SQL filter` and
+  `Copy Logs Explorer URL / Open in browser`.
+- The `Help` button in the status bar and the tab name `Jaca cloud - <project>`.
+- The glyphs that stand in for the app's icon buttons (`▶ ■ ⌫ ⤓ ↗ ⟳ ⊕ ⊖ ▾ ▼ ▸ ★ ☆ ✓ ● ○`), the
+  `│` gutter of the SQL editor, and the `↓ <path>` note after an export (the app shows nothing
+  there).
+- The row `… <n> more lines — ⌘C copies all` is the app's string, though the key here is `C`.
+  The SQL bar's `⌘↩ to run · …` hint is also the app's, though the key that always works is
+  `Ctrl+R`.
+
+**Projects**
+
+- The `?` popup labels `Expand / collapse`, `Row menu` and `Tree / List`.
+- The tab name `Projects - Jaca` and the `jaca: ` prefix in front of an error that the app
+  would not show.
+- The pane uses three app strings where the app does not: `Herdr settings` (the button's
+  accessibility label; its tooltip is longer), `Confirm?` as the row menu's label while Remove
+  is armed, and the relative ages that jacad does not send, which are approximated.
+
+**Database messages.** jacad's messages for its limits
 (`The result has more than 50000 rows. Add a LIMIT to the query.`,
-`The result is larger than 64 MB. Select fewer rows or columns.`) and for a session it no
-longer has (`No database session …`, `No database pulled in session …`) have no app copy.
-The pane asks jacad for one listing or pull at a time, re-opens its session every 4 minutes so
-it is not reaped, and pulls again when jacad says the session or the copy is gone.
+`The result is larger than 64 MB. Select fewer rows or columns.`) and for a session it no longer
+has (`No database session …`, `No database pulled in session …`) have no app copy.
 
-Not carried over from the app: the tab's name (`DB · <app>`), the checkmark on the picked app,
-the grid's cell borders, selecting text in the grid, and the `Copied` label on the Copy JSON
-button (the pane shows its `Copied` notice instead). The JSON is the app's, except that a
-number between 1e15 and 2^54 is quoted, and keys of a nested object outside Latin-1 are in code
-point order.
+**`herdr-plugin.toml`.** The two action titles and the `logs` pane title are placeholders
+written for this prototype and need specified copy.
 
-## Copying
-
-Every copy in the log, network, database and Cloud Logging session panes (a button, a key, a menu item,
-a selection released) shows `Copied` for a moment near the bottom of the pane, the app's
-notice for it. A copy that fails shows the error instead.
-
-## Colors
-
-Herdr doesn't pass its theme to plugins, so the panes work it out the way Herdr does: the
-built-in theme named under `[theme]` in `~/.config/herdr/config.toml`, with the colors of
-`[theme.custom]` on top. Popups use what Herdr's own overlays use (`text` on `panel_bg`, an
-`accent` border, and its ` esc close ` button at the top right, clickable), and the log colors are the theme's `red`, `green`, `yellow`, `blue`, `teal`
-and `mauve`.
-
-The built-in palettes are copied from Herdr's source into `cmd/jaca-herdr/herdrthemes.go`
-(generated from v0.9.1's `src/app/state.rs`); regenerate it when Herdr adds or changes a theme.
-A theme the table doesn't have, or `terminal`, leaves the terminal palette's colors.
-
-The config is read when a pane starts, so a theme change shows in panes opened after it.
-`auto_switch` and `[theme.custom.light]` / `[theme.custom.dark]` are not applied.
-
-## Protocol
-
-Newline-delimited JSON-RPC 2.0 on the socket. `jacad describe` lists every method and topic;
-`jacad call METHOD [PARAMS_JSON]` and `jacad watch TOPIC...` are the quickest way to explore.
-`protocolVersion` in `cmd/jaca-herdr/rpc.go` must match `DaemonProtocol.version` in the app.
-
-## Copy
-
-Every string a pane shows is taken from the app (the Gradle, Xcode, device list, device menu, log and
-Projects views, the sidebar titles, `DeviceState.label`, `LogLevel.short`, the Projects toasts). In the Cloud Logging panes these have no app copy and are placeholders: the `?` popup labels
-`Select row`, `Select action`, `Press`, `Start / Stop`, `Time range`, `Minimum severity`,
-`Select entries`, `Details / row actions`, `Previous / next entry`,
-`Switch between list and details`, `Close / back`, `Logs / SQL`, `SQL filter`,
-`Copy Logs Explorer URL / Open in browser` (and `Scroll`, `Help`, `Quit` as in the
-other panes); the `Help` button in the status bar; the tab name `Jaca cloud - <project>`; the
-glyphs that stand in for the app's icon buttons (`▶ ■ ⌫ ⤓ ↗ ⟳ ⊕ ⊖ ▾ ▼ ▸ ★ ☆ ✓ ● ○`), the `│` gutter of the SQL editor and the `↓ <path>` note
-after an export (the app shows nothing there); and the error
-lines the client itself produces when Herdr or jacad returns something it can't read
-(`herdr tab create: no pane_id`, and the decode errors in `cloudwire.go`). The row
-`… <n> more lines — ⌘C copies all` is the app's string, though the key here is `C`; so is the
-SQL bar's `⌘↩ to run · …` hint, where the key that always works is `Ctrl+R`. The ` esc close `
-and ` esc back ` buttons stand where the app's sheets have `Cancel`. The client's own error
-lines (`<method>: no reply from jacad after <time>`, `jacad closed the connection`) have no
-app copy either. The log toolbar's field placeholders are the app's with a capital first letter. In the network pane's `?` popup, `Delete request`, `Select requests`, `Select request`, `Inspect request`, `Switch tab`, `Request menu`, `Follow new requests` and `Back` are placeholders too, as is the `network` pane title. The `R` in the attach banner's ` R  Relaunch & re-attach ` button is the key, like `esc` in ` esc close `; the label after it is the app's. The switch beside it is labelled with the app's Settings title for the same setting, `Re-attach to iOS Simulator apps automatically`. In the database pane's `?` popup, `Row details` is a placeholder (the other labels are the app's, or placeholders the other panes use), as are the `database` pane title and the tab name `Jaca database - <device>`. In the Gradle and Xcode panes' `?` popups, `Select row` is a placeholder (the other labels are the app's buttons and tooltips, or the placeholders the log viewer already uses), as is the `tools` pane title, `Jaca`. Those two panes show nothing while a refresh the user asked for is running, because the app has no text for it. The `?` popup's labels are the app's where it has one; `Minimum level`, `Filter text`, `Regex`, `Package id`, `Pause / unpause`, `Scroll`, `Help` (also the popup's title and the status bar button) and `Quit` are placeholders that need specified copy. In the projects pane's `?` popup, `Expand / collapse`, `Row menu` and `Tree / List` are placeholders, as are the tab name `Projects - Jaca` and the `jaca: ` prefix in front of an error the app would swallow. The pane uses three of the app's strings where the app does not: `Herdr settings` (the button's accessibility label; its tooltip is longer), `Confirm?` as the row menu's label while Remove is armed, and the relative ages jacad does not send, which are approximated. The two action titles
-and the `logs` pane title in `herdr-plugin.toml` are placeholders written for this prototype and
-need specified copy.
+</details>

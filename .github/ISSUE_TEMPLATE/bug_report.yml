@@ -1,0 +1,100 @@
+name: Bug report
+description: Report something in Jaca that does not work as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove tokens, cookies, hosts and personal data from logs and screenshots before you attach them.
+        To report a security vulnerability, use private reporting (see SECURITY.md), not this form.
+  - type: input
+    id: commit
+    attributes:
+      label: Jaca commit
+      description: |
+        The commit you built. Run `git rev-parse --short HEAD` in your checkout,
+        or read `buildCommit` in `~/Library/Application Support/Jaca/build-info.json`.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "macOS 26.1"
+    validations:
+      required: true
+  - type: input
+    id: xcode
+    attributes:
+      label: Xcode version
+      description: Only if the problem is about the build.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Device logs
+        - Network capture
+        - Response overrides
+        - Database browser
+        - Log history
+        - Projects
+        - Gradle
+        - Xcode
+        - Cloud Logging
+        - Settings or menu bar
+        - In-app update
+        - Companion app
+        - Daemon (jacad) or jaca CLI
+        - Herdr plugin
+        - Build or scripts
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device type
+      options:
+        - Android emulator
+        - Physical Android device
+        - iOS Simulator
+        - Physical iOS device
+        - This Mac
+        - No device
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Relevant lines from `~/.jaca/logs/jaca.log` or `~/.jaca/jacad.log`.
+        If you set daemon areas, give the output of `defaults read dev.srsouza.Jaca daemonAreas`.
+      render: text
+    validations:
+      required: false
