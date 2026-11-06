@@ -18,7 +18,7 @@ final class AppModel {
     var mode: WorkspaceMode = .devices
 
     /// The Settings pane on screen, or nil while Settings is closed. Every entry point (the
-    /// sidebar gear, ⌘,, the status-bar menu) goes through `openSettings`, and `RootView`
+    /// title-bar gear, ⌘,, the status-bar menu) goes through `openSettings`, and `RootView`
     /// presents the sheet from this value.
     var settingsRoute: SettingsPane? {
         didSet { if let settingsRoute { lastSettingsPane = settingsRoute } }
@@ -33,6 +33,13 @@ final class AppModel {
     }
 
     func closeSettings() { settingsRoute = nil }
+
+    /// The History sheet is on screen. `RootView` presents it, so it opens from every area.
+    var showHistory = false
+
+    /// The companion setup sheet (connect a device by QR or USB) is on screen. The title-bar
+    /// button and a device row's update fallback both set it; `RootView` presents the sheet.
+    var showCompanionSetup = false
 
     /// Agent HTTPS debugging (the default, with response overrides) or HTTPS debugging as a
     /// man-in-the-middle via the companion app — one or the other; see

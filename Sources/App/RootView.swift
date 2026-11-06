@@ -17,7 +17,12 @@ struct RootView: View {
             detail
                 .animation(.easeInOut(duration: 0.15), value: model.mode)
         }
+        .toolbar { TitleBarActions(model: model) }
         .sheet(isPresented: $showCopyFormat) { LogCopyFormatSheet() }
+        .sheet(isPresented: $model.showHistory) { HistoryView(model: model) }
+        .sheet(isPresented: $model.showCompanionSetup) {
+            CompanionSetupSheet(model: model.companionSetup)
+        }
         .sheet(isPresented: Binding(
             get: { model.settingsRoute != nil },
             set: { if !$0 { model.closeSettings() } }
@@ -125,6 +130,45 @@ struct RootView: View {
         } else if let cloud = session as? CloudLogSession {
             CloudLogSessionView(session: cloud, model: model, isActive: isActive)
         }
+    }
+}
+
+/// Actions that apply to every area, at the trailing end of the title bar. Each item has a fixed
+/// size and its condition doesn't depend on layout: a toolbar that resizes while the sidebar
+/// collapses can drive the window into a constraint loop.
+struct TitleBarActions: ToolbarContent {
+    let model: AppModel
+
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            // Companion onboarding only exists when the experimental HTTPS-decryption
+            // feature is on; otherwise inspection is Agent-only and there's nothing to pair.
+            if model.httpsDecryptionEnabled {
+                Button(action: { model.showCompanionSetup = true }) {
+                    Image(systemName: "plus.circle")
+                        .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
+                }
+                .help("Connect a device (QR / USB)")
+                .accessibilityIdentifier("connectDeviceButton")
+            }
+            Button(action: { model.showHistory = true }) {
+                icon(.clockArrowUp, "History")
+            }
+            .accessibilityIdentifier("historyButton")
+            Button(action: { model.openSettings() }) {
+                icon(.gear, "Settings")
+            }
+            .help("Settings")
+            .accessibilityIdentifier("settingsButton")
+        }
+    }
+
+    /// A Lemonade glyph at the size of the system sidebar toggle.
+    private func icon(_ icon: LemonadeIcon, _ description: String) -> some View {
+        LemonadeUi.Icon(
+            icon: icon, contentDescription: description, size: .small,
+            tint: LemonadeTheme.colors.content.contentSecondary
+        )
     }
 }
 

@@ -6,8 +6,6 @@ import AppKit
 /// logcat tab or a network-capture tab; each pick opens an independent tab.
 struct DeviceSidebarView: View {
     @Bindable var model: AppModel
-    @State private var showHistory = false
-    @State private var showConnect = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing300) {
@@ -20,29 +18,6 @@ struct DeviceSidebarView: View {
                         : LemonadeTheme.colors.content.contentSecondary
                 )
                 Spacer()
-                // Companion onboarding only exists when the experimental HTTPS-decryption
-                // feature is on; otherwise inspection is Agent-only and there's nothing to pair.
-                if model.httpsDecryptionEnabled {
-                    Button(action: { showConnect = true }) {
-                        Image(systemName: "plus.circle")
-                            .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Connect a device (QR / USB)")
-                    .accessibilityIdentifier("connectDeviceButton")
-                }
-                LemonadeUi.IconButton(
-                    icon: .clockArrowUp, contentDescription: "History",
-                    onClick: { showHistory = true }, size: .xSmall
-                )
-                .accessibilityIdentifier("historyButton")
-                // The sidebar shows in every area, so this one gear opens Settings from all of them.
-                LemonadeUi.IconButton(
-                    icon: .gear, contentDescription: "Settings",
-                    onClick: { model.openSettings() }, size: .xSmall
-                )
-                .help("Settings")
-                .accessibilityIdentifier("settingsButton")
             }
             .padding(.horizontal, LemonadeTheme.spaces.spacing200)
             .padding(.vertical, LemonadeTheme.spaces.spacing100)
@@ -88,12 +63,6 @@ struct DeviceSidebarView: View {
         .padding(LemonadeTheme.spaces.spacing300)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(LemonadeTheme.colors.background.bgElevated)
-        .sheet(isPresented: $showHistory) {
-            HistoryView(model: model)
-        }
-        .sheet(isPresented: $showConnect) {
-            CompanionSetupSheet(model: model.companionSetup)
-        }
     }
 
     private var platforms: [DevicePlatform] {
@@ -126,7 +95,7 @@ struct DeviceSidebarView: View {
                         onInspectNetwork: { model.startNetworkSession(for: device, autoStart: false) },
                         onBrowseDatabase: { model.startDatabaseSession(for: device) },
                         onStartCompanion: { model.startNetworkSession(for: device, autoStart: true) },
-                        onUpdate: { showConnect = true },
+                        onUpdate: { model.showCompanionSetup = true },
                         updateOverUSB: { await model.updateCompanionOverUSB(device) },
                         checkProxy: { await model.strandedProxy(for: device) },
                         revertProxy: { await model.revertDeviceProxy(device) }
