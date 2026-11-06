@@ -25,4 +25,11 @@ final class SettingsPaneTests: XCTestCase {
     func test_opening_withoutARequest_reopensTheLastPane() {
         XCTAssertEqual(SettingsPane.opening(nil, last: .logs), .logs)
     }
+
+    func test_sheetHeight_capsAt540_andShrinksOnAShortScreen() {
+        XCTAssertEqual(SettingsLayout.sheetHeight(visibleHeight: 1000), 540)
+        XCTAssertEqual(SettingsLayout.sheetHeight(visibleHeight: 560), 480)
+        XCTAssertEqual(SettingsLayout.sheetHeight(visibleHeight: nil), 540)
+        XCTAssertEqual(SettingsLayout.sheetHeight(visibleHeight: 0), 320)
+    }
 }
