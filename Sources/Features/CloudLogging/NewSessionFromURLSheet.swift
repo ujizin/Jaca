@@ -24,6 +24,7 @@ struct NewSessionFromURLSheet: View {
                 Spacer()
                 LemonadeUi.Button(label: "Cancel", onClick: { dismiss() },
                                   variant: .neutral, type: .subtle, size: .small)
+                    .fixedSize()
             }
 
             LemonadeUi.Text("Paste a Logs Explorer URL (console.cloud.google.com/logs/query…).",

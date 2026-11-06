@@ -92,6 +92,7 @@ struct ProjectsAreaView: View {
         )
         .padding(.horizontal, 8)
         .padding(.top, 8)
+        .maintenanceContentColumn()
     }
 
     /// Asks before walking every checkout for its size, then reports progress while it
@@ -140,7 +141,9 @@ struct ProjectsAreaView: View {
                 )
             }
             Spacer()
-            actions()
+            // The buttons keep their natural width; the description wraps instead.
+            HStack(spacing: 10) { actions() }
+                .fixedSize()
         }
         .padding(12)
         .background(
@@ -149,6 +152,7 @@ struct ProjectsAreaView: View {
         )
         .padding(.horizontal, 8)
         .padding(.top, 8)
+        .maintenanceContentColumn()
         .accessibilityIdentifier("projectsSizeScanBar")
     }
 
@@ -193,6 +197,7 @@ struct ProjectsAreaView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+            .maintenanceContentColumn()
         }
         .frame(maxHeight: .infinity)
     }

@@ -21,6 +21,7 @@ struct AddProjectSheet: View {
                 Spacer()
                 LemonadeUi.Button(label: "Cancel", onClick: { dismiss() },
                                   variant: .neutral, type: .subtle, size: .small)
+                    .fixedSize()
             }
 
             VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing200) {

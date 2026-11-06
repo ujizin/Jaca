@@ -41,10 +41,14 @@ struct CloudLoggingHomeView: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 LemonadeUi.Text("CLOUD LOGGING", textStyle: LemonadeTypography.shared.bodyXSmallOverline,
-                                color: LemonadeTheme.colors.content.contentTertiary)
+                                color: LemonadeTheme.colors.content.contentTertiary, maxLines: 1)
+                // Middle truncation keeps the account's domain visible; the tooltip shows it whole.
                 LemonadeUi.Text(accountSummary, textStyle: LemonadeTypography.shared.bodyXSmallRegular,
-                                color: LemonadeTheme.colors.content.contentSecondary, maxLines: 1)
+                                color: LemonadeTheme.colors.content.contentSecondary,
+                                overflow: .middle, maxLines: 1)
+                    .help(accountSummary)
             }
+            .layoutPriority(1)
             Spacer()
             LemonadeUi.Button(label: "Re-check", onClick: { registry.detect() }, leadingIcon: .arrowRotateCw,
                               variant: .neutral, type: .subtle, size: .xSmall).fixedSize()
@@ -124,7 +128,9 @@ struct CloudLoggingHomeView: View {
                         CloudProjectCard(project: project, model: model)
                     }
                 }
-                .padding(.horizontal, 8).padding(.vertical, 8)
+                .padding(.horizontal, 8).padding(.top, 8)
+                // Room under the last card, so the floating gcloud button never covers its actions.
+                .padding(.bottom, LemonadeTheme.spaces.spacing1400)
             }
         }
     }
@@ -172,31 +178,26 @@ private struct CloudProjectCard: View {
     private var registry: CloudLoggingRegistry { model.cloudLogging }
 
     var body: some View {
-        HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(LemonadeTheme.colors.background.bgNeutralSubtle)
-                .frame(width: 34, height: 34)
-                .overlay(Image(systemName: "cloud").foregroundStyle(LemonadeTheme.colors.content.contentPrimary))
-
-            VStack(alignment: .leading, spacing: 2) {
-                LemonadeUi.Text(project.title, textStyle: LemonadeTypography.shared.bodyMediumSemiBold,
-                                color: LemonadeTheme.colors.content.contentPrimary, maxLines: 1)
-                Text(logLine)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
-                    .lineLimit(1).truncationMode(.middle)
+        // One row when it fits; on a narrow pane the actions move under the title, so the
+        // title and the log line keep a readable width.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                icon
+                titleColumn
+                    .frame(minWidth: 160, idealWidth: 200, maxWidth: .infinity, alignment: .leading)
+                actions
             }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-
-            LemonadeUi.Button(label: "Log names", onClick: { showLogNames = true }, leadingIcon: .arrowRotateCw,
-                              variant: .neutral, type: .subtle, size: .xSmall).fixedSize()
-            LemonadeUi.Button(label: "Rename", onClick: { renameText = project.displayName; renaming = true },
-                              variant: .neutral, type: .subtle, size: .xSmall).fixedSize()
-            LemonadeUi.Button(label: confirmingRemove ? "Confirm?" : "Remove", onClick: { remove() },
-                              leadingIcon: .trash, variant: .critical,
-                              type: confirmingRemove ? .solid : .subtle, size: .xSmall).fixedSize()
-            LemonadeUi.Button(label: "New session", onClick: { model.startCloudLogSession(projectID: project.projectID) },
-                              variant: .primary, type: .solid, size: .xSmall).fixedSize()
+            VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing200) {
+                HStack(spacing: 12) {
+                    icon
+                    titleColumn
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                }
+                HStack(spacing: 12) {
+                    Spacer(minLength: 0)
+                    actions
+                }
+            }
         }
         .padding(.vertical, 9).padding(.horizontal, 12)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -209,6 +210,36 @@ private struct CloudProjectCard: View {
             Button("Save") { registry.setDisplayName(renameText, for: project.projectID) }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private var icon: some View {
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(LemonadeTheme.colors.background.bgNeutralSubtle)
+            .frame(width: 34, height: 34)
+            .overlay(Image(systemName: "cloud").foregroundStyle(LemonadeTheme.colors.content.contentPrimary))
+    }
+
+    private var titleColumn: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            LemonadeUi.Text(project.title, textStyle: LemonadeTypography.shared.bodyMediumSemiBold,
+                            color: LemonadeTheme.colors.content.contentPrimary, maxLines: 1)
+            Text(logLine)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
+                .lineLimit(1).truncationMode(.middle)
+        }
+    }
+
+    @ViewBuilder private var actions: some View {
+        LemonadeUi.Button(label: "Log names", onClick: { showLogNames = true }, leadingIcon: .arrowRotateCw,
+                          variant: .neutral, type: .subtle, size: .xSmall).fixedSize()
+        LemonadeUi.Button(label: "Rename", onClick: { renameText = project.displayName; renaming = true },
+                          variant: .neutral, type: .subtle, size: .xSmall).fixedSize()
+        LemonadeUi.Button(label: confirmingRemove ? "Confirm?" : "Remove", onClick: { remove() },
+                          leadingIcon: .trash, variant: .critical,
+                          type: confirmingRemove ? .solid : .subtle, size: .xSmall).fixedSize()
+        LemonadeUi.Button(label: "New session", onClick: { model.startCloudLogSession(projectID: project.projectID) },
+                          variant: .primary, type: .solid, size: .xSmall).fixedSize()
     }
 
     private var logLine: String {

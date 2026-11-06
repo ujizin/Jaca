@@ -14,6 +14,17 @@ struct CloudLogDetailPanel: View {
     var onNewSession: (CloudSessionFork) -> Void = { _ in }
     @State private var showRaw = false
     @State private var showMessage = false   // MESSAGE collapsed by default
+    /// Measured panel width; sizes the shared label-key column so a narrow panel leaves room
+    /// for the values.
+    @State private var panelWidth: CGFloat = 0
+
+    /// One key-column width for every label row, so the columns stay aligned: 140 pt in a
+    /// default-width panel, down to 80 pt in a narrow one.
+    private var labelKeyWidth: CGFloat {
+        guard panelWidth > 0 else { return 140 }
+        let rowWidth = panelWidth - 2 * LemonadeTheme.spaces.spacing300
+        return min(140, max(80, rowWidth * 0.4))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,6 +52,9 @@ struct CloudLogDetailPanel: View {
             }
         }
         .background(LemonadeTheme.colors.background.bgElevated)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            panelWidth = width
+        }
         .onChange(of: entry.seq) { _, _ in showMessage = false }   // re-collapse for each new entry
     }
 
@@ -140,6 +154,7 @@ struct CloudLogDetailPanel: View {
                         let value = labels[key] ?? ""
                         LabelRow(
                             key: key, value: value,
+                            keyWidth: labelKeyWidth,
                             isFavorite: session.isFavoriteLabel(key),
                             onFilter: { session.filterByLabel(scope: scope, key: key, value: value) },
                             onOr: { session.orLabel(scope: scope, key: key, value: value) },
@@ -216,6 +231,7 @@ struct CloudLogDetailPanel: View {
 private struct LabelRow: View {
     let key: String
     let value: String
+    var keyWidth: CGFloat = 140
     var isFavorite: Bool = false
     var onFilter: () -> Void
     var onOr: () -> Void
@@ -236,7 +252,7 @@ private struct LabelRow: View {
                     .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
                     .textSelection(.enabled)
             }
-            .frame(width: 140, alignment: .leading)
+            .frame(width: keyWidth, alignment: .leading)
             Text(value.isEmpty ? "—" : value)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)

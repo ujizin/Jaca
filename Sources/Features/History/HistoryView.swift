@@ -15,18 +15,26 @@ struct HistoryView: View {
     @State private var selectedSession: SessionRecord.ID?
     @State private var lines: [LogLine] = []
     @State private var searchText = ""
+    /// Read once from the screen: a sheet cannot be resized, so it opens at this size.
+    private let sheetSize: CGSize
+
+    init(model: AppModel) {
+        self.model = model
+        sheetSize = LogSheetLayout.historySize(visible: NSScreen.main?.visibleFrame.size)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Rectangle().fill(LemonadeTheme.colors.border.borderNeutralLow).frame(height: 1)
             HSplitView {
-                groupsPane.frame(minWidth: 220, idealWidth: 240)
-                sessionsPane.frame(minWidth: 220, idealWidth: 260)
-                linesPane.frame(minWidth: 360)
+                // The side panes stop growing so the extra width goes to the log lines.
+                groupsPane.frame(minWidth: 220, idealWidth: 240, maxWidth: 300)
+                sessionsPane.frame(minWidth: 220, idealWidth: 260, maxWidth: 340)
+                linesPane.frame(minWidth: 360, maxWidth: .infinity)
             }
         }
-        .frame(minWidth: 900, minHeight: 560)
+        .frame(width: sheetSize.width, height: sheetSize.height)
         .background(LemonadeTheme.colors.background.bgDefault)
         .task { groups = await model.history?.packageGroups() ?? [] }
         .task(id: selectedGroup) { await loadSessions() }
@@ -45,6 +53,7 @@ struct HistoryView: View {
             Spacer()
             LemonadeUi.Button(label: "Done", onClick: { dismiss() },
                               variant: .neutral, type: .subtle, size: .small)
+                .fixedSize()   // size to the label instead of filling the width
         }
         .padding(LemonadeTheme.spaces.spacing300)
         .background(LemonadeTheme.colors.background.bgElevated)
@@ -58,7 +67,8 @@ struct HistoryView: View {
                         LemonadeUi.Text(
                             group.displayPackage,
                             textStyle: LemonadeTypography.shared.bodySmallSemiBold,
-                            color: LemonadeTheme.colors.content.contentPrimary, maxLines: 1
+                            color: LemonadeTheme.colors.content.contentPrimary,
+                            overflow: .middle, maxLines: 1
                         )
                         LemonadeUi.Text(
                             "\(group.model.isEmpty ? group.deviceID : group.model) · \(group.sessions) session(s)",
@@ -66,6 +76,7 @@ struct HistoryView: View {
                             color: LemonadeTheme.colors.content.contentTertiary, maxLines: 1
                         )
                     }
+                    .help(group.displayPackage)
                     .tag(group.id)
                 }
             }
@@ -89,6 +100,7 @@ struct HistoryView: View {
                             color: LemonadeTheme.colors.content.contentTertiary, maxLines: 1
                         )
                     }
+                    .help(session.displayName)
                     .tag(session.id)
                 }
             }

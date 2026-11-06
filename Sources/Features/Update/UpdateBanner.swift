@@ -50,19 +50,16 @@ struct UpdateBanner: View {
             LemonadeUi.Text(
                 "This build tracks the worktree “\(update.worktreeName ?? "")”. In-app updates run against the main checkout — switch to it to update and reinstall normally.",
                 textStyle: LemonadeTypography.shared.bodyXSmallRegular,
-                color: LemonadeTheme.colors.content.contentSecondary,
-                maxLines: 4
+                color: LemonadeTheme.colors.content.contentSecondary
             )
-            LemonadeUi.Button(
+            .fixedSize(horizontal: false, vertical: true)
+            fittingButton(
                 label: confirmingWorktree ? "Reinstall from main checkout?" : "Switch to main checkout",
                 onClick: { handleWorktreeTap() },
-                leadingIcon: .download,
-                variant: .primary,
-                type: confirmingWorktree ? .solid : .subtle,
-                size: .xSmall
+                type: confirmingWorktree ? .solid : .subtle
             )
-            .fixedSize()
             .accessibilityIdentifier("updateWorktreeSwitchButton")
+            .animation(.easeInOut(duration: 0.2), value: confirmingWorktree)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -121,10 +118,12 @@ struct UpdateBanner: View {
                 LemonadeUi.Text(
                     "Update available",
                     textStyle: LemonadeTypography.shared.bodySmallSemiBold,
-                    color: LemonadeTheme.colors.content.contentPrimary
+                    color: LemonadeTheme.colors.content.contentPrimary,
+                    maxLines: 1
                 )
-                Spacer()
+                Spacer(minLength: 0)
                 LemonadeUi.Tag(label: "\(behind) behind", voice: .info)
+                    .fixedSize()
             }
             if !subject.isEmpty {
                 LemonadeUi.Text(
@@ -134,15 +133,12 @@ struct UpdateBanner: View {
                     maxLines: 1
                 )
             }
-            LemonadeUi.Button(
+            fittingButton(
                 label: confirming ? "Pull main & reinstall?" : "Update",
                 onClick: { handleTap() },
-                leadingIcon: .download,
-                variant: .primary,
-                type: confirming ? .solid : .subtle,
-                size: .xSmall
+                type: confirming ? .solid : .subtle
             )
-            .fixedSize()
+            .animation(.easeInOut(duration: 0.2), value: confirming)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -172,6 +168,7 @@ struct UpdateBanner: View {
                     : LemonadeTheme.colors.content.contentSecondary,
                 maxLines: 2
             )
+            .help(phase.label)
             Spacer(minLength: 0)
         }
         .padding(10)
@@ -179,6 +176,23 @@ struct UpdateBanner: View {
         .background(card)
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
+    }
+
+    /// The card's action button at its natural width. If the card is too narrow, it drops
+    /// the leading icon, then lets the label truncate, so it never runs past the card edge.
+    private func fittingButton(
+        label: String, onClick: @escaping () -> Void, type: LemonadeButtonType
+    ) -> some View {
+        ViewThatFits(in: .horizontal) {
+            LemonadeUi.Button(label: label, onClick: onClick, leadingIcon: .download,
+                              variant: .primary, type: type, size: .xSmall)
+                .fixedSize()
+            LemonadeUi.Button(label: label, onClick: onClick,
+                              variant: .primary, type: type, size: .xSmall)
+                .fixedSize()
+            LemonadeUi.Button(label: label, onClick: onClick,
+                              variant: .primary, type: type, size: .xSmall)
+        }
     }
 
     private var card: some View {

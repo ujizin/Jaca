@@ -1,5 +1,6 @@
 import SwiftUI
 import Lemonade
+import AppKit
 
 /// Configures the app-wide log **copy format** (⌘C) used by every log list — device logs and
 /// Cloud Logging alike. Pick a one-click preset (each shows its example output) or hand-edit the
@@ -9,6 +10,12 @@ struct LogCopyFormatSheet: View {
     @State private var format = LogCopyFormatStore.shared.format
 
     private let columnColor = Color(red: 0.20, green: 0.60, blue: 0.62)
+    /// Read once from the screen: a sheet taller than the visible area pushes Save off-screen.
+    private let sheetHeight: CGFloat
+
+    init() {
+        sheetHeight = LogSheetLayout.copyFormatHeight(visibleHeight: NSScreen.main?.visibleFrame.height)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing400) {
@@ -16,12 +23,18 @@ struct LogCopyFormatSheet: View {
             LemonadeUi.Text("How ⌘C copies selected log rows, in every log list. Pick a preset or edit the "
                             + "template below.", textStyle: LemonadeTypography.shared.bodySmallRegular,
                             color: LemonadeTheme.colors.content.contentSecondary)
-            presets
-            custom
+            // Header, description and footer stay put; the presets and the editor scroll.
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing400) {
+                    presets
+                    custom
+                }
+            }
+            .frame(maxHeight: .infinity)
             footer
         }
         .padding(LemonadeTheme.spaces.spacing600)
-        .frame(width: 580)
+        .frame(width: LogSheetLayout.copyFormatWidth, height: sheetHeight)
         .background(LemonadeTheme.colors.background.bgDefault)
     }
 
@@ -33,6 +46,7 @@ struct LogCopyFormatSheet: View {
             Spacer()
             LemonadeUi.Button(label: "Cancel", onClick: { dismiss() },
                               variant: .neutral, type: .subtle, size: .small)
+                .fixedSize()   // size to the label instead of filling the width
         }
     }
 

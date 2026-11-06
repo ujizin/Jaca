@@ -29,6 +29,7 @@ struct CloudSqlLabelExamplesSheet: View {
                             textStyle: LemonadeTypography.shared.bodySmallRegular,
                             color: LemonadeTheme.colors.content.contentSecondary)
             content
+                .animation(.easeInOut(duration: 0.2), value: loading)
             footer
         }
         .padding(LemonadeTheme.spaces.spacing600)
@@ -46,6 +47,7 @@ struct CloudSqlLabelExamplesSheet: View {
             Spacer()
             LemonadeUi.Button(label: "Cancel", onClick: { dismiss() },
                               variant: .neutral, type: .subtle, size: .small)
+                .fixedSize()
         }
     }
 

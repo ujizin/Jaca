@@ -6,9 +6,16 @@ import AppKit
 /// response bodies, and timing.
 struct NetworkDetailView: View {
     let session: NetworkSession
-    @State private var tab: DetailTab = .overview
-    @State private var bodyMode: BodyMode = .tree
+    /// Owned by `NetworkSessionView`, so the chosen tab and body mode survive when a resize
+    /// moves this pane between the side-by-side and the stacked split.
+    @Binding var tab: DetailTab
+    @Binding var bodyMode: BodyMode
     @State private var copiedCurl = false
+    /// The detail pane width, measured once for the layout only: below `stackedHeadersWidth`
+    /// each header shows its value under its name instead of beside a fixed 160 pt column.
+    @State private var paneWidth: CGFloat = 0
+    private static let stackedHeadersWidth: CGFloat = 460
+    private var stackedHeaders: Bool { paneWidth > 0 && paneWidth < Self.stackedHeadersWidth }
 
     /// Read straight from the session so the pane follows the selection (and the bodies
     /// rehydrated after it) without keeping a second copy of it.
@@ -24,6 +31,12 @@ struct NetworkDetailView: View {
                 tabBar
                 Rectangle().fill(LemonadeTheme.colors.border.borderNeutralLow).frame(height: 1)
                 ScrollView { content(for: txn).padding(LemonadeTheme.spaces.spacing300) }
+                    .background(GeometryReader { geo in
+                        Color.clear
+                            .onAppear { paneWidth = geo.size.width }
+                            .onChange(of: geo.size.width) { _, width in paneWidth = width }
+                    })
+                    .animation(.easeInOut(duration: 0.2), value: stackedHeaders)
             }
             .background(LemonadeTheme.colors.background.bgDefault)
         } else {
@@ -39,28 +52,49 @@ struct NetworkDetailView: View {
         }
     }
 
+    /// One row when it fits; in a narrow pane the same chips and button wrap onto more rows
+    /// instead of compressing their labels. A resize drives the switch, and the chips hold no
+    /// state, so nothing is lost when it changes.
     private var tabBar: some View {
-        HStack(spacing: LemonadeTheme.spaces.spacing100) {
-            ForEach(DetailTab.allCases, id: \.self) { item in
-                LemonadeUi.Chip(label: item.rawValue, selected: tab == item,
-                                onChipClicked: { tab = item })
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: LemonadeTheme.spaces.spacing100) {
+                tabChips
+                Spacer(minLength: LemonadeTheme.spaces.spacing200)
+                copyCurlButton
             }
-            Spacer(minLength: LemonadeTheme.spaces.spacing200)
-            if let txn = transaction {
-                LemonadeUi.Button(
-                    label: copiedCurl ? "Copied" : "Copy cURL",
-                    onClick: { copyCurl(txn) },
-                    leadingIcon: copiedCurl ? .circleCheck : .copy,
-                    variant: .neutral, type: .subtle, size: .xSmall
-                )
-                .fixedSize()
-                .help("Copy this request as a runnable curl command")
-                .animation(.easeInOut(duration: 0.15), value: copiedCurl)
+            FlowLayout(spacing: LemonadeTheme.spaces.spacing100, lineSpacing: LemonadeTheme.spaces.spacing100) {
+                tabChips
+                copyCurlButton
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, LemonadeTheme.spaces.spacing300)
         .padding(.vertical, LemonadeTheme.spaces.spacing200)
         .background(LemonadeTheme.colors.background.bgElevated)
+    }
+
+    @ViewBuilder
+    private var tabChips: some View {
+        ForEach(DetailTab.allCases, id: \.self) { item in
+            LemonadeUi.Chip(label: item.rawValue, selected: tab == item,
+                            onChipClicked: { tab = item })
+                .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private var copyCurlButton: some View {
+        if let txn = transaction {
+            LemonadeUi.Button(
+                label: copiedCurl ? "Copied" : "Copy cURL",
+                onClick: { copyCurl(txn) },
+                leadingIcon: copiedCurl ? .circleCheck : .copy,
+                variant: .neutral, type: .subtle, size: .xSmall
+            )
+            .fixedSize()
+            .help("Copy this request as a runnable curl command")
+            .animation(.easeInOut(duration: 0.15), value: copiedCurl)
+        }
     }
 
     @ViewBuilder
@@ -118,16 +152,29 @@ struct NetworkDetailView: View {
                                 color: LemonadeTheme.colors.content.contentTertiary)
             } else {
                 ForEach(headers) { header in
-                    HStack(alignment: .top, spacing: LemonadeTheme.spaces.spacing200) {
-                        Text(header.name)
-                            .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
-                            .frame(width: 160, alignment: .leading)
-                        Text(header.value)
-                            .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    if stackedHeaders {
+                        VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing50) {
+                            Text(header.name)
+                                .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(header.value)
+                                .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(LogLevelStyle.mono(11))
+                    } else {
+                        HStack(alignment: .top, spacing: LemonadeTheme.spaces.spacing200) {
+                            Text(header.name)
+                                .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
+                                .frame(width: 160, alignment: .leading)
+                            Text(header.value)
+                                .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(LogLevelStyle.mono(11))
                     }
-                    .font(LogLevelStyle.mono(11))
                 }
             }
         }
@@ -167,6 +214,7 @@ struct NetworkDetailView: View {
                         size: .small,
                         onTabSelected: { bodyMode = $0 == 0 ? .tree : .raw }
                     )
+                    .fixedSize()
                 }
                 Spacer()
                 LemonadeUi.Button(label: "Copy", onClick: {

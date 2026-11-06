@@ -34,7 +34,7 @@ struct DeviceSidebarView: View {
                 }
                 LemonadeUi.IconButton(
                     icon: .clockArrowUp, contentDescription: "History",
-                    onClick: { showHistory = true }, size: .small
+                    onClick: { showHistory = true }, size: .xSmall
                 )
                 .accessibilityIdentifier("historyButton")
                 Button(action: { showSettings = true }) {
@@ -51,23 +51,26 @@ struct DeviceSidebarView: View {
                 RoundedRectangle(cornerRadius: LemonadeTheme.radius.radius150)
                     .fill(model.mode == .devices ? LemonadeTheme.colors.interaction.bgSubtleInteractive : .clear)
             )
+            .animation(.easeInOut(duration: 0.15), value: model.mode == .devices)
             .contentShape(Rectangle())
             .onTapGesture { model.mode = .devices }
 
-            if model.adbURL == nil {
-                adbMissingNotice
-            }
+            // Everything below the pinned header scrolls together, so the notices, the empty
+            // state and This Mac stay reachable in a short window.
+            ScrollView {
+                VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing300) {
+                    if model.adbURL == nil {
+                        adbMissingNotice
+                    }
 
-            if model.httpsDecryptionEnabled && model.companions.networkBlocked {
-                localNetworkNotice
-            }
+                    if model.httpsDecryptionEnabled && model.companions.networkBlocked {
+                        localNetworkNotice
+                    }
 
-            if model.devices.isEmpty {
-                emptyState
-                macSection
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing300) {
+                    if model.devices.isEmpty {
+                        emptyState
+                        macSection
+                    } else {
                         ForEach(platforms, id: \.self) { platform in
                             deviceSection(platform.displayName.uppercased(),
                                           model.devices.filter { $0.platform == platform && !$0.isCompanion })
@@ -77,8 +80,11 @@ struct DeviceSidebarView: View {
                         macSection
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .animation(.easeInOut(duration: 0.2), value: model.adbURL == nil)
+                .animation(.easeInOut(duration: 0.2),
+                           value: model.httpsDecryptionEnabled && model.companions.networkBlocked)
             }
-            Spacer(minLength: 0)
         }
         .padding(LemonadeTheme.spaces.spacing300)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -259,20 +265,29 @@ private struct DeviceRow: View {
                     tint: LemonadeTheme.colors.content.contentSecondary
                 )
                 VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        LemonadeUi.Text(
-                            device.displayModel,
-                            textStyle: LemonadeTypography.shared.bodySmallSemiBold,
-                            color: LemonadeTheme.colors.content.contentPrimary,
-                            maxLines: 1
-                        )
-                        if device.companionID != nil { companionChip }
-                        if device.companionUpdateAvailable { updateChip }
+                    if hasChips {
+                        // Chips beside the name when they fit; otherwise on their own line, so
+                        // the name keeps the full column width.
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 6) {
+                                deviceName
+                                chips
+                            }
+                            VStack(alignment: .leading, spacing: 1) {
+                                deviceName
+                                HStack(spacing: 6) { chips }
+                            }
+                        }
+                        .animation(.easeInOut(duration: 0.2), value: device.companionUpdateAvailable)
+                    } else {
+                        deviceName
                     }
+                    // Middle truncation keeps both ends of a long serial or UDID.
                     LemonadeUi.Text(
                         subtitle,
                         textStyle: LemonadeTypography.shared.bodyXSmallRegular,
                         color: LemonadeTheme.colors.content.contentTertiary,
+                        overflow: .middle,
                         maxLines: 1
                     )
                 }
@@ -316,6 +331,24 @@ private struct DeviceRow: View {
                 Button("Update Companion App…") { triggerUpdate() }
             }
         }
+    }
+
+    private var hasChips: Bool { device.companionID != nil || device.companionUpdateAvailable }
+
+    private var deviceName: some View {
+        LemonadeUi.Text(
+            device.displayModel,
+            textStyle: LemonadeTypography.shared.bodySmallSemiBold,
+            color: LemonadeTheme.colors.content.contentPrimary,
+            maxLines: 1
+        )
+    }
+
+    /// The status chips, fixed so they never truncate.
+    @ViewBuilder
+    private var chips: some View {
+        if device.companionID != nil { companionChip.fixedSize() }
+        if device.companionUpdateAvailable { updateChip.fixedSize() }
     }
 
     /// Pops up on a single click of a ready adb/ios device: pick logcat or network capture.
@@ -390,6 +423,26 @@ private struct DeviceRow: View {
     /// Shown when this device still has a proxy Jaca set but a teardown couldn't
     /// revert (e.g. the app was force-killed). One click clears it.
     private func strandedBanner(_ proxy: String) -> some View {
+        // One row when it fits; in a narrow sidebar the Revert control moves below the texts.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: LemonadeTheme.spaces.spacing200) {
+                strandedSummary(proxy)
+                Spacer(minLength: 6)
+                revertControl
+            }
+            VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing100) {
+                strandedSummary(proxy)
+                revertControl
+            }
+        }
+        .padding(.horizontal, LemonadeTheme.spaces.spacing200)
+        .padding(.vertical, LemonadeTheme.spaces.spacing100)
+        .background(RoundedRectangle(cornerRadius: LemonadeTheme.radius.radius150)
+            .fill(LemonadeTheme.colors.background.bgNeutralSubtle))
+        .accessibilityIdentifier("strandedProxyBanner")
+    }
+
+    private func strandedSummary(_ proxy: String) -> some View {
         HStack(spacing: LemonadeTheme.spaces.spacing200) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11))
@@ -401,20 +454,19 @@ private struct DeviceRow: View {
                 LemonadeUi.Text(proxy,
                                 textStyle: LemonadeTypography.shared.bodyXSmallRegular,
                                 color: LemonadeTheme.colors.content.contentTertiary, maxLines: 1)
-            }
-            Spacer(minLength: 6)
-            if reverting {
-                ProgressView().controlSize(.small)
-            } else {
-                LemonadeUi.Button(label: "Revert", onClick: { revert() },
-                                  variant: .neutral, type: .subtle, size: .small)
+                    .help(proxy)
             }
         }
-        .padding(.horizontal, LemonadeTheme.spaces.spacing200)
-        .padding(.vertical, LemonadeTheme.spaces.spacing100)
-        .background(RoundedRectangle(cornerRadius: LemonadeTheme.radius.radius150)
-            .fill(LemonadeTheme.colors.background.bgNeutralSubtle))
-        .accessibilityIdentifier("strandedProxyBanner")
+    }
+
+    @ViewBuilder
+    private var revertControl: some View {
+        if reverting {
+            ProgressView().controlSize(.small)
+        } else {
+            LemonadeUi.Button(label: "Revert", onClick: { revert() },
+                              variant: .neutral, type: .subtle, size: .small)
+        }
     }
 
     private func revert() {

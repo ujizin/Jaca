@@ -14,27 +14,42 @@ struct CloudSqlEditorBar: View {
     @State private var showSchema = false
     /// Set by the editor — inserts text at the cursor (schema/label helpers use it).
     @State private var insert: ((String) -> Void)?
+    /// True when the bar is too narrow for the status and the actions on one line.
+    @State private var compactHeader = false
 
     private var registry: CloudLoggingRegistry { session.registry }
     private let columnColor = Color(red: 0.20, green: 0.60, blue: 0.62)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+            // Status and actions share one line; a narrow bar puts the actions on a second line.
+            // AnyLayout keeps the children's identity, so the assistant's sheet state survives.
+            let headerLayout = compactHeader
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+                : AnyLayout(HStackLayout(spacing: 8))
+            headerLayout {
                 LemonadeUi.Text(statusText, textStyle: LemonadeTypography.shared.bodyXSmallRegular,
                                 color: LemonadeTheme.colors.content.contentTertiary, maxLines: 1)
-                Spacer()
-                CloudSqlAssistantButton(session: session)
-                labelsMenu
-                schemaButton
-                templatesMenu
-                LemonadeUi.Button(label: "Save…", onClick: { saveName = ""; showSave = true },
-                                  variant: .neutral, type: .subtle, size: .xSmall).fixedSize()
-                LemonadeUi.Button(label: session.sqlRunning ? "Running…" : "Run", onClick: { session.runSQL() },
-                                  leadingIcon: .chevronRight, variant: .primary, type: .subtle, size: .xSmall).fixedSize()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 8) {
+                    CloudSqlAssistantButton(session: session)
+                    labelsMenu
+                    schemaButton
+                    templatesMenu
+                    LemonadeUi.Button(label: "Save…", onClick: { saveName = ""; showSave = true },
+                                      variant: .neutral, type: .subtle, size: .xSmall).fixedSize()
+                    runButton
+                }
+                .fixedSize()
             }
+            .onGeometryChange(for: Bool.self) { $0.size.width < 680 } action: { narrow in
+                compactHeader = narrow
+            }
+            .animation(.easeInOut(duration: 0.2), value: compactHeader)
+            // Shrinks on a short window instead of pushing the toolbar out of view; the editor
+            // scrolls internally.
             SqlEditorView(text: $session.sqlText, onRun: { session.runSQL() }, insertHook: $insert)
-                .frame(height: 132)
+                .frame(minHeight: 72, idealHeight: 132, maxHeight: 132)
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(LemonadeTheme.colors.border.borderNeutralLow, lineWidth: 1))
                 .onChange(of: session.sqlText) { _, new in session.noteSqlTextChanged(new) }
@@ -42,10 +57,11 @@ struct CloudSqlEditorBar: View {
                 if let error = session.sqlError {
                     LemonadeUi.Text(error, textStyle: LemonadeTypography.shared.bodyXSmallRegular,
                                     color: LemonadeTheme.colors.content.contentCritical, maxLines: 2)
+                        .help(error)
                 } else {
                     LemonadeUi.Text("⌘↩ to run · keep an `insert_id` column · labels: json_extract(labels_json,'$.key')",
                                     textStyle: LemonadeTypography.shared.bodyXSmallRegular,
-                                    color: LemonadeTheme.colors.content.contentTertiary, maxLines: 1)
+                                    color: LemonadeTheme.colors.content.contentTertiary, maxLines: 2)
                 }
             }
         }
@@ -79,9 +95,23 @@ struct CloudSqlEditorBar: View {
         .menuStyle(.borderlessButton).fixedSize()
     }
 
+    /// The label switches between "Run" and "Running…"; a hidden copy with the wider label
+    /// reserves its width, so the controls to the left don't shift on each run.
+    private var runButton: some View {
+        ZStack(alignment: .trailing) {
+            LemonadeUi.Button(label: "Running…", onClick: {},
+                              leadingIcon: .chevronRight, variant: .primary, type: .subtle, size: .xSmall).fixedSize()
+                .hidden()
+                .accessibilityHidden(true)
+            LemonadeUi.Button(label: session.sqlRunning ? "Running…" : "Run", onClick: { session.runSQL() },
+                              leadingIcon: .chevronRight, variant: .primary, type: .subtle, size: .xSmall).fixedSize()
+        }
+    }
+
     private var schemaButton: some View {
         Button(action: { showSchema = true }) { menuLabel(icon: "tablecells", title: "Schema") }
             .buttonStyle(.plain)
+            .fixedSize()
             .popover(isPresented: $showSchema, arrowEdge: .bottom) { schemaPopover }
     }
 

@@ -13,22 +13,28 @@ struct TabStripView: View {
     @FocusState private var nameFocused: Bool
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: LemonadeTheme.spaces.spacing100) {
-                ForEach(model.sessions, id: \.id) { session in
-                    tab(session)
-                        .opacity(draggingID == session.id ? 0.4 : 1)
-                        .onDrag {
-                            draggingID = session.id
-                            return NSItemProvider(object: session.id.uuidString as NSString)
-                        }
-                        .onDrop(of: [.text],
-                                delegate: TabDropDelegate(targetID: session.id, model: model,
-                                                          draggingID: $draggingID))
+        // The reader keeps the selected tab in view when a new tab opens or the selection
+        // cycles to a tab past the visible edge.
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: LemonadeTheme.spaces.spacing100) {
+                    ForEach(model.sessions, id: \.id) { session in
+                        tab(session)
+                            .opacity(draggingID == session.id ? 0.4 : 1)
+                            .onDrag {
+                                draggingID = session.id
+                                return NSItemProvider(object: session.id.uuidString as NSString)
+                            }
+                            .onDrop(of: [.text],
+                                    delegate: TabDropDelegate(targetID: session.id, model: model,
+                                                              draggingID: $draggingID))
+                    }
                 }
+                .padding(.horizontal, LemonadeTheme.spaces.spacing200)
+                .padding(.vertical, LemonadeTheme.spaces.spacing100)
             }
-            .padding(.horizontal, LemonadeTheme.spaces.spacing200)
-            .padding(.vertical, LemonadeTheme.spaces.spacing100)
+            .onAppear { scrollToSelection(proxy, animated: false) }
+            .onChange(of: model.selectedSessionID) { _, _ in scrollToSelection(proxy, animated: true) }
         }
         .background(LemonadeTheme.colors.background.bgElevated)
         .background {
@@ -55,9 +61,11 @@ struct TabStripView: View {
                     if editingID == session.id {
                         TextField("Name", text: $editingText)
                             .textFieldStyle(.plain)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(LemonadeTypography.shared.bodySmallSemiBold.font)
                             .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)
+                            // Same height as the name label, so the strip doesn't shift on rename.
                             .frame(width: 130)
+                            .frame(minHeight: LemonadeTypography.shared.bodySmallSemiBold.lineHeight)
                             .focused($nameFocused)
                             .onSubmit { commitRename(session) }
                             .onExitCommand { editingID = nil }
@@ -84,6 +92,9 @@ struct TabStripView: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
+                        // A hit target larger than the 9 pt glyph.
+                        .frame(width: LemonadeTheme.sizes.size400, height: LemonadeTheme.sizes.size400)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Close tab")
@@ -116,6 +127,15 @@ struct TabStripView: View {
             Button("Rename") { beginRename(session) }
             Divider()
             Button("Close Tab") { model.closeSession(session.id) }
+        }
+    }
+
+    private func scrollToSelection(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard let id = model.selectedSessionID else { return }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(id) }
+        } else {
+            proxy.scrollTo(id)
         }
     }
 

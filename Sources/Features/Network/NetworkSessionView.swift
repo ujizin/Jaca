@@ -12,6 +12,10 @@ struct NetworkSessionView: View {
     @State private var searchText = ""
     /// The rule being created/edited from the row context menu; the draft carries add-vs-update.
     @State private var editingOverride: OverrideDraft?
+    /// The detail pane's tab and body mode live here, not in `NetworkDetailView`, so they
+    /// survive when a resize moves the detail between the side-by-side and the stacked split.
+    @State private var detailTab: NetworkDetailView.DetailTab = .overview
+    @State private var detailBodyMode: NetworkDetailView.BodyMode = .tree
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,19 +37,19 @@ struct NetworkSessionView: View {
                 captureChooser
             } else {
                 if !session.transactions.isEmpty {
-                    NetworkTimelineView(session: session)
-                    divider
+                    VStack(spacing: 0) {
+                        NetworkTimelineView(session: session)
+                        divider
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                HSplitView {
-                    transactionList
-                        .frame(minWidth: 420, idealWidth: 560)
-                    NetworkDetailView(session: session)
-                        .frame(minWidth: 320)
-                }
+                split
             }
             divider
             statusBar
         }
+        .animation(.easeInOut(duration: 0.2), value: session.transactions.isEmpty)
+        .animation(.easeInOut(duration: 0.2), value: showCaptureChooser)
         .background(LemonadeTheme.colors.background.bgDefault)
         .accessibilityIdentifier("networkSessionView")
         .onAppear {
@@ -99,6 +103,33 @@ struct NetworkSessionView: View {
         }
     }
 
+    /// The list beside the detail when both fit at their minimum widths; below that, the list
+    /// above the detail. The GeometryReader also keeps the split's minimum width from forcing
+    /// the window (or an inactive tab) wider than its declared minimum.
+    private var split: some View {
+        GeometryReader { geo in
+            if geo.size.width >= NetworkColumns.sideBySideMinWidth {
+                HSplitView {
+                    transactionList
+                        .frame(minWidth: NetworkColumns.listMinWidth, idealWidth: 560)
+                    detailPane
+                        .frame(minWidth: NetworkColumns.detailMinWidth)
+                }
+            } else {
+                VSplitView {
+                    transactionList
+                        .frame(minHeight: 120)
+                    detailPane
+                        .frame(minHeight: 120)
+                }
+            }
+        }
+    }
+
+    private var detailPane: some View {
+        NetworkDetailView(session: session, tab: $detailTab, bodyMode: $detailBodyMode)
+    }
+
     private var divider: some View {
         Rectangle().fill(LemonadeTheme.colors.border.borderNeutralLow).frame(height: 1)
     }
@@ -111,7 +142,20 @@ struct NetworkSessionView: View {
         !session.hasSelectedMode && !session.isRunning && session.transactions.isEmpty
     }
 
+    /// Scrolls when the window is too short for the chooser, and stays centred when it fits.
     private var captureChooser: some View {
+        GeometryReader { geo in
+            ScrollView {
+                captureChooserContent
+                    .padding(.horizontal, LemonadeTheme.spaces.spacing600)
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height)
+            }
+        }
+        .background(LemonadeTheme.colors.background.bgDefault)
+        .accessibilityIdentifier("networkCaptureChooser")
+    }
+
+    private var captureChooserContent: some View {
         VStack(spacing: LemonadeTheme.spaces.spacing300) {
             Spacer()
             Image(systemName: "arrow.left.arrow.right.circle")
@@ -201,9 +245,6 @@ struct NetworkSessionView: View {
             }
             Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(LemonadeTheme.colors.background.bgDefault)
-        .accessibilityIdentifier("networkCaptureChooser")
     }
 
     /// Explains why the in-process agent option is unavailable, with the remedy (build
@@ -247,66 +288,105 @@ struct NetworkSessionView: View {
         }
     }
 
+    /// One row when everything fits at its natural width. Otherwise two rows with the same
+    /// items: the transport controls and the search field, then overrides and the capture
+    /// status. A resize drives the switch.
     private var toolbar: some View {
-        HStack(spacing: LemonadeTheme.spaces.spacing200) {
-            Button(action: { session.toggle() }) {
-                Image(systemName: session.isRunning ? "stop.fill" : "play.fill")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(session.isRunning
-                        ? LemonadeTheme.colors.content.contentCritical
-                        : LemonadeTheme.colors.content.contentBrand)
-                    .frame(width: 30, height: 30)
-                    .background(RoundedRectangle(cornerRadius: LemonadeTheme.radius.radius150)
-                        .fill(LemonadeTheme.colors.background.bgNeutralSubtle))
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: LemonadeTheme.spaces.spacing200) {
+                toolbarLeading
+                searchField
+                    .frame(minWidth: 280, maxWidth: 360)
+                overridesButton
+                Spacer()
+                toolbarTrailing
             }
-            .buttonStyle(.plain)
-            .help(session.isRunning ? "Stop capture" : "Start capture")
-            .accessibilityIdentifier("netTransportButton")
-
-            LemonadeUi.IconButton(icon: .trash, contentDescription: "Clear") { session.clear() }
-
-            if session.canPickAgentApp {
-                NetworkAppPicker(session: session)
-            }
-
-            LemonadeUi.SearchField(
-                input: $searchText,
-                onInputChanged: { session.filterText = $0 },
-                placeholder: "Filter by URL, host, method…",
-                onInputClear: { session.filterText = "" }
-            )
-            .frame(maxWidth: 360)
-
-            // The editor is presented here, on the main window, for both entry points: see
-            // `OverridesPopover.onEdit`.
-            OverridesToolbarButton(session: session, onEdit: { editingOverride = $0 })
-
-            Spacer()
-
-            modeBadge
-
-            if let status = session.statusMessage {
-                LemonadeUi.Text(status, textStyle: LemonadeTypography.shared.bodyXSmallRegular,
-                                color: LemonadeTheme.colors.content.contentSecondary, maxLines: 1)
-            }
-            LemonadeUi.IconButton(icon: .download, contentDescription: "Export HAR") { exportHAR() }
-            // Proxy/CA setup only applies to a real ADB device capturing via the proxy.
-            // Companion and agent modes need no proxy setup (the companion app installs its
-            // own CA), and a companion-only device has no adb to set up — so hide it there.
-            if session.showsProxySetup {
-                LemonadeUi.Button(label: "Setup", onClick: { showSetup = true },
-                                  leadingIcon: .circleInfo, variant: .neutral, type: .subtle, size: .small)
-            }
-            // This Mac: bring the Chrome window back after it was closed.
-            if session.captureMode == .browser && session.isRunning {
-                LemonadeUi.Button(label: "Open Chrome", onClick: { session.openBrowser() },
-                                  leadingIcon: .globe, variant: .neutral, type: .subtle, size: .small)
-                    .transition(.opacity)
+            VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing200) {
+                HStack(spacing: LemonadeTheme.spaces.spacing200) {
+                    toolbarLeading
+                    searchField
+                        .frame(maxWidth: .infinity)
+                }
+                HStack(spacing: LemonadeTheme.spaces.spacing200) {
+                    overridesButton
+                    Spacer()
+                    toolbarTrailing
+                }
             }
         }
         .padding(.horizontal, LemonadeTheme.spaces.spacing300)
         .padding(.vertical, LemonadeTheme.spaces.spacing200)
         .background(LemonadeTheme.colors.background.bgElevated)
+    }
+
+    @ViewBuilder
+    private var toolbarLeading: some View {
+        Button(action: { session.toggle() }) {
+            Image(systemName: session.isRunning ? "stop.fill" : "play.fill")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(session.isRunning
+                    ? LemonadeTheme.colors.content.contentCritical
+                    : LemonadeTheme.colors.content.contentBrand)
+                .frame(width: 30, height: 30)
+                .background(RoundedRectangle(cornerRadius: LemonadeTheme.radius.radius150)
+                    .fill(LemonadeTheme.colors.background.bgNeutralSubtle))
+        }
+        .buttonStyle(.plain)
+        .help(session.isRunning ? "Stop capture" : "Start capture")
+        .accessibilityIdentifier("netTransportButton")
+
+        LemonadeUi.IconButton(icon: .trash, contentDescription: "Clear") { session.clear() }
+
+        if session.canPickAgentApp {
+            NetworkAppPicker(session: session)
+        }
+    }
+
+    private var searchField: some View {
+        LemonadeUi.SearchField(
+            input: $searchText,
+            onInputChanged: { session.filterText = $0 },
+            placeholder: "Filter by URL, host, method…",
+            onInputClear: { session.filterText = "" }
+        )
+    }
+
+    private var overridesButton: some View {
+        // The editor is presented here, on the main window, for both entry points: see
+        // `OverridesPopover.onEdit`.
+        OverridesToolbarButton(session: session, onEdit: { editingOverride = $0 })
+            .fixedSize()
+    }
+
+    @ViewBuilder
+    private var toolbarTrailing: some View {
+        modeBadge
+            .fixedSize()
+
+        if let status = session.statusMessage {
+            // Gives way first when the row is short; the tooltip keeps the full message.
+            LemonadeUi.Text(status, textStyle: LemonadeTypography.shared.bodyXSmallRegular,
+                            color: LemonadeTheme.colors.content.contentSecondary,
+                            overflow: .middle, maxLines: 1)
+                .help(status)
+                .layoutPriority(-1)
+        }
+        LemonadeUi.IconButton(icon: .download, contentDescription: "Export HAR") { exportHAR() }
+        // Proxy/CA setup only applies to a real ADB device capturing via the proxy.
+        // Companion and agent modes need no proxy setup (the companion app installs its
+        // own CA), and a companion-only device has no adb to set up — so hide it there.
+        if session.showsProxySetup {
+            LemonadeUi.Button(label: "Setup", onClick: { showSetup = true },
+                              leadingIcon: .circleInfo, variant: .neutral, type: .subtle, size: .small)
+                .fixedSize()
+        }
+        // This Mac: bring the Chrome window back after it was closed.
+        if session.captureMode == .browser && session.isRunning {
+            LemonadeUi.Button(label: "Open Chrome", onClick: { session.openBrowser() },
+                              leadingIcon: .globe, variant: .neutral, type: .subtle, size: .small)
+                .fixedSize()
+                .transition(.opacity)
+        }
     }
 
     private var modeBadge: some View {
@@ -478,13 +558,15 @@ struct NetworkSessionView: View {
 
     private var columnHeader: some View {
         HStack(spacing: LemonadeTheme.spaces.spacing200) {
-            headerCell(" ", width: 14)          // override badge gutter (hand-synced with the row)
-            headerCell("Status", width: 52)
-            headerCell("Method", width: 60)
-            headerCell("Host", width: 150)
+            headerCell(" ", width: NetworkColumns.gutter)   // override badge gutter
+            headerCell("Status", width: NetworkColumns.status)
+            headerCell("Method", width: NetworkColumns.method)
+            headerCell("Host", width: nil)
+                .frame(minWidth: NetworkColumns.hostMin, idealWidth: NetworkColumns.host,
+                       maxWidth: NetworkColumns.host, alignment: .leading)
             headerCell("Path", width: nil)
-            headerCell("Size", width: 70)
-            headerCell("Time", width: 64)
+            headerCell("Size", width: NetworkColumns.size)
+            headerCell("Time", width: NetworkColumns.time)
         }
         .padding(.horizontal, LemonadeTheme.spaces.spacing300)
         .padding(.vertical, LemonadeTheme.spaces.spacing100)
@@ -512,6 +594,7 @@ struct NetworkSessionView: View {
                                 textStyle: LemonadeTypography.shared.bodyXSmallRegular,
                                 textAlign: .center,
                                 color: LemonadeTheme.colors.content.contentTertiary)
+                    .frame(maxWidth: 420)
             }
             Spacer()
         }
@@ -620,7 +703,7 @@ private struct NetworkAppPicker: View {
                     ForEach(sorted) { app in
                         row(title: app.display, subtitle: app.name != nil ? app.id : nil,
                             debug: debugSet.contains(app.id),
-                            selected: session.targetPackage == app.id) { select(app.id) }
+                            selected: session.targetPackage == app.id, help: app.id) { select(app.id) }
                     }
                 }
             }
@@ -629,7 +712,7 @@ private struct NetworkAppPicker: View {
     }
 
     private func row(title: String, subtitle: String?, debug: Bool, selected: Bool,
-                     action: @escaping () -> Void) -> some View {
+                     help: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: LemonadeTheme.spaces.spacing200) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -638,6 +721,7 @@ private struct NetworkAppPicker: View {
                     if let subtitle {
                         Text(subtitle).foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
                             .font(.system(size: 10, design: .monospaced)).lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
                 Spacer(minLength: 6)
@@ -657,6 +741,7 @@ private struct NetworkAppPicker: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(help ?? "")
         .accessibilityIdentifier("netAppRow")
     }
 
@@ -689,6 +774,25 @@ private struct NetworkAppPicker: View {
     }
 }
 
+/// Column widths shared by the list header and `NetworkRowView`, so the two cannot drift.
+/// Host shrinks from `host` to `hostMin` before Path loses its share of a narrow list.
+private enum NetworkColumns {
+    static let gutter: CGFloat = 14
+    static let status: CGFloat = 52
+    static let method: CGFloat = 60
+    static let host: CGFloat = 150
+    static let hostMin: CGFloat = 72
+    static let size: CGFloat = 70
+    static let time: CGFloat = 64
+
+    /// The list fits its fixed columns, Host at `hostMin` and a short Path.
+    static let listMinWidth: CGFloat = 420
+    /// The detail tab bar wraps below its one-row width, so a narrow pane stays usable.
+    static let detailMinWidth: CGFloat = 236
+    /// Below this, the list and the detail stack vertically instead of side by side.
+    static let sideBySideMinWidth: CGFloat = listMinWidth + detailMinWidth + 1
+}
+
 private struct NetworkRowView: View {
     let txn: NetworkTransaction
     let selected: Bool
@@ -714,22 +818,24 @@ private struct NetworkRowView: View {
                                  ? LemonadeTheme.colors.content.contentCaution
                                  : NetworkFormatting.statusColor(txn))
                 .fontWeight(.semibold)
-                .frame(width: 52, alignment: .leading)
+                .frame(width: NetworkColumns.status, alignment: .leading)
             Text(txn.method)
                 .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
-                .frame(width: 60, alignment: .leading)
+                .frame(width: NetworkColumns.method, alignment: .leading)
             Text(txn.host)
                 .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)
-                .frame(width: 150, alignment: .leading).lineLimit(1).truncationMode(.tail)
+                .lineLimit(1).truncationMode(.tail)
+                .frame(minWidth: NetworkColumns.hostMin, idealWidth: NetworkColumns.host,
+                       maxWidth: NetworkColumns.host, alignment: .leading)
             Text(txn.path)
                 .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading).lineLimit(1).truncationMode(.middle)
             Text(NetworkFormatting.size(txn.responseBytes))
                 .foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
-                .frame(width: 70, alignment: .leading)
+                .frame(width: NetworkColumns.size, alignment: .leading)
             Text(NetworkFormatting.duration(txn.duration))
                 .foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
-                .frame(width: 64, alignment: .leading)
+                .frame(width: NetworkColumns.time, alignment: .leading)
         }
         .font(LogLevelStyle.mono(11))
         .padding(.horizontal, LemonadeTheme.spaces.spacing300)
@@ -757,7 +863,7 @@ private struct NetworkRowView: View {
             }
         }
         .font(.system(size: 9, weight: .semibold))
-        .frame(width: 14, alignment: .leading)
+        .frame(width: NetworkColumns.gutter, alignment: .leading)
         .help(badge.tooltip)
     }
 

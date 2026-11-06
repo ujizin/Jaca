@@ -16,5 +16,8 @@ struct CloudLoggingToastView: View {
 
     var body: some View {
         LemonadeUi.Toast(label: toast.message, voice: .neutral, icon: icon)
+            // Cap the width so a long error wraps in a readable block, inset from the pane edges.
+            .frame(maxWidth: 480)
+            .padding(.horizontal, LemonadeTheme.spaces.spacing600)
     }
 }

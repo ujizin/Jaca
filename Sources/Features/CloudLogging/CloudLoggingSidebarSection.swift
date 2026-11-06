@@ -19,17 +19,36 @@ struct CloudLoggingSidebarSection: View {
             VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing100) {
                 header
                 if !registry.projects.isEmpty {
-                    VStack(alignment: .leading, spacing: 1) {
-                        ForEach(registry.projects) { project in
-                            CloudProjectRow(project: project, model: model)
+                    // Past a few projects the list scrolls in a capped height, so it can't push
+                    // the device list below it out of the sidebar.
+                    Group {
+                        if registry.projects.count > Self.maxUnscrolledRows {
+                            ScrollView { projectRows }
+                                .frame(maxHeight: Self.scrolledListMaxHeight)
+                        } else {
+                            projectRows
                         }
                     }
                     .padding(.horizontal, LemonadeTheme.spaces.spacing300)
                 }
             }
             .padding(.bottom, LemonadeTheme.spaces.spacing100)
+            .animation(.easeInOut(duration: 0.2), value: registry.projects.count)
             .sheet(isPresented: $showAdd) { AddProjectSheet(registry: registry) }
             .sheet(isPresented: $showFromURL) { NewSessionFromURLSheet(model: model) }
+        }
+    }
+
+    /// Rows shown at full height before the list switches to a scrolling, capped frame.
+    private static let maxUnscrolledRows = 4
+    /// About four project rows (~54 pt each).
+    private static let scrolledListMaxHeight: CGFloat = 216
+
+    private var projectRows: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(registry.projects) { project in
+                CloudProjectRow(project: project, model: model)
+            }
         }
     }
 
@@ -60,6 +79,7 @@ struct CloudLoggingSidebarSection: View {
             RoundedRectangle(cornerRadius: LemonadeTheme.radius.radius150)
                 .fill(active ? LemonadeTheme.colors.interaction.bgSubtleInteractive : .clear)
         )
+        .animation(.easeInOut(duration: 0.15), value: active)
         .contentShape(Rectangle())
         .onTapGesture { model.mode = .cloudLogging }
         .padding(.horizontal, LemonadeTheme.spaces.spacing300)
@@ -120,6 +140,8 @@ private struct CloudProjectRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        // The title and log name truncate at narrow widths: show both in full on hover.
+        .help("\(project.title)\n\(project.selectedLogName.map(CloudLogName.shortId) ?? project.projectID)")
         .accessibilityIdentifier("cloudProjectRow")
         .popover(isPresented: $showOptions, arrowEdge: .bottom) { menu }
         .sheet(isPresented: $showLogNames) {

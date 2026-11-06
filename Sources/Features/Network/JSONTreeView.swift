@@ -184,7 +184,7 @@ private struct JSONNode: View {
         if value.isContainer {
             if value.childCount == 0 {
                 // Empty container: show both brackets inline, no toggle.
-                HStack(spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
                     placeholderIcon
                     if let key { keyText(key); colon }
                     Text(isObject ? "{ }" : "[ ]").font(font)
@@ -218,7 +218,7 @@ private struct JSONNode: View {
                 }
             }
         } else {
-            HStack(spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
                 placeholderIcon  // align with toggles
                 if let key { keyText(key); colon }
                 scalarText

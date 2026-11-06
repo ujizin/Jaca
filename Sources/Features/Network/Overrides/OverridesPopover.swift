@@ -371,7 +371,7 @@ struct OverridesPopover: View {
             // `adb reverse`, and only Android has a tunnel to promise the removal of.
             LemonadeUi.Text("\(hostText) · \(transport.portLabel(port: port))",
                             textStyle: LemonadeTypography.shared.bodyXSmallRegular,
-                            color: LemonadeTheme.colors.content.contentTertiary, maxLines: 2)
+                            color: LemonadeTheme.colors.content.contentTertiary, maxLines: 4)
                 .help(transport.routingScopeHelp)
         case .failed(let detail):
             VStack(alignment: .leading, spacing: 2) {
@@ -427,15 +427,18 @@ struct OverridesPopover: View {
                                         : LemonadeTheme.colors.content.contentTertiary,
                                     maxLines: 2)
                 }
-                Spacer()
+                // The text takes the width; a Lemonade button fills whatever it's offered, so
+                // beside a Spacer it took half the row and cut the warning off mid-sentence.
+                .frame(maxWidth: .infinity, alignment: .leading)
                 LemonadeUi.Button(
                     label: session.isRevertingDeviceProxy ? "Reverting…" : "Revert",
                     onClick: { Task { await session.revertDeviceProxy() } },
                     variant: .neutral, type: .subtle, size: .small,
                     enabled: !session.isRevertingDeviceProxy)
+                .fixedSize()
                 .help("Clears every proxy setting on this device and re-validates its network.")
             }
-            .padding(.horizontal, LemonadeTheme.spaces.spacing300)
+            // No horizontal padding: the footer already insets it, level with the rest of the footer.
             .padding(.vertical, LemonadeTheme.spaces.spacing200)
             .animation(.easeInOut(duration: 0.2), value: session.deviceProxyLingers)
             .animation(.easeInOut(duration: 0.2), value: session.isRevertingDeviceProxy)
@@ -494,6 +497,14 @@ private struct OverrideRuleRow: View {
     let onDuplicate: () -> Void
     let onDelete: () -> Void
 
+    private var patternText: some View {
+        Text(rule.matcher.pattern.isEmpty ? "No pattern" : rule.matcher.pattern)
+            .font(LogLevelStyle.mono(10))
+            .foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+
     var body: some View {
         HStack(spacing: LemonadeTheme.spaces.spacing200) {
             Button(action: onEdit) {
@@ -509,11 +520,13 @@ private struct OverrideRuleRow: View {
                                 .foregroundStyle(LemonadeTheme.colors.content.contentCaution)
                         }
                     }
-                    Text(rule.matcher.pattern.isEmpty ? "No pattern" : rule.matcher.pattern)
-                        .font(LogLevelStyle.mono(10))
-                        .foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    // The full pattern on hover, unless a diagnostic owns the tooltip: an inner
+                    // help would win and hide it.
+                    if diagnostic == nil, !rule.matcher.pattern.isEmpty {
+                        patternText.help(rule.matcher.pattern)
+                    } else {
+                        patternText
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())

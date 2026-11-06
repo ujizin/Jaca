@@ -12,6 +12,7 @@ struct LogSessionView: View {
     @State private var packageText = ""
     @State private var searchDebounce: Task<Void, Never>?
     @State private var packageDebounce: Task<Void, Never>?
+    @State private var toolbarWidth: CGFloat?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -85,7 +86,7 @@ struct LogSessionView: View {
     // MARK: - Toolbar
 
     private var toolbar: some View {
-        VStack(spacing: LemonadeTheme.spaces.spacing200) {
+        VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing200) {
             HStack(spacing: LemonadeTheme.spaces.spacing200) {
                 transportButton
                 clearMenu
@@ -99,16 +100,51 @@ struct LogSessionView: View {
                         color: LemonadeTheme.colors.content.contentCritical,
                         maxLines: 1
                     )
+                    .help(status)
                 }
                 LemonadeUi.Button(label: "Copy format",
                                   onClick: { NotificationCenter.default.post(name: .openLogCopyFormat, object: nil) },
                                   leadingIcon: .settingsSlider, variant: .neutral, type: .subtle, size: .xSmall)
                     .fixedSize()
-                LemonadeUi.IconButton(icon: .download, contentDescription: "Export") {
-                    exportLog()
-                }
+                LemonadeUi.IconButton(icon: .download, contentDescription: "Export",
+                                      onClick: { exportLog() }, size: .xSmall)
             }
-            HStack(spacing: LemonadeTheme.spaces.spacing200) {
+            filterRow
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(GeometryReader { geo in
+            Color.clear
+                .onAppear { toolbarWidth = geo.size.width }
+                .onChange(of: geo.size.width) { _, width in toolbarWidth = width }
+        })
+        .animation(.easeInOut(duration: 0.2), value: isCompactToolbar)
+        .padding(.horizontal, LemonadeTheme.spaces.spacing300)
+        .padding(.vertical, LemonadeTheme.spaces.spacing200)
+        .background(LemonadeTheme.colors.background.bgElevated)
+    }
+
+    /// Width the filter row needs on one line: the chips at their natural width plus the two
+    /// fields at their minimum. Below it the fields move under the chips and the chips wrap.
+    private var wideToolbarWidth: CGFloat { session.device.platform == .android ? 950 : 1050 }
+
+    /// `nil` until the first measure: start in the one-line layout, as before.
+    private var isCompactToolbar: Bool {
+        guard let toolbarWidth else { return false }
+        return toolbarWidth < wideToolbarWidth
+    }
+
+    /// One `AnyLayout` per level so a switch keeps each view's identity (and `PackagePicker`'s
+    /// loaded app list), which a `ViewThatFits` with two copies would not.
+    private var filterRow: some View {
+        let compact = isCompactToolbar
+        let rowLayout = compact
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: LemonadeTheme.spaces.spacing200))
+            : AnyLayout(HStackLayout(spacing: LemonadeTheme.spaces.spacing200))
+        let chipsLayout = compact
+            ? AnyLayout(FlowLayout(spacing: LemonadeTheme.spaces.spacing200, lineSpacing: LemonadeTheme.spaces.spacing200))
+            : AnyLayout(HStackLayout(spacing: LemonadeTheme.spaces.spacing200))
+        return rowLayout {
+            chipsLayout {
                 levelChips
                 LemonadeUi.Chip(
                     label: ".*",
@@ -120,6 +156,7 @@ struct LogSessionView: View {
                     selected: LogBodyPrettifyStore.shared.enabled,
                     onChipClicked: { LogBodyPrettifyStore.shared.enabled.toggle() }
                 )
+                .fixedSize()
                 .help("Auto-prettify endpoint response bodies (double-click a body to collapse it)")
                 .accessibilityIdentifier("prettifyJSON")
                 if session.device.platform != .android {
@@ -128,7 +165,10 @@ struct LogSessionView: View {
                         selected: !session.filter.hideSystemLogs,
                         onChipClicked: { session.setHideSystemLogs(!session.filter.hideSystemLogs) }
                     )
+                    .fixedSize()
                 }
+            }
+            HStack(spacing: LemonadeTheme.spaces.spacing200) {
                 searchField
                 HStack(spacing: 2) {
                     packageField
@@ -139,9 +179,6 @@ struct LogSessionView: View {
                 }
             }
         }
-        .padding(.horizontal, LemonadeTheme.spaces.spacing300)
-        .padding(.vertical, LemonadeTheme.spaces.spacing200)
-        .background(LemonadeTheme.colors.background.bgElevated)
     }
 
     /// Red crash counter with up/down navigation. ▲ goes to the previous (older) crash,
@@ -268,7 +305,7 @@ struct LogSessionView: View {
             placeholder: session.filter.isRegex ? "regex…" : "filter text…",
             onInputClear: { session.setQuery("") }
         )
-        .frame(maxWidth: 320)
+        .frame(minWidth: 160, idealWidth: 240, maxWidth: 320)
     }
 
     private var packageField: some View {
@@ -278,7 +315,7 @@ struct LogSessionView: View {
             placeholder: "package id…",
             onInputClear: { session.setPackage("") }
         )
-        .frame(maxWidth: 220)
+        .frame(minWidth: 140, idealWidth: 180, maxWidth: 220)
     }
 
     private func debounceSearch(_ value: String) {
@@ -405,6 +442,7 @@ private struct PackagePicker: View {
                             .foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
                             .font(.system(size: 10, design: .monospaced))
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
                 Spacer(minLength: 0)
@@ -414,6 +452,7 @@ private struct PackagePicker: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(subtitle ?? title)
         .accessibilityIdentifier("appRow")
     }
 

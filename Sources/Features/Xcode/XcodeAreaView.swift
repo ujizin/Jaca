@@ -58,6 +58,7 @@ struct XcodeAreaView: View {
         )
         .padding(.horizontal, 8)
         .padding(.top, 8)
+        .maintenanceContentColumn()
     }
 
     @ViewBuilder private var listSection: some View {
@@ -72,6 +73,7 @@ struct XcodeAreaView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
+                .maintenanceContentColumn()
             }
             .frame(maxHeight: .infinity)
         }
@@ -142,21 +144,27 @@ struct DerivedDataRow: View {
                     color: LemonadeTheme.colors.content.contentPrimary,
                     maxLines: 1
                 )
+                .help(entry.name)
                 Text(subtitle)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(subtitle)
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
             LemonadeUi.Tag(label: tagLabel, voice: tagVoice)
+                .fixedSize()
 
+            // Fits nine monospaced characters ("100.00 GB"), so the column keeps one width.
             Text(formatSize(entry.sizeMB))
                 .font(.system(size: 12.5, weight: .medium, design: .monospaced))
                 .monospacedDigit()
                 .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)
-                .frame(minWidth: 64, alignment: .trailing)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minWidth: 70, alignment: .trailing)
 
             LemonadeUi.Button(
                 label: confirming ? "Confirm?" : "Delete",
@@ -168,6 +176,7 @@ struct DerivedDataRow: View {
             )
             .fixedSize()
         }
+        .animation(.easeInOut(duration: 0.15), value: confirming)
         .padding(.vertical, 9)
         .padding(.horizontal, 10)
         .contentShape(Rectangle())

@@ -27,21 +27,25 @@ struct DatabaseSessionView: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            DatabaseAppPicker(session: session)
-            if !session.databases.isEmpty {
-                picker(title: "DB", selection: session.selectedDB?.name ?? "—",
-                       items: session.databases.map(\.name)) { name in
-                    if let db = session.databases.first(where: { $0.name == name }) { session.selectDatabase(db) }
+            // The pickers wrap to a second line in a narrow pane instead of overflowing it.
+            FlowLayout(spacing: 10, lineSpacing: LemonadeTheme.spaces.spacing200) {
+                DatabaseAppPicker(session: session)
+                if !session.databases.isEmpty {
+                    picker(title: "DB", selection: session.selectedDB?.name ?? "—",
+                           items: session.databases.map(\.name)) { name in
+                        if let db = session.databases.first(where: { $0.name == name }) { session.selectDatabase(db) }
+                    }
+                }
+                if !session.tables.isEmpty {
+                    picker(title: "Table", selection: session.selectedTable ?? "—",
+                           items: session.tables.map { "\($0.name) (\($0.rowCount))" }) { label in
+                        let name = String(label.prefix(while: { $0 != "(" })).trimmingCharacters(in: .whitespaces)
+                        session.selectTable(name)
+                    }
                 }
             }
-            if !session.tables.isEmpty {
-                picker(title: "Table", selection: session.selectedTable ?? "—",
-                       items: session.tables.map { "\($0.name) (\($0.rowCount))" }) { label in
-                    let name = String(label.prefix(while: { $0 != "(" })).trimmingCharacters(in: .whitespaces)
-                    session.selectTable(name)
-                }
-            }
-            Spacer()
+            .layoutPriority(1)
+            Spacer(minLength: 0)
             if session.loading { ProgressView().controlSize(.small) }
             if session.selectedDB != nil {
                 LemonadeUi.Text("snapshot", textStyle: LemonadeTypography.shared.bodyXSmallRegular,
@@ -51,6 +55,7 @@ struct DatabaseSessionView: View {
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
+        .animation(.easeInOut(duration: 0.2), value: session.tables.isEmpty)
     }
 
     private func picker(title: String, selection: String, items: [String], onPick: @escaping (String) -> Void) -> some View {
@@ -64,6 +69,8 @@ struct DatabaseSessionView: View {
             }
             .menuStyle(.borderlessButton).fixedSize()
         }
+        .frame(height: 30)   // the app picker's height, so the wrapped pickers line up
+        .help(selection)
     }
 
     // MARK: - Content (SQL box + grid)
@@ -85,7 +92,7 @@ struct DatabaseSessionView: View {
                         if let i = session.selectedRow, i < rs.rows.count {
                             Rectangle().fill(LemonadeTheme.colors.border.borderNeutralLow).frame(width: 1)
                             DBRowDetail(columns: rs.columns, row: rs.rows[i]) { session.selectRow(nil) }
-                                .frame(width: 360)
+                                .frame(minWidth: 280, idealWidth: 360, maxWidth: 360)
                                 .transition(.move(edge: .trailing))
                         }
                     }
@@ -100,25 +107,27 @@ struct DatabaseSessionView: View {
     }
 
     private var sqlBar: some View {
-        HStack(spacing: 8) {
-            TextField("SELECT … (read-only)", text: $session.sqlText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, design: .monospaced))
-                .lineLimit(1...3)
-                .padding(.vertical, 6).padding(.horizontal, 8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(LemonadeTheme.colors.background.bgNeutralSubtle))
-                .onSubmit { session.runQuery() }
-            LemonadeUi.Button(label: "Run", onClick: { session.runQuery() }, leadingIcon: .chevronRight,
-                              variant: .primary, type: .subtle, size: .xSmall).fixedSize()
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .overlay(alignment: .bottomLeading) {
+        VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing100) {
+            HStack(spacing: 8) {
+                TextField("SELECT … (read-only)", text: $session.sqlText, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .lineLimit(1...3)
+                    .padding(.vertical, 6).padding(.horizontal, 8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(LemonadeTheme.colors.background.bgNeutralSubtle))
+                    .onSubmit { session.runQuery() }
+                LemonadeUi.Button(label: "Run", onClick: { session.runQuery() }, leadingIcon: .chevronRight,
+                                  variant: .primary, type: .subtle, size: .xSmall).fixedSize()
+            }
+            // Below the field, not over it, so the error never hides the query to fix.
             if let error = session.error, session.result != nil {
                 LemonadeUi.Text(error, textStyle: LemonadeTypography.shared.bodyXSmallRegular,
                                 color: LemonadeTheme.colors.content.contentCritical, maxLines: 2)
-                    .padding(.horizontal, 12)
+                    .transition(.opacity)
             }
         }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .animation(.easeInOut(duration: 0.2), value: session.error)
     }
 
     // A simple H+V scrollable grid: header row of columns, then clickable value rows.
@@ -126,25 +135,31 @@ struct DatabaseSessionView: View {
     private func grid(_ rs: DBResultSet) -> some View {
         GeometryReader { geo in
             ScrollView([.horizontal, .vertical]) {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 0) {
-                        ForEach(Array(rs.columns.enumerated()), id: \.offset) { _, col in
-                            cell(col, header: true)
-                        }
-                    }
-                    .background(LemonadeTheme.colors.background.bgNeutralSubtle)
-                    ForEach(Array(rs.rows.enumerated()), id: \.offset) { index, row in
-                        Button(action: { session.selectRow(session.selectedRow == index ? nil : index) }) {
-                            HStack(spacing: 0) {
-                                ForEach(Array(row.enumerated()), id: \.offset) { _, value in
-                                    cell(value ?? "NULL", header: false, isNull: value == nil)
+                // Lazy so a large custom query builds only the visible rows; the column
+                // header stays pinned while the rows scroll under it.
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        ForEach(Array(rs.rows.enumerated()), id: \.offset) { index, row in
+                            Button(action: { session.selectRow(session.selectedRow == index ? nil : index) }) {
+                                HStack(spacing: 0) {
+                                    ForEach(Array(row.enumerated()), id: \.offset) { _, value in
+                                        cell(value ?? "NULL", header: false, isNull: value == nil)
+                                    }
                                 }
+                                .background(session.selectedRow == index
+                                    ? LemonadeTheme.colors.interaction.bgSubtleInteractive : Color.clear)
+                                .contentShape(Rectangle())
                             }
-                            .background(session.selectedRow == index
-                                ? LemonadeTheme.colors.interaction.bgSubtleInteractive : Color.clear)
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                    } header: {
+                        HStack(spacing: 0) {
+                            ForEach(Array(rs.columns.enumerated()), id: \.offset) { _, col in
+                                cell(col, header: true)
+                            }
+                        }
+                        .background(LemonadeTheme.colors.background.bgNeutralSubtle)
+                        .background(LemonadeTheme.colors.background.bgDefault)
                     }
                 }
                 // Pin to top-left: a 2-axis ScrollView otherwise centers content smaller
@@ -277,6 +292,7 @@ private struct DatabaseAppPicker: View {
                     if let subtitle {
                         Text(subtitle).foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
                             .font(.system(size: 10, design: .monospaced)).lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
                 Spacer(minLength: 6)
@@ -290,6 +306,7 @@ private struct DatabaseAppPicker: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(subtitle ?? title)
         .accessibilityIdentifier("dbAppRow")
     }
 }

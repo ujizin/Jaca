@@ -22,6 +22,7 @@ struct NetworkSetupSheet: View {
                 Spacer()
                 LemonadeUi.Button(label: "Done", onClick: { dismiss() },
                                   variant: .neutral, type: .subtle, size: .small)
+                    .fixedSize()   // size to the label instead of filling the width
             }
 
             LemonadeUi.Notice(

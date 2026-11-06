@@ -22,7 +22,11 @@ struct ClaudeAskSheet<Output: Decodable & Sendable>: View {
             requestField
             if model.output == nil { exampleChips }
             if let error = model.errorMessage {
-                LemonadeUi.Notice(content: error, voice: .critical)
+                // A long CLI error scrolls inside the sheet instead of pushing the footer
+                // below the screen; short errors keep their natural height.
+                cappedScroll {
+                    LemonadeUi.Notice(content: error, voice: .critical)
+                }
             }
             if let output = model.output {
                 resultView(output)
@@ -44,7 +48,19 @@ struct ClaudeAskSheet<Output: Decodable & Sendable>: View {
             Spacer()
             LemonadeUi.Button(label: "Close", onClick: { dismiss() },
                               variant: .neutral, type: .subtle, size: .small)
+                .fixedSize()
         }
+    }
+
+    /// Hugs short content and scrolls once it is taller than 160 pt.
+    private func cappedScroll<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView(.vertical) {
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxHeight: 160)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var requestField: some View {
@@ -88,8 +104,10 @@ struct ClaudeAskSheet<Output: Decodable & Sendable>: View {
     private func resultView(_ output: Output) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if let explanation = model.useCase.explanation(output), !explanation.isEmpty {
-                LemonadeUi.Text(explanation, textStyle: LemonadeTypography.shared.bodySmallRegular,
-                                color: LemonadeTheme.colors.content.contentSecondary)
+                cappedScroll {
+                    LemonadeUi.Text(explanation, textStyle: LemonadeTypography.shared.bodySmallRegular,
+                                    color: LemonadeTheme.colors.content.contentSecondary)
+                }
             }
             ScrollView {
                 Text(model.useCase.preview(output))
