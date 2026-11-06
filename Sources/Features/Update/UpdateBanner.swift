@@ -50,9 +50,11 @@ struct UpdateBanner: View {
             LemonadeUi.Text(
                 "This build tracks the worktree “\(update.worktreeName ?? "")”. In-app updates run against the main checkout — switch to it to update and reinstall normally.",
                 textStyle: LemonadeTypography.shared.bodyXSmallRegular,
-                color: LemonadeTheme.colors.content.contentSecondary
+                color: LemonadeTheme.colors.content.contentSecondary,
+                // Capped: an uncapped text gets taller as the sidebar collapses (its width
+                // animates toward 0) and drives the window into a layout loop.
+                maxLines: 4
             )
-            .fixedSize(horizontal: false, vertical: true)
             fittingButton(
                 label: confirmingWorktree ? "Reinstall from main checkout?" : "Switch to main checkout",
                 onClick: { handleWorktreeTap() },
