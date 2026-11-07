@@ -16,18 +16,18 @@ request** with no re-attach, and persist across restarts.
 ## Why this works when Charles/Proxyman don't
 
 A MITM proxy sits on the network: it terminates TLS with its own CA, so the app must (a) trust a
-user-installed CA and (b) not pin certificates. Plenty of apps fail both. `com.teya.ac.dev` fails
-both — its `network_security_config.xml` never trusts user CAs, and it ships five hard-coded
-`sha256/` pins.
+user-installed CA and (b) not pin certificates. Plenty of apps fail both. The app used to verify
+this agent (`com.example.app.dev` below) fails both: its `network_security_config.xml` never trusts
+user CAs, and it ships hard-coded `sha256/` pins.
 
 Jaca's in-process agent intercepts **above TLS**, inside the app. It hooks
 `OkHttpClient.interceptors()` and rewrites a matched request's URL to a loopback server on your
 Mac before a connection is ever opened:
 
 ```
-https://private-api.teya.xyz/lending/v1/companies/{uuid}/product-state
+https://api.example.com/v1/orders/{id}
                                     ↓  (rewritten in-process, above TLS)
-http://localhost:41234/lending/v1/companies/{uuid}/product-state
+http://localhost:41234/v1/orders/{id}
                                     ↓  (adb reverse)
                         Jaca's override server on your Mac
 ```
@@ -39,7 +39,7 @@ Two properties make this safe on a pinned app:
   must permit (most debug builds already do).
 
 On the way back the agent restores the original request onto the response, so the app — and
-Jaca's own capture — still sees `private-api.teya.xyz`, not `localhost`.
+Jaca's own capture — still sees `api.example.com`, not `localhost`.
 
 ### The layer rule — do not get this wrong
 
@@ -190,15 +190,15 @@ group in group order, then the rules in no group. A rule moves up or down inside
 saved in `groups.json`, next to `rules.json`; a rule names its group with `groupID`.
 
 **Generalize** rewrites UUID-shaped and numeric path segments to `*` and the base URL to `**`,
-which is how you get from one company's `product-state` on the staging gateway to every
-company's on any base URL without learning glob syntax first. Because `**` crosses `/`, the
-same rule answers the endpoint behind a dev server's proxy prefix too — the portal running on
-`http://localhost:3000/private-api/lending/…` matches a rule generalized from the device's
-`https://private-api.teya.xyz/lending/…`. Generalize from the device's capture, which carries no
+which is how you get from one order on the staging gateway to every order on any base URL
+without learning glob syntax first. Because `**` crosses `/`, the same rule answers the endpoint
+behind a dev server's proxy prefix too — a web app running on
+`http://localhost:3000/api/v1/orders/…` matches a rule generalized from the device's
+`https://api.example.com/v1/orders/…`. Generalize from the device's capture, which carries no
 such prefix. The host the pattern named stays in the rule's routed hosts, so the device keeps
 routing it through the Mac. On the command line, `jaca overrides add --from … --generalize` and
 `jaca overrides generalize RULE` rewrite **only the base URL**: a path the rule names on purpose
-(one mock per deal id) is kept as written.
+(one mock per order id) is kept as written.
 
 ---
 
@@ -336,14 +336,14 @@ iOS agent started reporting `"urlsession"`.
 
 ## Provenance
 
-The mechanism was proven in a Claude Code session against a real pinned app, then productised and
+The mechanism was proven in a proof of concept against a real pinned app, then productised and
 re-verified end to end.
 
 | | |
 |---|---|
-| Original POC session | `1307b816-35a3-4b4f-9ff7-868913d43fac`, 2026-08-25 |
+| POC | 2026-08-25 |
 | Device | `emulator-5554`, `sdk_gphone16k_arm64`, Android 17 (SDK 37), arm64-v8a, 16 KB pages |
-| App | `com.teya.ac.dev` 3.0.0 — `debuggable=true`, `targetSdk 36`, **5 hard-coded cert pins** |
+| App | `com.example.app.dev` — `debuggable=true`, `targetSdk 36`, **hard-coded cert pins** |
 | POC result | 3/3 requests routed and served from a mock, 0 crashes |
 | Productised + verified | 2026-08-26 |
 
@@ -351,10 +351,10 @@ The 2026-08-26 verification, against the same pinned app, confirmed the followin
 quoted as the agent prints them today):
 
 - the agent advertises `override/1` in its hello frame, and applies a route control frame live
-  (`route configured: origin=http://localhost:41234 hosts=[id.teya.xyz, private-api.teya.xyz]`);
+  (`route configured: origin=http://localhost:41234 hosts=[auth.example.com, api.example.com]`);
 - two pinned hosts were routed with their original URLs preserved;
 - **the app received a fabricated `299` response with our body at the real
-  `https://id.teya.xyz/authn/anonymous/api/auth_requests`** — and the captured row reported that
+  `https://auth.example.com/v1/sessions`** — and the captured row reported that
   real HTTPS URL, not `localhost`;
 - an unmatched request was bounced `599 retry-direct`;
 - killing the desktop server produced `route: tunnel unreachable, failing open and retrying direct`

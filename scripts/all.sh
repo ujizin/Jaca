@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# One-shot build of EVERYTHING: the macOS app + both in-process agents, then launch it.
-# The Android agent (.so + dexes) and the iOS-Simulator agent are now built by build.sh
-# itself (the agent is part of the product), so this script just adds the optional
-# companion APK + install/launch convenience. A missing Android toolchain makes the
-# build FAIL (the app would be incomplete) — pass --no-agent to opt out on purpose.
+# Build the macOS app and both in-process agents (through build.sh), then launch it. --install
+# also builds the companion APK and links `jaca`. A missing Android toolchain makes the build
+# FAIL (the app would be incomplete): pass --no-agent to opt out.
 #
 # Usage:
 #   ./scripts/all.sh                 # build app + agents (Debug), then launch
-#   ./scripts/all.sh --release       # optimized build
+#   ./scripts/all.sh --release       # optimized build (--debug is the default)
 #   ./scripts/all.sh --install       # build Release + copy into /Applications + launch
 #   ./scripts/all.sh --no-agent      # build the app WITHOUT the in-process Android agent
 #   ./scripts/all.sh --no-run        # build only, don't launch
+#   ./scripts/all.sh --help          # print this text
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
