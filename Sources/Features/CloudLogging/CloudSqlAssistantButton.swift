@@ -22,6 +22,7 @@ struct CloudSqlAssistantButton: View {
             .help("Configure how many example values per label are sent to Claude")
             .sheet(isPresented: $configuring) { CloudSqlLabelExamplesSheet(session: session) }
         }
+        .fixedSize()
     }
 
     /// Builds the SQL `ClaudeUseCase`. `static` + `[weak session]` so the captured closures don't

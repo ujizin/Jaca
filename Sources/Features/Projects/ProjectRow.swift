@@ -2,6 +2,9 @@ import SwiftUI
 import Lemonade
 
 private let nodeIndent: CGFloat = 16
+/// One minimum width for the project and checkout size columns, so they line up. Fits
+/// nine monospaced characters ("100.00 GB", "cleaning…"), so the column never changes width.
+private let sizeColumnWidth: CGFloat = 70
 
 /// A project node row (used by both LIST and TREE views). Shows the project's folder,
 /// badges (Claude / sub-project or worktree counts), total size, and a chevron. Expanding
@@ -25,7 +28,7 @@ struct ProjectNodeView: View {
         VStack(spacing: 0) {
             headerRow
                 .padding(.vertical, 9)
-                .padding(.trailing, 10)
+                .padding(.trailing, LemonadeTheme.spaces.spacing300)
                 .padding(.leading, 10 + CGFloat(depth) * nodeIndent)
                 .contentShape(Rectangle())
                 .onTapGesture { if isExpandable { onToggle(node.id) } }
@@ -56,27 +59,39 @@ struct ProjectNodeView: View {
             avatar
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    LemonadeUi.Text(
-                        project.name,
-                        textStyle: LemonadeTypography.shared.bodyMediumSemiBold,
-                        color: LemonadeTheme.colors.content.contentPrimary,
-                        maxLines: 1
-                    )
-                    if project.isClaudeProject { LemonadeUi.Tag(label: "Claude", voice: .positive) }
-                    if node.hasChildren { LemonadeUi.Tag(label: projectsTag, voice: .neutral) }
-                    if project.hasWorktrees { LemonadeUi.Tag(label: worktreeTag, voice: .neutral) }
+                // Name and tags on one line when they fit; else the tags go under the name,
+                // so the name and the tags do not truncate together.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        projectName
+                        projectTags
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        projectName
+                        if hasProjectTags {
+                            HStack(spacing: 6) { projectTags }
+                        }
+                    }
                 }
                 Text(project.displayPath)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(project.displayPath)
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
 
-            if hovering, project.source == .user { removeButton }
+            // Always in the layout for user projects, so the text column keeps its width
+            // when the pointer enters the row.
+            if project.source == .user {
+                removeButton
+                    .opacity(hovering ? 1 : 0)
+                    .allowsHitTesting(hovering)
+                    .accessibilityHidden(!hovering)
+                    .animation(.easeInOut(duration: 0.15), value: hovering)
+            }
 
             if model.herdrInstalled, project.isClaudeProject, let herdrIcon = model.herdrIcon {
                 OpenInAppButton(icon: herdrIcon, help: "Open in Herdr (new worktree)", iconCornerRadius: 4) {
@@ -91,12 +106,19 @@ struct ProjectNodeView: View {
             }
             OpenInAppButton(icon: model.finderIcon, help: "Open in Finder") { model.openInFinder(project.url) }
 
+            // The size slot is always reserved, so the buttons stay in one column across
+            // rows and do not move when the sizes arrive.
             if project.isGitRepo, project.sizesComputed {
                 Text(formatSize(project.totalSizeMB))
                     .font(.system(size: 12.5, weight: .medium, design: .monospaced))
                     .monospacedDigit()
                     .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)
-                    .frame(minWidth: 64, alignment: .trailing)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: sizeColumnWidth, alignment: .trailing)
+                    .transition(.opacity)
+            } else {
+                Color.clear.frame(width: sizeColumnWidth, height: 1)
             }
 
             LemonadeUi.Icon(
@@ -107,6 +129,28 @@ struct ProjectNodeView: View {
             .opacity(isExpandable ? 1 : 0)
             .animation(.easeInOut(duration: 0.18), value: isExpanded)
         }
+        .animation(.easeInOut(duration: 0.2), value: project.sizesComputed)
+    }
+
+    private var projectName: some View {
+        LemonadeUi.Text(
+            project.name,
+            textStyle: LemonadeTypography.shared.bodyMediumSemiBold,
+            color: LemonadeTheme.colors.content.contentPrimary,
+            maxLines: 1
+        )
+        .help(project.name)
+    }
+
+    private var hasProjectTags: Bool {
+        project.isClaudeProject || node.hasChildren || project.hasWorktrees
+    }
+
+    /// The tags keep their full width; the name truncates first.
+    @ViewBuilder private var projectTags: some View {
+        if project.isClaudeProject { LemonadeUi.Tag(label: "Claude", voice: .positive).fixedSize() }
+        if node.hasChildren { LemonadeUi.Tag(label: projectsTag, voice: .neutral).fixedSize() }
+        if project.hasWorktrees { LemonadeUi.Tag(label: worktreeTag, voice: .neutral).fixedSize() }
     }
 
     private var avatar: some View {
@@ -183,22 +227,23 @@ struct ProjectCheckoutRow: View {
             .frame(width: 28, alignment: .center)
 
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    LemonadeUi.Text(
-                        checkout.name,
-                        textStyle: LemonadeTypography.shared.bodySmallSemiBold,
-                        color: LemonadeTheme.colors.content.contentPrimary,
-                        maxLines: 1
-                    )
-                    typeTag
-                    claudeTag
-                    if checkout.orphan { LemonadeUi.Tag(label: "Orphan", voice: .warning) }
+                // Name and tags on one line when they fit; else the tags go under the name.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        checkoutName
+                        checkoutTags
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        checkoutName
+                        HStack(spacing: 6) { checkoutTags }
+                    }
                 }
                 Text(subtitle)
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(subtitle)
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
@@ -223,13 +268,15 @@ struct ProjectCheckoutRow: View {
                 .foregroundStyle(checkout.dropped
                     ? LemonadeTheme.colors.content.contentPositive
                     : LemonadeTheme.colors.content.contentPrimary)
-                .frame(minWidth: 60, alignment: .trailing)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minWidth: sizeColumnWidth, alignment: .trailing)
                 .animation(.easeInOut, value: checkout.dropped)
 
             configButton
         }
         .padding(.vertical, 7)
-        .padding(.trailing, 12)
+        .padding(.trailing, LemonadeTheme.spaces.spacing300)
         .padding(.leading, 10 + CGFloat(depth + 1) * nodeIndent)
         .contentShape(Rectangle())
         .opacity(checkout.removing ? 0 : 1)
@@ -259,15 +306,33 @@ struct ProjectCheckoutRow: View {
 
     // MARK: - Tags
 
+    private var checkoutName: some View {
+        LemonadeUi.Text(
+            checkout.name,
+            textStyle: LemonadeTypography.shared.bodySmallSemiBold,
+            color: LemonadeTheme.colors.content.contentPrimary,
+            maxLines: 1
+        )
+        .help(checkout.name)
+    }
+
+    /// The tags keep their full width; the name truncates first.
+    @ViewBuilder private var checkoutTags: some View {
+        typeTag
+        claudeTag
+        if checkout.orphan { LemonadeUi.Tag(label: "Orphan", voice: .warning).fixedSize() }
+    }
+
     private var typeTag: some View {
         LemonadeUi.Tag(label: checkout.isMain ? "folder" : "worktree", voice: .neutral)
+            .fixedSize()
     }
 
     @ViewBuilder private var claudeTag: some View {
         if checkout.hasClaudeSessions {
-            LemonadeUi.Tag(label: "Claude", voice: .positive)
+            LemonadeUi.Tag(label: "Claude", voice: .positive).fixedSize()
         } else if checkout.isClaudeManaged {
-            LemonadeUi.Tag(label: "No project", voice: .neutral)
+            LemonadeUi.Tag(label: "No project", voice: .neutral).fixedSize()
         }
     }
 

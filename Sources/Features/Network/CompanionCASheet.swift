@@ -49,10 +49,16 @@ struct CompanionCASheet: View {
                                 textStyle: LemonadeTypography.shared.bodySmallRegular,
                                 color: LemonadeTheme.colors.content.contentTertiary)
             }
-            steps
-            if !linked && linkSlow { localNetworkHint }
-            guidance
-            Spacer(minLength: 0)
+            // Scrolls when the Local Network hint makes the content taller than the fixed
+            // sheet, so the header and the footer stay pinned and nothing truncates.
+            ScrollView {
+                VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing400) {
+                    steps
+                    if !linked && linkSlow { localNetworkHint }
+                    guidance
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
             footer
         }
         .animation(.easeInOut(duration: 0.2), value: linked)
@@ -71,6 +77,7 @@ struct CompanionCASheet: View {
             LemonadeUi.Button(label: "Open Local Network Settings",
                               onClick: { Self.openLocalNetworkSettings() },
                               variant: .neutral, type: .subtle, size: .small)
+                .fixedSize()
         }
     }
 

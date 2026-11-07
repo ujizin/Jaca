@@ -24,13 +24,19 @@ struct GradleDaemonsView: View {
             .onDisappear { model.stopPolling() }
     }
 
+    /// The cache cards and the daemon rows scroll together, so a tall cache section can
+    /// never push the daemons off screen.
     @ViewBuilder private var content: some View {
-        VStack(spacing: 0) {
-            // The cache lives on disk regardless of running daemons, so it always shows
-            // (with a "Calculating…" state while `du` runs on first open).
-            if model.cacheLoading || !model.cacheEntries.isEmpty { cacheSection }
-            daemonsSection
+        ScrollView {
+            VStack(spacing: 0) {
+                // The cache lives on disk regardless of running daemons, so it always shows
+                // (with a "Calculating…" state while `du` runs on first open).
+                if model.cacheLoading || !model.cacheEntries.isEmpty { cacheSection }
+                daemonsSection
+            }
+            .maintenanceContentColumn()
         }
+        .frame(maxHeight: .infinity)
     }
 
     /// Size of `~/.gradle/caches` broken down per Gradle version, shown above the daemon list.
@@ -93,7 +99,7 @@ struct GradleDaemonsView: View {
                 readyState
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var emptyState: some View {
@@ -108,16 +114,13 @@ struct GradleDaemonsView: View {
     }
 
     private var readyState: some View {
-        ScrollView {
-            VStack(spacing: 1) {
-                ForEach(model.daemons) { daemon in
-                    GradleDaemonRow(daemon: daemon, model: model)
-                }
+        VStack(spacing: 1) {
+            ForEach(model.daemons) { daemon in
+                GradleDaemonRow(daemon: daemon, model: model)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
         }
-        .frame(maxHeight: .infinity)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
     }
 }
 
@@ -138,15 +141,31 @@ private struct GradleCacheCard: View {
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .monospacedDigit()
                 .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
-            LemonadeUi.Button(
-                label: confirming ? "Confirm?" : "Delete",
-                onClick: { handleTap() },
-                leadingIcon: .trash,
-                variant: .critical,
-                type: confirming ? .solid : .subtle,
-                size: .xSmall
-            )
-            .fixedSize()
+            // A hidden copy of the wider "Confirm?" state reserves its width, so the card
+            // keeps one size and the cards do not reflow on the first click.
+            ZStack(alignment: .leading) {
+                LemonadeUi.Button(
+                    label: "Confirm?",
+                    onClick: {},
+                    leadingIcon: .trash,
+                    variant: .critical,
+                    type: .solid,
+                    size: .xSmall
+                )
+                .fixedSize()
+                .hidden()
+                .accessibilityHidden(true)
+
+                LemonadeUi.Button(
+                    label: confirming ? "Confirm?" : "Delete",
+                    onClick: { handleTap() },
+                    leadingIcon: .trash,
+                    variant: .critical,
+                    type: confirming ? .solid : .subtle,
+                    size: .xSmall
+                )
+                .fixedSize()
+            }
         }
         .padding(10)
         .background(
@@ -180,33 +199,25 @@ struct GradleDaemonRow: View {
         HStack(spacing: 11) {
             avatar
 
-            VStack(alignment: .leading, spacing: 2) {
-                LemonadeUi.Text(
-                    "Gradle \(daemon.version)",
-                    textStyle: LemonadeTypography.shared.bodyMediumSemiBold,
-                    color: LemonadeTheme.colors.content.contentPrimary,
-                    maxLines: 1
-                )
-                LemonadeUi.Text(
-                    "PID \(daemon.pid)",
-                    textStyle: LemonadeTypography.shared.bodySmallRegular,
-                    color: LemonadeTheme.colors.content.contentSecondary,
-                    maxLines: 1
-                )
+            // The tags sit beside the title when they fit; else they go under the PID, so
+            // the title column keeps its width (also while the Kill button is wider).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 11) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        title
+                        pidLine
+                    }
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    tags
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    title
+                    pidLine
+                    tags
+                }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 6) {
-                LemonadeUi.Tag(label: daemon.isBusy ? "BUSY" : "IDLE",
-                               voice: daemon.isBusy ? .positive : .neutral)
-                if let jdk = daemon.jdk {
-                    LemonadeUi.Tag(label: "JDK \(jdk)", voice: .neutral)
-                }
-                if let heap = daemon.maxHeap {
-                    LemonadeUi.Tag(label: heap, voice: .neutral)
-                }
-                LemonadeUi.Tag(label: ramText, voice: .neutral)
-            }
 
             VStack(alignment: .trailing, spacing: 3) {
                 Text(daemon.uptime)
@@ -229,6 +240,7 @@ struct GradleDaemonRow: View {
             )
             .fixedSize()
         }
+        .animation(.easeInOut(duration: 0.15), value: confirmingKill)
         .padding(.vertical, 9)
         .padding(.horizontal, 10)
         .background(
@@ -238,6 +250,41 @@ struct GradleDaemonRow: View {
         .contentShape(Rectangle())
         .opacity(daemon.removing ? 0 : 1)
         .animation(.easeInOut(duration: 0.28), value: daemon.removing)
+    }
+
+    // MARK: - Title & tags
+
+    private var title: some View {
+        LemonadeUi.Text(
+            "Gradle \(daemon.version)",
+            textStyle: LemonadeTypography.shared.bodyMediumSemiBold,
+            color: LemonadeTheme.colors.content.contentPrimary,
+            maxLines: 1
+        )
+    }
+
+    private var pidLine: some View {
+        LemonadeUi.Text(
+            "PID \(daemon.pid)",
+            textStyle: LemonadeTypography.shared.bodySmallRegular,
+            color: LemonadeTheme.colors.content.contentSecondary,
+            maxLines: 1
+        )
+    }
+
+    private var tags: some View {
+        HStack(spacing: 6) {
+            LemonadeUi.Tag(label: daemon.isBusy ? "BUSY" : "IDLE",
+                           voice: daemon.isBusy ? .positive : .neutral)
+            if let jdk = daemon.jdk {
+                LemonadeUi.Tag(label: "JDK \(jdk)", voice: .neutral)
+            }
+            if let heap = daemon.maxHeap {
+                LemonadeUi.Tag(label: heap, voice: .neutral)
+            }
+            LemonadeUi.Tag(label: ramText, voice: .neutral)
+        }
+        .fixedSize()
     }
 
     // MARK: - Avatar

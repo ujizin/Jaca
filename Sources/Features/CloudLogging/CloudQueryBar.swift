@@ -306,6 +306,7 @@ private struct LabelKeyPicker: View {
             HStack(spacing: 3) {
                 Text(selectedKey.isEmpty ? "key…" : selectedKey)
                     .font(.system(size: 11, weight: .medium, design: .monospaced)).lineLimit(1)
+                    .truncationMode(.middle)
                     .foregroundStyle(selectedKey.isEmpty
                         ? LemonadeTheme.colors.content.contentTertiary
                         : LemonadeTheme.colors.content.contentPrimary)
@@ -314,7 +315,9 @@ private struct LabelKeyPicker: View {
             }
         }
         .buttonStyle(.plain)
-        .frame(minWidth: 90, alignment: .leading)
+        // Capped so a long key (GKE labels) can't take the value field's width.
+        .frame(minWidth: 90, maxWidth: 200, alignment: .leading)
+        .help(selectedKey)
         .popover(isPresented: $show, arrowEdge: .bottom) { popover }
     }
 
@@ -370,10 +373,12 @@ private struct LabelKeyPicker: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(LemonadeTheme.colors.content.contentPrimary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(key)
             if key == selectedKey {
                 Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
                     .foregroundStyle(LemonadeTheme.colors.content.contentBrand)

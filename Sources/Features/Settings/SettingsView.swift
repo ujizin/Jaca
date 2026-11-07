@@ -39,6 +39,7 @@ struct SettingsView: View {
                                 .font(.system(size: 12, design: .monospaced))
                             LemonadeUi.Button(label: "Browse…", onClick: browseADB,
                                               variant: .neutral, type: .subtle, size: .small)
+                                .fixedSize()   // size to the label so the path field gets the width
                         }
                         LemonadeUi.Text(
                             "Leave blank to auto-detect ($ANDROID_HOME, ~/Library/Android/sdk, PATH).",
@@ -186,10 +187,17 @@ struct SettingsView: View {
             }
         }
         .padding(LemonadeTheme.spaces.spacing600)
-        .frame(width: 560, height: 620)
+        .frame(width: 560, height: Self.sheetHeight)
         .background(LemonadeTheme.colors.background.bgDefault)
         .onAppear { exclusions = LogExclusionStore.shared.rules }
         .onChange(of: exclusions) { _, new in LogExclusionStore.shared.update(new) }
+    }
+
+    /// 620 pt, or less on a short screen so the pinned footer stays on screen. The sections
+    /// scroll, so they absorb the lost height. Same clamp as the override editor sheet.
+    private static var sheetHeight: CGFloat {
+        guard let visible = NSScreen.main?.visibleFrame.height else { return 620 }
+        return min(620, max(420, visible - 80))
     }
 
     private var currentADBPlaceholder: String {

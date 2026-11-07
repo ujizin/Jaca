@@ -22,6 +22,9 @@ struct CloudLogSessionView: View {
     @State private var searchText = ""
     /// Width of the right-side detail panel, dragged via the divider handle.
     @State private var detailWidth: CGFloat = 380
+    /// Height of the whole session view; caps the query builder so it can't push the toolbar
+    /// and the status bar out of view on a short window.
+    @State private var sessionHeight: CGFloat = 0
 
     private var registry: CloudLoggingRegistry { session.registry }
 
@@ -30,7 +33,15 @@ struct CloudLogSessionView: View {
             toolbar
             border
             if showFilters {
-                CloudQueryBar(session: session)
+                // Hugs short content and scrolls once it reaches the cap.
+                ScrollView(.vertical) {
+                    CloudQueryBar(session: session)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxHeight: queryBarMaxHeight)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(LemonadeTheme.colors.background.bgElevated)
                 border
             }
             if session.viewMode == .sql {
@@ -42,6 +53,9 @@ struct CloudLogSessionView: View {
             statusBar
         }
         .background(LemonadeTheme.colors.background.bgDefault)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            sessionHeight = height
+        }
         .accessibilityIdentifier("cloudLogSessionView")
         // The selected log name is GLOBAL (registry) — if another tab changes it, re-target.
         .onChange(of: session.selectedLogName) { _, _ in session.logNameChanged() }
@@ -60,6 +74,12 @@ struct CloudLogSessionView: View {
         }
     }
 
+    /// The query builder may take up to a third of the session's height, and never less than
+    /// 120 pt; before the first measurement it is uncapped.
+    private var queryBarMaxHeight: CGFloat {
+        sessionHeight > 0 ? max(120, sessionHeight / 3) : .infinity
+    }
+
     // MARK: - Toolbar
 
     private var toolbar: some View {
@@ -75,27 +95,59 @@ struct CloudLogSessionView: View {
                 if let status = session.statusMessage {
                     LemonadeUi.Text(status, textStyle: LemonadeTypography.shared.bodyXSmallRegular,
                                     color: LemonadeTheme.colors.content.contentCritical, maxLines: 1)
+                        .help(status)
                 }
                 shareButton
                 modeSwitch
             }
-            HStack(spacing: LemonadeTheme.spaces.spacing200) {
-                severityChips.disabled(session.rawFilter != nil)
-                LemonadeUi.Chip(label: session.rawFilter != nil ? "URL filter" : "Filters",
-                                selected: showFilters || !session.query.isEmpty || session.rawFilter != nil,
-                                onChipClicked: { showFilters.toggle() })
-                searchField
-                Spacer()
-                LemonadeUi.Button(label: "Copy format",
-                                  onClick: { NotificationCenter.default.post(name: .openLogCopyFormat, object: nil) },
-                                  leadingIcon: .settingsSlider, variant: .neutral, type: .subtle, size: .xSmall)
-                    .fixedSize()
-                LemonadeUi.IconButton(icon: .download, contentDescription: "Export") { exportLog() }
+            // One line when it fits; otherwise chips on one line and search + actions below, so a
+            // narrow pane never overflows and clips the leading chips or the trailing Export.
+            // `searchText` lives on this view, so the typed text survives a switch.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: LemonadeTheme.spaces.spacing200) {
+                    severityChips.disabled(session.rawFilter != nil)
+                    filtersChip
+                    searchField
+                    Spacer(minLength: 0)
+                    copyFormatButton
+                    exportButton
+                }
+                VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing200) {
+                    HStack(spacing: LemonadeTheme.spaces.spacing200) {
+                        severityChips.disabled(session.rawFilter != nil)
+                        filtersChip
+                        Spacer(minLength: 0)
+                    }
+                    HStack(spacing: LemonadeTheme.spaces.spacing200) {
+                        searchField
+                        Spacer(minLength: 0)
+                        copyFormatButton
+                        exportButton
+                    }
+                }
             }
         }
         .padding(.horizontal, LemonadeTheme.spaces.spacing300)
         .padding(.vertical, LemonadeTheme.spaces.spacing200)
         .background(LemonadeTheme.colors.background.bgElevated)
+    }
+
+    private var filtersChip: some View {
+        LemonadeUi.Chip(label: session.rawFilter != nil ? "URL filter" : "Filters",
+                        selected: showFilters || !session.query.isEmpty || session.rawFilter != nil,
+                        onChipClicked: { showFilters.toggle() })
+            .fixedSize()
+    }
+
+    private var copyFormatButton: some View {
+        LemonadeUi.Button(label: "Copy format",
+                          onClick: { NotificationCenter.default.post(name: .openLogCopyFormat, object: nil) },
+                          leadingIcon: .settingsSlider, variant: .neutral, type: .subtle, size: .xSmall)
+            .fixedSize()
+    }
+
+    private var exportButton: some View {
+        LemonadeUi.IconButton(icon: .download, contentDescription: "Export") { exportLog() }
     }
 
     private var startStopButton: some View {
@@ -146,6 +198,7 @@ struct CloudLogSessionView: View {
                 Image(systemName: "list.bullet.rectangle").font(.system(size: 11, weight: .semibold))
                 Text(session.selectedLogName.map(CloudLogName.shortId) ?? "Choose log name")
                     .font(.system(size: 11, weight: .medium)).lineLimit(1)
+                    .truncationMode(.middle)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
             }
             .foregroundStyle(session.selectedLogName == nil
@@ -240,7 +293,10 @@ struct CloudLogSessionView: View {
                 session.searchText = ""   // clear the actual filter
             }
         )
-        .frame(maxWidth: 320)
+        // The minimum keeps the placeholder on one line; the priority lets the field grow
+        // toward its cap before the Spacer takes the leftover width.
+        .frame(minWidth: 180, idealWidth: 180, maxWidth: 320)
+        .layoutPriority(1)
     }
 
     // MARK: - Body
@@ -259,12 +315,18 @@ struct CloudLogSessionView: View {
                     olderLoadingBanner
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // minHeight 0 + clipped: the empty hint must not set a height floor that pushes the
+            // toolbar out of view; minWidth keeps some of the table beside a wide panel.
+            .frame(minWidth: 240, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .clipped()
 
             if let entry = session.selectedEntry {
                 DetailResizeHandle(width: $detailWidth, minWidth: 280, maxWidth: 900)
+                // Takes the stored width when it fits, and shrinks to no less than 280 when the
+                // pane is narrower, so the table stays visible.
                 CloudLogDetailPanel(session: session, entry: entry, onNewSession: openFork)
-                    .frame(width: detailWidth)
+                    .frame(minWidth: 280, maxWidth: detailWidth)
+                    .layoutPriority(1)
                     .transition(.move(edge: .trailing))
             }
         }

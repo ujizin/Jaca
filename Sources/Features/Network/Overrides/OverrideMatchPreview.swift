@@ -64,9 +64,12 @@ struct OverrideMatchPreview: View {
                             .foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
                             .lineLimit(1).truncationMode(.middle)
                     }
+                    // The whole row is the hit area, not only the text.
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(txn.url)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

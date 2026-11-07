@@ -33,6 +33,7 @@ struct XcodeSidebarHeader: View {
             RoundedRectangle(cornerRadius: LemonadeTheme.radius.radius150)
                 .fill(active ? LemonadeTheme.colors.interaction.bgSubtleInteractive : .clear)
         )
+        .animation(.easeInOut(duration: 0.15), value: active)
         .contentShape(Rectangle())
         .onTapGesture { model.mode = .xcode }
         .padding(.horizontal, LemonadeTheme.spaces.spacing300)

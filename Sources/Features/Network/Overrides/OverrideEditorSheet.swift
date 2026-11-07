@@ -46,9 +46,12 @@ struct OverrideEditorSheet: View {
     let onSave: (OverrideRule) -> Void
 
     private let isNew: Bool
-    /// Sized once, from the screen the sheet opens on. A `@State` set later would resize the dialog
-    /// after it appeared.
-    private let sheetSize: CGSize
+    /// Sized once, from the window the sheet hangs from and its screen. Only the initial value is
+    /// used: `init` runs again on every parent update, and a size that changed then would resize the
+    /// dialog after it appeared.
+    @State private var sheetSize: CGSize
+    /// The headers tab's height, measured, so the table hugs its rows only while they fit.
+    @State private var headersPaneHeight: CGFloat = 0
     /// What "Don't send" opened with, so switching to "Send and override" can tell values the user
     /// chose from ones they never touched. See `dropUntouchedResponseDefaults`.
     private let openedAsRespond: Bool
@@ -64,9 +67,10 @@ struct OverrideEditorSheet: View {
         self.seedWarning = seedWarning
         self.isNew = isNew
         self.onSave = onSave
-        let screen = NSScreen.main?.visibleFrame
-        self.sheetSize = CGSize(width: OverrideEditorLayout.sheetWidth(visibleWidth: screen?.width),
-                                height: OverrideEditorLayout.sheetHeight(visibleHeight: screen?.height))
+        let room = Self.roomForSheet()
+        _sheetSize = State(initialValue: CGSize(
+            width: OverrideEditorLayout.sheetWidth(visibleWidth: room.width),
+            height: OverrideEditorLayout.sheetHeight(visibleHeight: room.height)))
         _hostsDerived = State(initialValue: RoutedHostsSync.initial(
             hosts: rule.routedHosts,
             derived: OverrideCompiler.derivedRoutedHosts(for: rule.matcher)).isDerived)
@@ -142,6 +146,20 @@ struct OverrideEditorSheet: View {
         .padding(LemonadeTheme.spaces.spacing600)
         .frame(width: sheetSize.width, height: sheetSize.height)
         .background(LemonadeTheme.colors.background.bgDefault)
+    }
+
+    /// The room the sheet has below the window it hangs from. While the sheet is key, the key
+    /// window is the sheet, so its parent is the host.
+    private static func roomForSheet() -> (width: CGFloat?, height: CGFloat?) {
+        guard let host = NSApp.keyWindow.map({ $0.sheetParent ?? $0 }) ?? NSApp.mainWindow,
+              let visible = (host.screen ?? NSScreen.main)?.visibleFrame else {
+            let screen = NSScreen.main?.visibleFrame
+            return (screen?.width, screen?.height)
+        }
+        return OverrideEditorLayout.roomBelowWindow(
+            contentTop: host.frame.minY + host.contentLayoutRect.maxY,
+            windowMidX: host.frame.midX,
+            visible: visible)
     }
 
     /// A second route for the find shortcuts. `FindableTextView.performKeyEquivalent` handles them
@@ -426,46 +444,86 @@ struct OverrideEditorSheet: View {
     /// the tab row.
     private var responsePane: some View {
         VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing300) {
-            HStack(spacing: LemonadeTheme.spaces.spacing200) {
-                LemonadeUi.Tabs(tabs: [LemonadeTabItem(label: "Body"), LemonadeTabItem(label: headersLabel)],
-                                selectedIndex: responseTab.rawValue,
-                                onTabSelected: { select(ResponseTab(rawValue: $0) ?? .body) },
-                                showDivider: false)
-                    .fixedSize()
-                Spacer(minLength: LemonadeTheme.spaces.spacing300)
-                switch responseTab {
-                case .body: bodyTools
-                case .headers: headerTools
+            // The tools drop under the tabs when the pane is too narrow for one row, rather than
+            // running past the sheet's edge.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: LemonadeTheme.spaces.spacing200) {
+                    responseTabs
+                    Spacer(minLength: LemonadeTheme.spaces.spacing300)
+                    responseTools
+                }
+                VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing200) {
+                    responseTabs
+                    responseTools
                 }
             }
 
-            switch responseTab {
-            case .body:
-                VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing200) {
-                    if find.isVisible {
-                        CodeEditorFindBar(find: find)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
+            responseContent
+                // minHeight 0: the frame takes the offered height, never the content's. Without it a
+                // hugging table that grew past the pane inflated the measurement below, so
+                // `headersFit` stayed true and the table pushed Save out of the sheet.
+                .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+                // Measured on either tab, so the headers table knows its room on first show.
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { headersPaneHeight = proxy.size.height }
+                            .onChange(of: proxy.size.height) { _, height in headersPaneHeight = height }
                     }
-                    bodyEditor
-                    // A status line under the editor, flush with its edge. In the tab row it shared
-                    // a line with the tabs and tools, sat off their centre line and got truncated.
-                    LemonadeUi.Text(bodyStatusText,
-                                    textStyle: LemonadeTypography.shared.bodyXSmallRegular,
-                                    color: bodyIsValidJSON ? LemonadeTheme.colors.content.contentTertiary
-                                                           : LemonadeTheme.colors.content.contentCaution,
-                                    maxLines: 1)
                 }
-                .animation(.easeInOut(duration: 0.2), value: find.isVisible)
-                .transition(.opacity)
-            case .headers:
-                headersTable.transition(.opacity)
-            }
         }
         .animation(.easeInOut(duration: 0.15), value: responseTab)
     }
 
-    /// Few enough headers that the table shows them all without scrolling.
-    private var headersFit: Bool { headers.count <= 12 }
+    @ViewBuilder
+    private var responseContent: some View {
+        switch responseTab {
+        case .body:
+            VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing200) {
+                if find.isVisible {
+                    CodeEditorFindBar(find: find)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+                bodyEditor
+                // A status line under the editor, flush with its edge. In the tab row it shared
+                // a line with the tabs and tools, sat off their centre line and got truncated.
+                LemonadeUi.Text(bodyStatusText,
+                                textStyle: LemonadeTypography.shared.bodyXSmallRegular,
+                                color: bodyIsValidJSON ? LemonadeTheme.colors.content.contentTertiary
+                                                       : LemonadeTheme.colors.content.contentCaution,
+                                maxLines: 1)
+            }
+            .animation(.easeInOut(duration: 0.2), value: find.isVisible)
+            .transition(.opacity)
+        case .headers:
+            headersTable.transition(.opacity)
+        }
+    }
+
+    private var responseTabs: some View {
+        LemonadeUi.Tabs(tabs: [LemonadeTabItem(label: "Body"), LemonadeTabItem(label: headersLabel)],
+                        selectedIndex: responseTab.rawValue,
+                        onTabSelected: { select(ResponseTab(rawValue: $0) ?? .body) },
+                        showDivider: false)
+            .fixedSize()
+    }
+
+    @ViewBuilder
+    private var responseTools: some View {
+        switch responseTab {
+        case .body: bodyTools
+        case .headers: headerTools
+        }
+    }
+
+    /// Few enough headers that the table shows them all without scrolling, in the height the tab
+    /// has: 30pt rows with 1pt dividers, plus the hint line and its gap. A fixed count made the
+    /// table taller than a short sheet, which pushed the title and Save out of it.
+    private var headersFit: Bool {
+        let rows = CGFloat(headers.count) * 31 - 1
+        let hint: CGFloat = 24
+        return headersPaneHeight > 0 && rows + hint <= headersPaneHeight
+    }
 
     private func select(_ tab: ResponseTab) {
         guard tab != responseTab else { return }

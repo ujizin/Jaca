@@ -89,13 +89,16 @@ struct CheckoutActionsSheet: View {
                         color: LemonadeTheme.colors.content.contentPrimary,
                         maxLines: 1
                     )
+                    .help(checkout.name)
                     LemonadeUi.Tag(label: checkout.isMain ? "folder" : "worktree", voice: .neutral)
+                        .fixedSize()
                 }
                 Text(checkout.displayPath)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(LemonadeTheme.colors.content.contentSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(checkout.displayPath)
             }
             Spacer(minLength: 0)
         }

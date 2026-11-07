@@ -36,6 +36,10 @@ struct OverridesToolbarButton: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(LemonadeTheme.colors.content.contentTertiary)
                 }
+                .lineLimit(1)
+                // Never squeezed: the toolbar's search field gives way instead, so "Overrides" and
+                // its badge don't wrap out of the 30pt chrome.
+                .fixedSize()
                 .padding(.horizontal, 10)
                 .frame(height: 30)
                 .background(RoundedRectangle(cornerRadius: LemonadeTheme.radius.radius150)

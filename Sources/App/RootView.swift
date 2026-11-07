@@ -12,9 +12,10 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+                .navigationSplitViewColumnWidth(min: 280, ideal: 280, max: 360)
         } detail: {
             detail
+                .animation(.easeInOut(duration: 0.15), value: model.mode)
         }
         .sheet(isPresented: $showCopyFormat) { LogCopyFormatSheet() }
         .onReceive(NotificationCenter.default.publisher(for: .openLogCopyFormat)) { _ in
@@ -61,14 +62,19 @@ struct RootView: View {
     private var detail: some View {
         if model.mode == .projects {
             ProjectsAreaView(model: model.projects)
+                .transition(.opacity)
         } else if model.mode == .gradle {
             GradleDaemonsView(model: model.gradle)
+                .transition(.opacity)
         } else if model.mode == .xcode {
             XcodeAreaView(model: model.xcode)
+                .transition(.opacity)
         } else if model.mode == .cloudLogging {
             CloudLoggingHomeView(model: model)
+                .transition(.opacity)
         } else {
             devicesDetail
+                .transition(.opacity)
         }
     }
 
