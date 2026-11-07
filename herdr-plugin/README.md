@@ -7,6 +7,8 @@ show the same data. For the daemon, see [docs/daemon-plan.md](../docs/daemon-pla
 
 Status: experimental. The plugin uses only the Go standard library.
 
+<p align="center"><img src="docs/images/network-pane.png" alt="The Jaca network pane in Herdr: the requests of an Android app, with a POST request selected and its JSON response open beside the list" width="100%"></p>
+
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Panes and actions](#panes-and-actions)
