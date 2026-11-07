@@ -67,12 +67,6 @@ final class DaemonEventBus: @unchecked Sendable {
         lock.lock(); retained[topic] = nil; lock.unlock()
     }
 
-    /// The last retained event line for `topic`, if any.
-    func retainedLine(_ topic: String) -> Data? {
-        lock.lock(); defer { lock.unlock() }
-        return retained[topic]
-    }
-
     /// Runs `start` when a topic with this prefix gains its first subscriber and `stop` when it
     /// loses its last. Both are called outside the bus lock.
     func onDemand(prefix: String, start: @escaping DemandHook, stop: @escaping DemandHook) {

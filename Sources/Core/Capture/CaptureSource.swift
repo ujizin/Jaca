@@ -22,15 +22,13 @@ struct CaptureContext {
 }
 
 /// Callbacks a running source uses to report back to its session. Source-specific
-/// concerns (bound port, "device may not trust the CA yet") are events here, so the
+/// concerns (bound port, agent attach state) are events here, so the
 /// session never switches on a capture mode.
 @MainActor
 protocol CaptureSink: AnyObject {
     func capture(didReceive transaction: NetworkTransaction)
     func capture(didChangeStatus status: String?)
     func capture(didBindPort port: Int)
-    /// Proxy: started, but no decrypted HTTPS seen yet — guide the user to install/trust the CA.
-    func captureNeedsSetup()
 
     /// The source's in-process agent is no longer in the app (or the app is gone). Separate from
     /// `arming` because losing the agent stops **capture**, not just overrides, so it must reach

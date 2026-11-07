@@ -13,7 +13,6 @@ struct CompanionFlow: Identifiable, Hashable, Sendable {
     let host: String
     let port: Int
     let proto: String
-    var deviceName: String = ""
 }
 
 /// A Jaca mobile device discovered on the LAN via mDNS (`_jaca._tcp`).

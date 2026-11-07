@@ -94,10 +94,10 @@ final class OriginalURLTests: XCTestCase {
     func test_agentPrefersTheOriginalURLHeader() {
         let headers = [
             HeaderPair(name: "Host", value: "localhost:41234"),
-            HeaderPair(name: JacaHeaders.originalURL, value: "https://api.teya.xyz/v1/state"),
+            HeaderPair(name: JacaHeaders.originalURL, value: "https://api.example.com/v1/state"),
         ]
         XCTAssertEqual(AgentOriginalURL.recover(headers: headers, uri: "/v1/state"),
-                       "https://api.teya.xyz/v1/state")
+                       "https://api.example.com/v1/state")
     }
 
     func test_agentFallsBackToHostPlusOriginFormURI() {

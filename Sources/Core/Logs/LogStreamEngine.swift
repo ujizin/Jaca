@@ -144,7 +144,6 @@ final class LogStreamEngine: LogFeed {
     private var sawAppAlive = false
     private var accumulatedPids: Set<Int32> = []
 
-    private let maxPerFlush = 4_000           // bound main-thread work per tick
     private var consumeTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
     private var pidTask: Task<Void, Never>?

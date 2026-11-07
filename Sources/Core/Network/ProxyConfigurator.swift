@@ -1,7 +1,7 @@
 import Foundation
 
-/// Helpers to point a device at our proxy and to discover the host address the
-/// device should use to reach it.
+/// Helpers to clear a device proxy that Jaca left behind and to discover the host
+/// address a device uses to reach this Mac.
 enum ProxyConfigurator {
     /// Host the device uses to reach this Mac: emulators use the magic 10.0.2.2;
     /// physical devices use the Mac's LAN IP.
@@ -10,12 +10,6 @@ enum ProxyConfigurator {
             return "10.0.2.2"
         }
         return NetworkInterfaces.primaryIPv4() ?? "127.0.0.1"
-    }
-
-    static func setAndroidProxy(adbURL: URL, serial: String, host: String, port: Int) async {
-        _ = try? await CommandRunner.run(
-            adbURL, ["-s", serial, "shell", "settings", "put", "global", "http_proxy", "\(host):\(port)"]
-        )
     }
 
     /// Every settings key that has to be cleared to truly remove a device proxy. `http_proxy`
@@ -76,14 +70,6 @@ enum ProxyConfigurator {
     /// Host portion of a `host:port` proxy string (port is ephemeral per run).
     static func proxyHost(_ proxy: String) -> String {
         String(proxy.split(separator: ":").first ?? Substring(proxy))
-    }
-
-    /// Pushes the root CA to the device's shared storage for easy manual install.
-    static func pushCACertToAndroid(adbURL: URL, serial: String, caPEM: URL) async -> Bool {
-        let result = try? await CommandRunner.run(
-            adbURL, ["-s", serial, "push", caPEM.path, "/sdcard/Download/JacaProxyCA.pem"]
-        )
-        return result?.exitCode == 0
     }
 }
 

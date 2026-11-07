@@ -171,9 +171,9 @@ final class OverrideMatchingTests: XCTestCase {
 
     func test_literalHostIsDerivedFromPattern() {
         XCTAssertEqual(OverrideCompiler.derivedRoutedHosts(
-            for: OverrideMatcher(pattern: "https://api.teya.xyz/lending/**")), ["api.teya.xyz"])
+            for: OverrideMatcher(pattern: "https://api.example.com/lending/**")), ["api.example.com"])
         XCTAssertEqual(OverrideCompiler.derivedRoutedHosts(
-            for: OverrideMatcher(pattern: "api.teya.xyz/lending/**")), ["api.teya.xyz"])
+            for: OverrideMatcher(pattern: "api.example.com/lending/**")), ["api.example.com"])
     }
 
     /// A wildcarded host must yield **empty**, never "all hosts" — that emptiness is what makes
@@ -182,7 +182,7 @@ final class OverrideMatchingTests: XCTestCase {
         XCTAssertTrue(OverrideCompiler.derivedRoutedHosts(
             for: OverrideMatcher(pattern: "**/product-state")).isEmpty)
         XCTAssertTrue(OverrideCompiler.derivedRoutedHosts(
-            for: OverrideMatcher(pattern: "*.teya.xyz/v1/**")).isEmpty)
+            for: OverrideMatcher(pattern: "*.example.com/v1/**")).isEmpty)
         XCTAssertTrue(OverrideCompiler.derivedRoutedHosts(
             for: OverrideMatcher(pattern: ".*", kind: .regex)).isEmpty)
     }
@@ -224,7 +224,7 @@ final class OverrideMatchingTests: XCTestCase {
     /// Why the base URL is dropped: a rule made from the device's capture must also answer the
     /// portal, whose dev server proxies the same endpoint under `localhost` and a path prefix.
     func test_generalizedPatternMatchesTheSameEndpointOnAnyBaseURL() {
-        let device = "https://private-api.teya.xyz/lending/v1/companies/7c1f3c2e-2b1a-4c2d-9e1f-0a1b2c3d4e5f/deals"
+        let device = "https://private-api.example.com/lending/v1/companies/7c1f3c2e-2b1a-4c2d-9e1f-0a1b2c3d4e5f/deals"
         let pattern = OverrideMatching.generalize(device)
         XCTAssertEqual(pattern, "**/lending/v1/companies/*/deals")
 
@@ -233,7 +233,7 @@ final class OverrideMatchingTests: XCTestCase {
         let portal = "http://localhost:3000/private-api/lending/v1/companies/0f0e0d0c-0b0a-4908-8706-050403020100/deals?page=1"
         XCTAssertTrue(OverrideMatching.matches(compiled, OverrideMatching.facts(url: device)!, method: "GET"))
         XCTAssertTrue(OverrideMatching.matches(compiled, OverrideMatching.facts(url: portal)!, method: "GET"))
-        XCTAssertFalse(OverrideMatching.matches(compiled, OverrideMatching.facts(url: "https://private-api.teya.xyz/lending/v1/deals")!,
+        XCTAssertFalse(OverrideMatching.matches(compiled, OverrideMatching.facts(url: "https://private-api.example.com/lending/v1/deals")!,
                                                 method: "GET"), "still anchored on the path")
     }
 }

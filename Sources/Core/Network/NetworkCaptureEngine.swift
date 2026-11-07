@@ -259,7 +259,4 @@ final class NetworkCaptureEngine: NetworkFeed, CaptureSink {
 
     func capture(didChangeStatus status: String?) { state.statusMessage = status }
     func capture(didBindPort port: Int) { state.boundPort = port }
-    func captureNeedsSetup() {
-        if !state.caReady { state.proxyNeedsSetup = true }
-    }
 }
