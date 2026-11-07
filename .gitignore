@@ -11,3 +11,7 @@ xcuserdata/
 # SwiftPM
 .swiftpm/
 .build/
+
+# Local Claude Code state
+.claude/worktrees/
+.claude/settings.local.json
