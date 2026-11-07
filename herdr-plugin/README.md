@@ -25,7 +25,7 @@ Status: experimental. The plugin uses only the Go standard library.
 |---|---|
 | macOS | The plugin declares `platforms = ["macos"]`. |
 | Herdr | 0.9.0 or newer, with its server running (`herdr status`). |
-| Go | 1.22 or newer (`brew install go`). |
+| Go | 1.24 or newer (`brew install go`). |
 | Jaca | A `Jaca.app` that ships `jacad` (`Jaca.app/Contents/MacOS/jacad`). Builds from `main` ship it. |
 
 ## Quick start
