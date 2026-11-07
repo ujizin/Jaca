@@ -1217,31 +1217,72 @@ func (v *logViewer) helpKeys() [][2]string {
 // helpBox is the viewer's keys popup.
 func (v *logViewer) helpBox(rows, cols int) []string { return keysBox(v.helpKeys(), rows, cols) }
 
-// keysBox is a keys popup: a bordered box sized to its text, cut down to fit a small pane.
+// keysBox is a keys popup: a bordered box sized to its text, fitted to a small pane. A box too
+// tall first loses its blank rows, then puts the keys in two columns where the pane is wide
+// enough; only then are the rows that still don't fit cut.
 func keysBox(keys [][2]string, rows, cols int) []string {
 	keyW, textW := 0, 0
 	for _, k := range keys {
 		keyW, textW = max(keyW, cellWidth(k[0])), max(textW, cellWidth(k[1]))
 	}
-	// Two cells of padding inside each border, three between the columns.
-	if over := keyW + 3 + textW + 6 - cols; over > 0 {
+	// Two cells of padding inside each border, three between a key and its text, and four
+	// between two columns of keys.
+	pairW := keyW + 3 + textW
+	twoColumns := 2*pairW+4+6 <= cols
+	if over := pairW + 6 - cols; over > 0 {
 		textW -= over
 	}
 	if textW < 1 || rows < 3 {
 		return nil
 	}
-	w := keyW + 3 + textW + 6
-	rule := strings.Repeat("─", w-2)
-	blank := "│" + strings.Repeat(" ", w-2) + "│"
-	// Under a blank row, the close button at the right, like Herdr's overlays.
-	box := []string{titledBorder("Help", w), blank, blank, blank}
-	if room := w - 2 - len(escClose) - 2; room >= 0 {
-		box[2] = "│" + strings.Repeat(" ", room) + closeButton(escClose) + "  │"
+	pair := func(k [2]string) string { return sgrBold + fit(k[0], keyW) + sgrReset + "   " + fit(k[1], textW) }
+	build := func(columns int, spacers bool) []string {
+		w := keyW + 3 + textW + 6
+		if columns == 2 {
+			w = 2*(keyW+3+textW) + 4 + 6
+		}
+		rule := strings.Repeat("─", w-2)
+		blank := "│" + strings.Repeat(" ", w-2) + "│"
+		// Under a blank row, the close button at the right, like Herdr's overlays.
+		closeRow := blank
+		if room := w - 2 - len(escClose) - 2; room >= 0 {
+			closeRow = "│" + strings.Repeat(" ", room) + closeButton(escClose) + "  │"
+		}
+		box := []string{titledBorder("Help", w)}
+		if spacers {
+			box = append(box, blank, closeRow, blank)
+		} else {
+			box = append(box, closeRow)
+		}
+		if columns == 2 {
+			// The keys run down the left column, then down the right one.
+			half := (len(keys) + 1) / 2
+			for i := range half {
+				right := strings.Repeat(" ", keyW+3+textW)
+				if i+half < len(keys) {
+					right = pair(keys[i+half])
+				}
+				box = append(box, "│  "+pair(keys[i])+"    "+right+"  │")
+			}
+		} else {
+			for _, k := range keys {
+				box = append(box, "│  "+pair(k)+"  │")
+			}
+		}
+		if spacers {
+			box = append(box, blank)
+		}
+		return append(box, "╰"+rule+"╯")
 	}
-	for _, k := range keys {
-		box = append(box, "│  "+sgrBold+fit(k[0], keyW)+sgrReset+"   "+fit(k[1], textW)+"  │")
+	box := build(1, true)
+	if len(box) > rows {
+		box = build(1, false)
 	}
-	box = append(box, blank, "╰"+rule+"╯")
+	if len(box) > rows && twoColumns {
+		if box = build(2, true); len(box) > rows {
+			box = build(2, false)
+		}
+	}
 	if len(box) > rows { // keep the borders, drop the rows that don't fit
 		box = append(box[:rows-1], box[len(box)-1])
 	}
@@ -1274,9 +1315,24 @@ func toolbarRows(rows int) int {
 
 // toolbar is the app's filter row: level chips, regex, system logs, the filter text and the
 // package id. Three rows tall, a selected chip is a block of its color and the fields are boxes;
-// one row tall, chips are a single cell high and the fields are underlined. Chips that don't fit
-// are left out; the fields share the width that remains.
+// one row tall, chips are a single cell high and the fields are underlined. Where the two fields
+// don't fit, the chips lose their padding first; chips that still don't fit are left out, and
+// the fields share the width that remains.
 func (v *logViewer) toolbar(cols, height int) []string {
+	pad := 2
+	if height >= 3 {
+		pad = 3
+	}
+	rows, complete := v.toolbarWith(cols, height, pad)
+	if !complete {
+		rows, _ = v.toolbarWith(cols, height, 1)
+	}
+	return rows
+}
+
+// toolbarWith builds the toolbar with pad cells each side of a chip's label, and reports whether
+// it holds both text fields.
+func (v *logViewer) toolbarWith(cols, height, pad int) (rows []string, complete bool) {
 	tall := height >= 3
 	var top, mid, bottom strings.Builder
 	used := 0
@@ -1290,10 +1346,6 @@ func (v *logViewer) toolbar(cols, height int) []string {
 		v.hits = append(v.hits, hit{x0: used - w + 1, x1: used, act: act})
 	}
 	chip := func(label, selected string, on bool, act func()) {
-		pad := 2
-		if tall {
-			pad = 3
-		}
 		w := cellWidth(label) + 2*pad
 		if used+min(used, 1)+w > cols {
 			return
@@ -1336,10 +1388,6 @@ func (v *logViewer) toolbar(cols, height int) []string {
 	}
 	// The app's Export action, where it still leaves the two fields a useful width.
 	action := func(label string, on bool, act func()) {
-		pad := 2
-		if tall {
-			pad = 3
-		}
 		if cols-used-1-cellWidth(label)-2*pad >= 2*fieldRoom {
 			chip(label, sgrBold+sgrRev, on, act)
 		}
@@ -1356,12 +1404,13 @@ func (v *logViewer) toolbar(cols, height int) []string {
 		field(&v.search, placeholder, focusSearch, searchW, nil)
 		if pkgW := cols - used - 1; pkgW >= minField {
 			field(&v.pkg, "Package id…", focusPackage, pkgW, v.openApps)
+			complete = true
 		}
 	}
 	if !tall {
-		return []string{mid.String()}
+		return []string{mid.String()}, complete
 	}
-	return []string{top.String(), mid.String(), bottom.String()}
+	return []string{top.String(), mid.String(), bottom.String()}, complete
 }
 
 // statusBar is the app's: a dot for the stream, the counts, and the device on the right.

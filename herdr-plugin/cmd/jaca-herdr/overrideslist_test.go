@@ -563,3 +563,48 @@ func TestOverrideNewGroup(t *testing.T) {
 		t.Errorf("Esc sent %v", calls()[2:])
 	}
 }
+
+// A narrow group popup, and a narrow list with groups, wrap their footer buttons rather than
+// push out the border, and every button stays clickable where it is drawn.
+func TestOverrideFootersWrap(t *testing.T) {
+	v := groupedViewer(t)
+	check := func(name string, rows, cols int) {
+		box, _, _ := v.overridesBox(rows, cols)
+		if len(box) == 0 {
+			t.Fatalf("%s: no popup at %dx%d", name, rows, cols)
+		}
+		for i, row := range box {
+			if w := plainWidth(row); w != plainWidth(box[0]) || w > cols {
+				t.Errorf("%s at %dx%d: row %d is %d cells, the border %d", name, rows, cols, i, w, plainWidth(box[0]))
+			}
+		}
+		for _, label := range []string{"New override", "Show log"} {
+			found := false
+			for _, h := range v.ovui.hits {
+				if h.row < len(box) && strings.Contains(string([]rune(stripSGR(box[h.row]))[h.x0:h.x1+1]), label) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s at %dx%d: no click target on %q", name, rows, cols, label)
+			}
+		}
+	}
+	for _, cols := range []int{40, 41} {
+		check("the list", 30, cols)
+	}
+	v.openGroup(groupA)
+	for _, cols := range []int{60, 50, 40} {
+		check("the group", 30, cols)
+	}
+}
+
+// A group name too long for the popup's title is clipped, so the popup keeps a title.
+func TestGroupPopupClipsALongName(t *testing.T) {
+	v := groupedViewer(t)
+	g := overrideGroup{ID: groupA, Name: strings.Repeat("n", 100), Enabled: true}
+	b := v.groupBox(g, 80, 30)
+	if title := stripSGR(b.rows[0]); !strings.Contains(title, "…") || plainWidth(b.rows[0]) != 80 {
+		t.Errorf("the title row of a group with a long name is %q", title)
+	}
+}

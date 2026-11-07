@@ -14,7 +14,7 @@ import (
 // daemon sends and the feed's state machine.
 
 const (
-	wireCloudState = `{"authState":{"account":"lucas@saltpay.co","state":"authenticated"},"binaryPath":"/opt/homebrew/bin/gcloud","isDetecting":false,"projects":[{"displayName":"Prod","favoriteLabelKeysByLogName":{"projects/acme-prod/logs/stdout":["user_id"]},"labelExampleRulesByLogName":{"projects/acme-prod/logs/stdout":{"tag":{"all":true,"count":1}}},"labelKeysByLogName":{"":["tag"],"projects/acme-prod/logs/stdout":["tag","user_id"]},"logNames":["projects/acme-prod/logs/run.googleapis.com%2Frequests","projects/acme-prod/logs/stdout"],"projectID":"acme-prod","selectedLogName":"projects/acme-prod/logs/stdout"}],"queryTemplates":[{"id":"9B2F6C1E-3D4A-4F7B-8A21-0C5D6E7F8A9B","name":"auth errors","query":{"labelCombineOr":false,"labelConditions":[{"id":"1F0E8D7C-6B5A-4938-8271-605F4E3D2C1B","key":"tag","mode":"exact","scope":"entry","value":"auth"}],"minSeverity":500,"severitySet":[],"textCombineOr":true,"textConditions":[{"id":"7C1D2E3F-4A5B-4C6D-8E7F-9A0B1C2D3E4F","mode":"contains","value":"timeout"}]}}],"sqlTemplates":[{"id":"0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D","name":"errors","sql":"SELECT insert_id, seq, text_payload FROM log_entry WHERE severity >= 500 ORDER BY seq DESC LIMIT 500;"}]}`
+	wireCloudState = `{"authState":{"account":"dev@example.com","state":"authenticated"},"binaryPath":"/opt/homebrew/bin/gcloud","isDetecting":false,"projects":[{"displayName":"Prod","favoriteLabelKeysByLogName":{"projects/acme-prod/logs/stdout":["user_id"]},"labelExampleRulesByLogName":{"projects/acme-prod/logs/stdout":{"tag":{"all":true,"count":1}}},"labelKeysByLogName":{"":["tag"],"projects/acme-prod/logs/stdout":["tag","user_id"]},"logNames":["projects/acme-prod/logs/run.googleapis.com%2Frequests","projects/acme-prod/logs/stdout"],"projectID":"acme-prod","selectedLogName":"projects/acme-prod/logs/stdout"}],"queryTemplates":[{"id":"9B2F6C1E-3D4A-4F7B-8A21-0C5D6E7F8A9B","name":"auth errors","query":{"labelCombineOr":false,"labelConditions":[{"id":"1F0E8D7C-6B5A-4938-8271-605F4E3D2C1B","key":"tag","mode":"exact","scope":"entry","value":"auth"}],"minSeverity":500,"severitySet":[],"textCombineOr":true,"textConditions":[{"id":"7C1D2E3F-4A5B-4C6D-8E7F-9A0B1C2D3E4F","mode":"contains","value":"timeout"}]}}],"sqlTemplates":[{"id":"0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D","name":"errors","sql":"SELECT insert_id, seq, text_payload FROM log_entry WHERE severity >= 500 ORDER BY seq DESC LIMIT 500;"}]}`
 
 	wireCloudEntry = `{"httpRequestSummary":"GET https://api.acme.com/v1/users → 200 · 0.012s","insertId":"6703f1a2000b1c2d","labels":{"tag":"auth","user_id":"42"},"logId":"stdout","logName":"projects/acme-prod/logs/stdout","message":"login ok user=42","payloadKind":"text","raw":"{\n  \"insertId\" : \"6703f1a2000b1c2d\"\n}","receiveTimestamp":1791374400.512,"resourceLabels":{"service_name":"api"},"resourceType":"cloud_run_revision","seq":1099511627776,"severity":200,"spanId":"00f067aa0ba902b7","timestamp":1791374400.123,"trace":"projects/acme-prod/traces/4bf92f35"}`
 
@@ -56,7 +56,7 @@ func TestCloudStateWire(t *testing.T) {
 	if s.BinaryPath != "/opt/homebrew/bin/gcloud" || s.IsDetecting {
 		t.Errorf("binary %q detecting %v", s.BinaryPath, s.IsDetecting)
 	}
-	if want := (cloudAuthState{State: cloudAuthAuthenticated, Account: "lucas@saltpay.co"}); s.AuthState != want {
+	if want := (cloudAuthState{State: cloudAuthAuthenticated, Account: "dev@example.com"}); s.AuthState != want {
 		t.Errorf("auth = %+v, want %+v", s.AuthState, want)
 	}
 	p, ok := s.project("acme-prod")

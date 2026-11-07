@@ -75,9 +75,6 @@ func (b *bodyRef) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// isNone reports whether the rule has no body.
-func (b bodyRef) isNone() bool { return b.Kind == "" || b.Kind == "none" }
-
 // respondSpec mirrors OverrideResponseSpec: a response Jaca makes up.
 type respondSpec struct {
 	StatusCode int

@@ -289,6 +289,40 @@ func TestOverridePopupsFit(t *testing.T) {
 	check("editor headers")
 }
 
+// An editor cut to fit a short pane keeps its click targets on the rows that show them: Save is
+// clicked where it is drawn, and no target sits below the box.
+func TestCutEditorKeepsItsClickTargets(t *testing.T) {
+	v := testNetViewer(t)
+	v.openEditor(v.overrides.Rules[0], false, "")
+	for _, size := range [][2]int{{16, 80}, {20, 80}} {
+		box, _, _ := v.overridesBox(size[0], size[1])
+		if len(box) == 0 || len(box) > size[0] {
+			t.Fatalf("at %dx%d the editor is %d rows", size[0], size[1], len(box))
+		}
+		saveRow := -1
+		for i, row := range box {
+			if strings.Contains(stripSGR(row), "  Save  ") {
+				saveRow = i
+			}
+		}
+		if saveRow < 0 {
+			t.Fatalf("at %dx%d the editor draws no Save", size[0], size[1])
+		}
+		onSave := false
+		for _, h := range v.ovui.hits {
+			if h.row >= len(box) {
+				t.Errorf("at %dx%d a click target is on row %d of a %d-row box", size[0], size[1], h.row, len(box))
+			}
+			if h.row == saveRow && h.x1 >= plainWidth(box[saveRow])-4 {
+				onSave = true
+			}
+		}
+		if !onSave {
+			t.Errorf("at %dx%d no click target is on Save's row %d", size[0], size[1], saveRow)
+		}
+	}
+}
+
 func TestTextArea(t *testing.T) {
 	var a textArea
 	a.set("ab\ncd")
