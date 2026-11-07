@@ -17,7 +17,7 @@ For the plugin's status, panes and keys, read [README.md](README.md). For the da
 | Need | Notes |
 |---|---|
 | Jaca build tools | Xcode, `xcodegen` and the rest of what Jaca needs to build. See the repo [README.md](../README.md). |
-| Go | 1.22 or newer (`brew install go`). |
+| Go | 1.24 or newer (`brew install go`). |
 | Herdr | 0.9.0 or newer, with its server running (`herdr status`). |
 
 ## Install

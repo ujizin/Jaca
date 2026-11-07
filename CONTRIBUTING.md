@@ -50,7 +50,7 @@ locks and make `xcodebuild` stop responding.
 |---|---|
 | Android agent (`agent/`) | Android SDK at `~/Library/Android/sdk` (or `$ANDROID_HOME`), NDK 27.2.12479018, CMake 3.22.1, platform `android-36`, build-tools (for `d8`), Kotlin from Homebrew (`brew install kotlin`, read from `/opt/homebrew/opt/kotlin`), a JDK that supports `javac --release 11`. |
 | Companion app (`mobile/`) | JDK 17, Android SDK, NDK 27.2.12479018, CMake 3.22.1. A newer JDK can fail the Gradle build. |
-| Herdr plugin (`herdr-plugin/`) | Go 1.22 or later. Herdr 0.9.0 or later to run it. |
+| Herdr plugin (`herdr-plugin/`) | Go 1.24 or later. Herdr 0.9.0 or later to run it. |
 | gRPC stubs (`proto/`) | `brew install protobuf swift-protobuf`, plus the grpc-swift 1.27.5 `protoc-gen-grpc-swift` plugin. See `scripts/proto-gen.sh`. |
 | Runtime features | `adb` (Android), `idevicesyslog` (fallback for physical iOS logs), `gcloud` (Cloud Logging), `claude` (Ask Claude, Open in Herdr), `herdr` (Open in Herdr), Google Chrome (This Mac capture). Install a tool only for the feature that uses it. |
 
