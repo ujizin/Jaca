@@ -22,7 +22,7 @@ Open a network tab from the device menu ("Inspect Network"). The tab offers the 
 The two modes in Settings → Network inspection:
 
 - **"Agent HTTPS debugging"** (the default): the in-process agent and the Chrome browser. Response overrides work in this mode.
-- **"HTTPS debugging"** (experimental, off by default): adds the companion stream and the "Connect a device (QR / USB)" button (a plus icon) in the sidebar.
+- **"HTTPS debugging"** (experimental, off by default): adds the companion stream and the "Connect a device (QR / USB)" button (a plus icon) in the title bar.
 
 Physical iOS devices have no capture source.
 
@@ -144,7 +144,7 @@ The companion is a Compose Multiplatform app (`mobile/`) for Android:
 To use it:
 
 1. In Settings → Network inspection, choose "HTTPS debugging".
-2. Click the plus button in the sidebar ("Connect a device (QR / USB)") and scan the QR code with the phone, or run `adb install Resources/jaca-mobile.apk`.
+2. Click the plus button in the title bar ("Connect a device (QR / USB)") and scan the QR code with the phone, or run `adb install Resources/jaca-mobile.apk`.
 3. Open the companion app and start capture. The phone shows up in Jaca's device list.
 
 Build and bundle the APK:

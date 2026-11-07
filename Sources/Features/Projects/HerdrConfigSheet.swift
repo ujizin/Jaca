@@ -7,6 +7,9 @@ import Lemonade
 /// and, on first run, continues the launch that was waiting on it.
 struct HerdrConfigSheet: View {
     let model: ProjectsModel
+    /// Settings presents this sheet on its own flag, which the model's Cancel and Save don't
+    /// clear, so both also dismiss.
+    @Environment(\.dismiss) private var dismiss
 
     @State private var command: String = ""
 
@@ -52,12 +55,12 @@ struct HerdrConfigSheet: View {
             HStack(spacing: 8) {
                 Spacer()
                 LemonadeUi.Button(
-                    label: "Cancel", onClick: { model.cancelHerdrConfig() },
+                    label: "Cancel", onClick: { model.cancelHerdrConfig(); dismiss() },
                     variant: .neutral, type: .subtle, size: .small
                 )
                 LemonadeUi.Button(
                     label: "Save",
-                    onClick: { model.saveHerdrConfig(command) },
+                    onClick: { model.saveHerdrConfig(command); dismiss() },
                     variant: .primary, type: .solid, size: .small
                 )
             }

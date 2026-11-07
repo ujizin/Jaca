@@ -105,6 +105,9 @@ final class JacaAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let open = NSMenuItem(title: "Open Jaca", action: #selector(openWindow), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
+        settings.target = self
+        menu.addItem(settings)
         menu.addItem(.separator())
         addUpdateItem(to: menu)
         let quit = NSMenuItem(title: "Quit Jaca", action: #selector(quit), keyEquivalent: "q")
@@ -151,6 +154,13 @@ final class JacaAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func openWindow() {
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Brings the main window up, then asks `RootView` to open Settings. The window first: with
+    /// Dock visibility off the app may be inactive or its window hidden.
+    @objc func openSettings() {
+        openWindow()
+        NotificationCenter.default.post(name: .openSettings, object: nil)
     }
 
     @objc private func runUpdate() {
@@ -221,6 +231,10 @@ struct JacaApp: App {
         .defaultSize(width: 1180, height: 760)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { appDelegate.openSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(after: .newItem) {
                 Button("Projects") {
                     NotificationCenter.default.post(name: .openProjects, object: nil)
@@ -242,4 +256,10 @@ struct JacaApp: App {
         default: return nil
         }
     }
+}
+
+extension Notification.Name {
+    /// Posted by ⌘, and the status-bar menu to open Settings. `RootView` observes it because
+    /// neither can reach `AppModel`.
+    static let openSettings = Notification.Name("jaca.openSettings")
 }
