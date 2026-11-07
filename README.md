@@ -13,8 +13,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/macOS-14%2B-9BD981?style=flat-square&labelColor=F3B22A" alt="macOS 14+">
-  <img src="https://img.shields.io/badge/Swift-5.9-9BD981?style=flat-square&labelColor=F3B22A" alt="Swift 5.9">
+  <img src="https://img.shields.io/badge/macOS-14%2B-9BD981?style=flat&labelColor=F3B22A" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/Swift-5.9-9BD981?style=flat&labelColor=F3B22A" alt="Swift 5.9">
 </p>
 
 <p align="center">
@@ -48,10 +48,6 @@ Stream device logs and Google Cloud Logging, with filters and crash markers.
   <img src="docs/images/logs-crash-marker.png" alt="A log tab with colour-coded lines, a crash stack trace with a red marker line and a 1 crash counter." width="100%">
 </p>
 
-<p align="center">
-  <img src="docs/images/cloud-logging-session.png" alt="A Cloud Logging tab with colour-coded rows from the last 15 minutes." width="100%">
-</p>
-
 ### Network
 
 See every request from Android, iOS Simulator and Chrome, and mock any response.
@@ -63,6 +59,10 @@ See every request from Android, iOS Simulator and Chrome, and mock any response.
 ### Clean your Mac
 
 Free the space that Gradle, Xcode DerivedData and old worktrees take.
+
+<p align="center">
+  <img src="docs/images/projects-area.png" alt="The Projects area with six projects and their sizes, one expanded to show its main checkout and two git worktrees." width="100%">
+</p>
 
 ### Terminal
 
