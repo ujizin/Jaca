@@ -17,16 +17,17 @@ Open a network tab from the device menu ("Inspect Network"). The tab offers the 
 |---|---|---|
 | "In-process agent" | A debuggable Android app, or any iOS Simulator app | Both modes |
 | "Chrome browser" | This Mac | Both modes |
-| "Companion stream" | An Android phone that runs the Jaca companion app | "HTTPS debugging" only |
+| "Device proxy" | Every app on an Android device with adb, or on an iOS Simulator | "MITM HTTPS debugging" only |
+| "Companion stream" | An Android phone that runs the Jaca companion app | "MITM HTTPS debugging" only |
 
-The two modes in Settings → Network inspection:
+The two modes in Settings → Network inspection. Herdr (`M`) and `jaca net mode [agent | mitm]` set the same value:
 
-- **"Agent HTTPS debugging"** (the default): the in-process agent and the Chrome browser. Response overrides work in this mode.
-- **"HTTPS debugging"** (experimental, off by default): adds the companion stream and the "Connect a device (QR / USB)" button (a plus icon) in the title bar.
+- **"Agent HTTPS debugging"** (the default): the in-process agent and the Chrome browser.
+- **"MITM HTTPS debugging"**: the device proxy, the companion stream and the Chrome browser. It adds the "Connect a device (QR / USB)" button (a plus icon) in the title bar.
+
+Response overrides work in both modes. A switch stops each capture whose source the new mode does not offer and shows its chooser. It never starts a capture.
 
 Physical iOS devices have no capture source.
-
-Earlier versions had a standalone MITM proxy mode, where Jaca set the device's proxy and you installed the CA by hand. That mode was removed. `ProxyServer` now terminates TLS only for the companion stream and for the Chrome browser.
 
 ### The shared network tab
 
@@ -129,7 +130,23 @@ For "This Mac", Jaca starts a `ProxyServer` on `127.0.0.1` and opens a separate 
 
 The root CA is `~/Library/Application Support/Jaca/ca/rootCA.pem`, and its private key is `ca/rootCA.key.pem` (mode 0600) in the same folder. Older builds kept the key in the macOS Keychain. Jaca reads the Keychain once to move the key into the file.
 
-Jaca no longer changes a device's proxy settings. The companion app gets its proxy address from the desktop over gRPC (`SetProxy`).
+The companion app gets its proxy address from the desktop over gRPC (`SetProxy`).
+
+## The device proxy (MITM HTTPS debugging)
+
+**Android (emulator or USB).** The proxy listens on `127.0.0.1:P` on the Mac. `adb reverse tcp:P tcp:P` makes that port the device's own loopback, and `settings put global http_proxy 127.0.0.1:P` sends the device's traffic to it. The proxy never listens on the LAN.
+
+**iOS Simulator.** Jaca points the macOS web and secure web proxy at `127.0.0.1:P` with `networksetup`. It decrypts only connections from simulator processes (found by pid through libproc) and relays every other Mac connection raw, without recording it.
+
+**CA install.** The capture never installs the CA. The user starts the install from the setup sheet, Herdr (`I`) or `jaca net install-ca`:
+
+- iOS Simulator: `simctl keychain add-root-cert`, then an offered reboot.
+- Android where `adb root` works: a headless install into the system store.
+- Other Android phones: the CA goes to Download, and the guided install sheet takes over.
+
+**Revert and ledger.** Before it changes a device, Jaca writes the old value to `~/.jaca/network/device-proxies.json` (Android) or `~/.jaca/mac-system-proxy.json` (the Mac system proxy). Stop puts the old value back. After a crash, the jacad start and the app start restore an entry whose owner process is dead, but only while the setting still reads Jaca's value. The sidebar Revert banner is the last backstop.
+
+Full flow: [mitm-http-debugging.md](mitm-http-debugging.md).
 
 ## The companion app
 
@@ -143,7 +160,7 @@ The companion is a Compose Multiplatform app (`mobile/`) for Android:
 
 To use it:
 
-1. In Settings → Network inspection, choose "HTTPS debugging".
+1. In Settings → Network inspection, choose "MITM HTTPS debugging".
 2. Click the plus button in the title bar ("Connect a device (QR / USB)") and scan the QR code with the phone, or run `adb install Resources/jaca-mobile.apk`.
 3. Open the companion app and start capture. The phone shows up in Jaca's device list.
 
@@ -167,5 +184,6 @@ Full flow, channels and state diagrams: [companion-architecture.md](companion-ar
   - Ships for `arm64-v8a` only.
   - It is the only source that records the request call stack.
 - **iOS Simulator agent:** sees `URLSession` traffic only. It does not see `WKWebView`, background sessions or raw sockets. No call stack.
+- **Device proxy:** the app must trust Jaca's CA. Hosts that pin certificates, and apps that do not trust user CAs, pass through without decryption. No call stack and no app-scoped rules. HTTP/2, gRPC, WebSockets over TLS and streaming responses are not supported. On the iOS Simulator it changes the Mac system proxy while a capture runs.
 - **Companion stream:** experimental. It installs a CA on the device. Apps that pin certificates, or that do not trust user CAs, are not decrypted and can stop working. QUIC (HTTP/3) is not decrypted. No call stack, because the capture is outside the app process.
 - **Physical iOS devices:** no network capture.

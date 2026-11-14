@@ -63,7 +63,7 @@ Click **This Mac** in the sidebar. Jaca opens a separate Chrome window and captu
 | iPhone | Yes | No | No | No |
 | This Mac | No | Chrome | Chrome | No |
 
-The Android companion app captures whole-device traffic. It is experimental.
+In Settings → Network inspection → "MITM HTTPS debugging", the device proxy captures every app on an Android device or an iOS Simulator, after the device trusts Jaca's CA. The Android companion app captures whole-device traffic. It is experimental.
 
 How each capture source works: [network-capture.md](network-capture.md).
 

@@ -145,9 +145,10 @@ Other top-level folders: `Config/` (the Info.plist that allows plain `http://` f
 |---|---|---|
 | In-process agent | Debuggable Android apps, iOS Simulator apps | Jaca injects an agent into the app and reads requests before TLS. No proxy and no CA. Works with certificate pinning. Records the call stack on Android. |
 | Chrome browser | This Mac | Jaca opens a separate Chrome window with its own profile and sends its traffic through a loopback proxy. |
-| Companion stream | Android phones (experimental) | The Jaca companion app captures all device traffic with a `VpnService` and streams it to the Mac over gRPC/TLS. The Mac decrypts TLS. Turn it on in Settings → Network inspection → "HTTPS debugging". |
+| Device proxy | Every app on an Android device with adb, or on an iOS Simulator | A MITM proxy on the Mac. Android reaches it through `adb reverse` and its global `http_proxy`; the iOS Simulator through the Mac system proxy. The device must trust Jaca's CA. Turn it on in Settings → Network inspection → "MITM HTTPS debugging". |
+| Companion stream | Android phones (experimental) | The Jaca companion app captures all device traffic with a `VpnService` and streams it to the Mac over gRPC/TLS. The Mac decrypts TLS. Turn it on in Settings → Network inspection → "MITM HTTPS debugging". |
 
-Details: [docs/network-capture.md](docs/network-capture.md), [docs/agent-https-debugging-android.md](docs/agent-https-debugging-android.md), [docs/agent-https-debugging-ios.md](docs/agent-https-debugging-ios.md), [docs/companion-architecture.md](docs/companion-architecture.md).
+Details: [docs/network-capture.md](docs/network-capture.md), [docs/agent-https-debugging-android.md](docs/agent-https-debugging-android.md), [docs/agent-https-debugging-ios.md](docs/agent-https-debugging-ios.md), [docs/companion-architecture.md](docs/companion-architecture.md), [docs/mitm-http-debugging.md](docs/mitm-http-debugging.md).
 
 ## Layering rules
 

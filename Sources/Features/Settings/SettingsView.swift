@@ -20,7 +20,9 @@ struct SettingsView: View {
             case .devices: DevicesSettingsPane(model: model)
             case .network:
                 NetworkSettingsPane(mode: model.networkInspectionMode,
-                                    select: { model.networkInspectionMode = $0 })
+                                    select: { model.networkInspectionMode = $0 },
+                                    switching: model.isSwitchingNetworkMode,
+                                    error: model.networkModeError)
             case .logs: LogsSettingsPane()
             case .diagnostics: DiagnosticsSettingsPane()
             }
