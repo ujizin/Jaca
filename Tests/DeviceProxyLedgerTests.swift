@@ -69,6 +69,9 @@ final class DeviceProxyLedgerTests: XCTestCase {
         XCTAssertTrue(DeviceProxyLedger.isJacaExecutable("/Applications/Jaca.app/Contents/MacOS/Jaca"))
         XCTAssertTrue(DeviceProxyLedger.isJacaExecutable("/Applications/Jaca.app/Contents/MacOS/jacad"))
         XCTAssertFalse(DeviceProxyLedger.isJacaExecutable("/usr/libexec/syspolicyd"))
+        XCTAssertFalse(DeviceProxyLedger.isJacaExecutable(
+            "/Users/me/.herdr/worktrees/Jaca/main/build/Debug/JacaTests.xctest/Contents/MacOS/JacaTests"))
+        XCTAssertFalse(DeviceProxyLedger.isJacaExecutable("/Users/me/jaca-tools/bin/swift"))
         XCTAssertFalse(DeviceProxyLedger.liveOwnerCheck(Int32.max), "a pid that doesn't run is dead")
     }
 

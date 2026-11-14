@@ -189,9 +189,11 @@ enum DeviceProxyLedger {
     }
 
     /// True for the app's or jacad's executable path (`…/Jaca.app/Contents/MacOS/Jaca`,
-    /// `…/MacOS/jacad`, or the `jaca` CLI link).
+    /// `…/MacOS/jacad`, or the `jaca` CLI link). It checks only the file name, so a recycled pid
+    /// of another program under a path that contains "jaca" does not count.
     static func isJacaExecutable(_ path: String) -> Bool {
-        path.lowercased().contains("jaca")
+        let name = (path as NSString).lastPathComponent.lowercased()
+        return name == "jaca" || name == "jacad"
     }
 
     // MARK: - Records
