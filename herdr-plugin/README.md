@@ -229,12 +229,24 @@ click in this pane. That menu's "Send right-clicks to pane" item turns it back.
 
 ## Network
 
-The `network` pane is the app's network tab, with response overrides (the app's "Agent HTTPS
-debugging"). It uses jacad's `network.*` and `overrides.*` methods. It captures one of:
+The `network` pane is the app's network tab, with response overrides. It uses jacad's
+`network.*` and `overrides.*` methods. How it captures depends on the app's network inspection
+mode, which jacad owns (`network.mode`, `network.setMode`):
+
+- Agent HTTPS debugging: the in-process agent captures one app.
+- MITM HTTPS debugging: the device proxy captures every app on an Android device or an iOS
+  Simulator through Jaca's proxy on the Mac.
+
+The device picker's network option is `Inspect Network (Agent HTTP)` or
+`Inspect Network (MITM HTTP)`, for the mode it reads with one `network.mode` call when it opens.
+The pane captures one of:
 
 - **An app, with the in-process agent.** Choose "Inspect Network (Agent HTTP)" in the device
   picker (Android and iOS Simulator). `a` (or the app button) lists the installed apps. Choosing
   one starts the capture. On the iOS Simulator, a start relaunches the app.
+- **Every app, with the device proxy.** Choose "Inspect Network (MITM HTTP)" in the device
+  picker (Android with adb, and iOS Simulator). ` Device proxy ` starts the capture at once, with
+  no app. The toolbar's mode reads `proxy`.
 - **A Chrome window on this Mac.** Choose "This Mac", then "Inspect Network (Chrome)". The
   capture starts at once. jacad opens a separate Chrome window with its own profile, sends its
   traffic through a proxy on 127.0.0.1 and applies the overrides to it. There is no app to
@@ -246,6 +258,8 @@ debugging"). It uses jacad's `network.*` and `overrides.*` methods. It captures 
 |---|---|
 | `p` or `space` | Start or stop the capture. |
 | `a` | List the installed apps to choose one (agent capture). |
+| `M` | Open a menu of the two network inspection modes, on the current one. |
+| `I` | Install Jaca's certificate on the device (device proxy capture). |
 | `b` | Open the Chrome window again after it was closed (This Mac). Same as the `Open Chrome` button. |
 | `R` | Relaunch the app and attach the agent again. Same as the attach banner's button. |
 | `j` `k` or `↑` `↓` | Select a request. |
@@ -279,6 +293,25 @@ Simulator, in Agent HTTPS debugging, a switch beside it turns on the app's
 `Re-attach to iOS Simulator apps automatically` setting. The pane writes it with `defaults`, and
 jacad reads it each time it decides. With it on, jacad relaunches the app without asking. It is
 off by default, as in the app, because a relaunch loses the user's place in their app.
+
+**Mode.** `M` opens a menu of the two modes. Choosing the other one calls `network.setMode`,
+which stops the captures that the new mode does not offer. The pane then shows the chooser
+again. The pane reads the mode when it opens and follows the `network.mode` topic, so a switch
+made in the app or in another pane shows here too.
+
+**Chooser.** A stopped capture with nothing chosen shows a row for each source that the mode
+offers (the state's `offeredSourceIDs`): ` Inspect app ` for the agent, which opens the app
+list, and ` Device proxy `, which starts at once. `↑` `↓` move between rows, and `Enter` or a
+click chooses. A jacad that does not send the offered sources has the agent row alone.
+
+**Certificate banner.** While the device proxy needs Jaca's certificate on the device and it is
+not there yet (`proxyNeedsSetup` and not `caReady`), a banner the width of the pane says so.
+`I` calls `network.installCA`. jacad installs the certificate into the system store of a rooted
+Android device, copies it to Download for the user to install on other Android devices, and
+adds it to an iOS Simulator's keychain. The banner shows the result. After a simulator install,
+`B` calls `network.rebootSimulator`, so the simulator's apps trust the certificate. `x`
+dismisses the banner (`network.clearProxyNeedsSetup`). `I` also works on any device proxy
+capture without the banner.
 
 ### Request detail
 
@@ -406,8 +439,10 @@ undoes a closed tab. `⌘C` still copies a Ghostty selection when there is one.
 - The JSON tree view. Bodies show as pretty-printed text.
 - The example rows and the shadow count of the match preview.
 - Find in the body editor.
-- The device proxy section.
-- Companion and proxy capture.
+- The app's device proxy section.
+- The guided certificate install for a phone without root. The pane copies the certificate to
+  Download and says where to install it.
+- Companion capture.
 - The app's regex engine. Patterns use Go's engine here, so lookaround and backreferences do not
   compile, though they run in the app and in jacad.
 
@@ -801,6 +836,13 @@ toasts. The exceptions below have no app copy. They are placeholders that need s
   label after it is the app's.
 - The switch beside it uses the app's Settings title for the same setting,
   `Re-attach to iOS Simulator apps automatically`.
+- The `M` menu uses the app's Settings titles, `Agent HTTPS debugging` and
+  `MITM HTTPS debugging`. `inspection mode` (the `?` popup's label for `M`), ` Device proxy `,
+  the certificate banner's prompt and its `installed` and `needsUser` results, and
+  `Inspect Network (MITM HTTP)` are specified copy.
+- The banner's texts while an install or a reboot runs, the simulator result that offers
+  `B reboot`, and the result after a reboot are proposals that wait for sign-off
+  (`// COPY-PENDING` in `netmode.go`).
 
 **Database**
 

@@ -6,9 +6,10 @@ import Foundation
 struct CaptureContext {
     let device: Device
     let adbURL: URL?
-    /// The MITM CA. Only companion capture decrypts; `jacad` never loads one (reading or minting
-    /// the CA from the daemon could prompt for the Keychain or diverge from the app's CA), and
-    /// companion capture never runs there, so it's nil in the daemon.
+    /// The MITM CA. The proxy sources (device proxy, Simulator proxy, this Mac's browser) and
+    /// companion capture decrypt with it. `jacad` reads it from disk when a capture needs it and
+    /// never prompts for the Keychain. nil when it couldn't be read; a source that needs it then
+    /// says so in its status.
     let ca: CertificateAuthority?
     let deviceContext: DeviceContext?
     /// Agent mode: the debuggable app to attach to.
@@ -22,13 +23,15 @@ struct CaptureContext {
 }
 
 /// Callbacks a running source uses to report back to its session. Source-specific
-/// concerns (bound port, agent attach state) are events here, so the
-/// session never switches on a capture mode.
+/// concerns (bound port, "device may not trust the CA yet", agent attach state) are events here,
+/// so the session never switches on a capture mode.
 @MainActor
 protocol CaptureSink: AnyObject {
     func capture(didReceive transaction: NetworkTransaction)
     func capture(didChangeStatus status: String?)
     func capture(didBindPort port: Int)
+    /// Proxy: started, but no decrypted HTTPS seen yet. Guide the user to install the CA.
+    func captureNeedsSetup()
 
     /// The source's in-process agent is no longer in the app (or the app is gone). Separate from
     /// `arming` because losing the agent stops **capture**, not just overrides, so it must reach
@@ -55,6 +58,10 @@ protocol CaptureSource: AnyObject {
     /// Whether the rules run on this source's traffic now. An agent source is wired once its
     /// coordinator arms; a proxy source as soon as it listens with override services.
     var interceptWired: Bool { get }
+
+    /// The user installed Jaca's CA on the device. A source that passes hosts through after a
+    /// failed handshake forgets them, so the next connection to each one is decrypted.
+    func caTrustChanged()
 }
 
 extension CaptureSink {
@@ -65,6 +72,7 @@ extension CaptureSource {
     var interceptCapabilities: InterceptCapabilities { [] }
     var arming: AgentHTTPCoordinator? { nil }
     var interceptWired: Bool { arming != nil }
+    func caTrustChanged() {}
 }
 
 /// Static, selectable description of a capture option for a device. Drives the chooser

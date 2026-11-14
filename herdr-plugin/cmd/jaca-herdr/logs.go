@@ -1283,8 +1283,12 @@ func keysBox(keys [][2]string, rows, cols int) []string {
 			box = build(2, false)
 		}
 	}
-	if len(box) > rows { // keep the borders, drop the rows that don't fit
-		box = append(box[:rows-1], box[len(box)-1])
+	if len(box) > rows {
+		// Keep the borders and the last key row (Quit), and drop the rows above it that don't
+		// fit. A cut box has no spacers, so the row above the bottom border holds the last key.
+		if rows >= 3 {
+			box = append(box[:rows-2:rows-2], box[len(box)-2], box[len(box)-1])
+		}
 	}
 	return box
 }

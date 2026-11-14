@@ -167,9 +167,11 @@ private struct DeviceRow: View {
     /// One-click update over USB for an adb-connected device (no QR step). Returns the outcome
     /// so the row can fall back to the sheet when there's no USB path.
     let updateOverUSB: () async -> AppModel.CompanionUpdateOutcome
-    /// Returns the device's stranded Jaca proxy (host == this Mac), or nil.
+    /// Returns the device's stranded Jaca proxy, or nil: a proxy at this Mac, or a device-proxy
+    /// ledger value that no running capture holds (`AppModel.strandedProxy`).
     let checkProxy: () async -> String?
-    /// Clears the device's HTTP proxy.
+    /// Reverts the device's HTTP proxy: restores what the device had before Jaca for a ledger
+    /// value, else clears it.
     let revertProxy: () async -> Void
     @State private var hovering = false
     @State private var stranded: String?
@@ -181,7 +183,7 @@ private struct DeviceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: LemonadeTheme.spaces.spacing100) {
             deviceButton
-            if let proxy = stranded { strandedBanner(proxy) }
+            if let proxy = stranded { strandedBanner(proxy).transition(.opacity) }
             if let err = updateError { updateErrorBanner(err) }
         }
         .task(id: device.state) {
@@ -189,6 +191,7 @@ private struct DeviceRow: View {
         }
         .animation(.easeInOut(duration: 0.2), value: isUpdating)
         .animation(.easeInOut(duration: 0.2), value: updateError)
+        .animation(.easeInOut(duration: 0.2), value: stranded)
     }
 
     /// Update an out-of-date companion. For an adb device this installs over USB in place (no
@@ -386,7 +389,7 @@ private struct DeviceRow: View {
     }
 
     /// Shown when this device still has a proxy Jaca set but a teardown couldn't
-    /// revert (e.g. the app was force-killed). One click clears it.
+    /// revert (e.g. the app or jacad was force-killed). One click reverts it.
     private func strandedBanner(_ proxy: String) -> some View {
         // One row when it fits; in a narrow sidebar the Revert control moves below the texts.
         ViewThatFits(in: .horizontal) {
